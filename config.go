@@ -23,20 +23,29 @@ const (
 
 // Config defines the configuration parameters for the Titip middleware.
 type Config struct {
-	Storage                  storage.Storage
-	Logger                   *slog.Logger
-	Metrics                  prometheus.Registerer
-	CacheStatusMode          CacheStatusMode
-	IgnoreClientCacheControl bool
-	KeyConfig                KeyConfig
-	CacheableStatusCodes     map[int]struct{}
-	TagHeaderNames           []string
-	OriginTimeout            time.Duration
-	StorageTimeout           time.Duration
+	Storage                         storage.Storage
+	Logger                          *slog.Logger
+	Metrics                         prometheus.Registerer
+	CacheStatusMode                 CacheStatusMode
+	IgnoreClientCacheControl        bool
+	AutoInvalidateMutatingMethods   bool
+	KeyConfig                       KeyConfig
+	CacheableStatusCodes            map[int]struct{}
+	TagHeaderNames                  []string
+	OriginTimeout                   time.Duration
+	StorageTimeout                  time.Duration
 }
 
 // Option configures Titip middleware options.
 type Option func(*Config)
+
+// WithAutoInvalidateMutatingMethods configures whether successful mutating requests (POST, PUT, DELETE, PATCH)
+// automatically invalidate the cached entry for the request URI and response Location/Content-Location headers (defaults to false).
+func WithAutoInvalidateMutatingMethods(enable bool) Option {
+	return func(c *Config) {
+		c.AutoInvalidateMutatingMethods = enable
+	}
+}
 
 // WithMetrics configures the Prometheus metrics registerer.
 func WithMetrics(reg prometheus.Registerer) Option {

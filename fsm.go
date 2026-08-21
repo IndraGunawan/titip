@@ -418,8 +418,8 @@ func (t *Titip) handleMutatingRequest(w http.ResponseWriter, r *http.Request, ne
 
 	next.ServeHTTP(rec, r)
 
-	// If successful (200..399), invalidate request URI and target locations
-	if rec.Code >= 200 && rec.Code < 400 {
+	// If enabled and successful (200..399), invalidate request URI and target locations
+	if t.cfg.AutoInvalidateMutatingMethods && rec.Code >= 200 && rec.Code < 400 {
 		pk := GeneratePrimaryKey(r, &t.cfg.KeyConfig)
 		_ = t.storage.Delete(r.Context(), pk)
 

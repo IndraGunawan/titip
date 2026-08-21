@@ -320,8 +320,8 @@ func TestConditionalAndHeadRequests(t *testing.T) {
 }
 
 // Unsafe HTTP method auto-invalidation
-func TestUnsafeMethodAutoInvalidation(t *testing.T) {
-	_, _, mw := setupTestTitip(t)
+func TestUnsafeMethodAutoInvalidation_DefaultDisabled(t *testing.T) {
+	_, _, mw := setupTestTitip(t) // default: WithAutoInvalidateMutatingMethods(false)
 
 	var state atomic.Int32
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -338,7 +338,7 @@ func TestUnsafeMethodAutoInvalidation(t *testing.T) {
 	handler := mw.Handler(originHandler)
 
 	// 1. Prime cache
-	reqGet := httptest.NewRequest(http.MethodGet, "http://example.com/api/state", nil)
+	reqGet := httptest.NewRequest(http.MethodGet, "http://example.com/api/state-default", nil)
 	recGet1 := httptest.NewRecorder()
 	handler.ServeHTTP(recGet1, reqGet)
 	if recGet1.Body.String() != "state=0" {
@@ -346,18 +346,59 @@ func TestUnsafeMethodAutoInvalidation(t *testing.T) {
 	}
 
 	// 2. Mutating POST request
-	reqPost := httptest.NewRequest(http.MethodPost, "http://example.com/api/state", nil)
+	reqPost := httptest.NewRequest(http.MethodPost, "http://example.com/api/state-default", nil)
 	recPost := httptest.NewRecorder()
 	handler.ServeHTTP(recPost, reqPost)
 	if recPost.Code != http.StatusCreated {
 		t.Fatalf("expected 201 Created, got %d", recPost.Code)
 	}
 
-	// 3. Subsequent GET must fetch new state
+	// 3. Subsequent GET must STILL return cached state=0 because auto-invalidation is disabled by default
+	recGet2 := httptest.NewRecorder()
+	handler.ServeHTTP(recGet2, reqGet)
+	if recGet2.Body.String() != "state=0" {
+		t.Fatalf("expected cached state=0 when auto-invalidation is disabled, got %s", recGet2.Body.String())
+	}
+}
+
+func TestUnsafeMethodAutoInvalidation_OptInEnabled(t *testing.T) {
+	_, _, mw := setupTestTitip(t, WithAutoInvalidateMutatingMethods(true))
+
+	var state atomic.Int32
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			state.Store(42)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "state=%d", state.Load())
+	})
+
+	handler := mw.Handler(originHandler)
+
+	// 1. Prime cache
+	reqGet := httptest.NewRequest(http.MethodGet, "http://example.com/api/state-enabled", nil)
+	recGet1 := httptest.NewRecorder()
+	handler.ServeHTTP(recGet1, reqGet)
+	if recGet1.Body.String() != "state=0" {
+		t.Fatalf("expected state=0, got %s", recGet1.Body.String())
+	}
+
+	// 2. Mutating POST request
+	reqPost := httptest.NewRequest(http.MethodPost, "http://example.com/api/state-enabled", nil)
+	recPost := httptest.NewRecorder()
+	handler.ServeHTTP(recPost, reqPost)
+	if recPost.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d", recPost.Code)
+	}
+
+	// 3. Subsequent GET must fetch new state=42 because auto-invalidation is enabled
 	recGet2 := httptest.NewRecorder()
 	handler.ServeHTTP(recGet2, reqGet)
 	if recGet2.Body.String() != "state=42" {
-		t.Fatalf("expected invalidated state=42, got %s", recGet2.Body.String())
+		t.Fatalf("expected invalidated state=42 when auto-invalidation is enabled, got %s", recGet2.Body.String())
 	}
 }
 

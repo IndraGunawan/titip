@@ -24,6 +24,9 @@
    - Wrap singleflight origin fetches in `context.WithoutCancel(r.Context())` so client cancellations do not abort in-flight origin calls for waiting concurrent requests.
 6. **Maintain Complete Key Cleanup on Hard Purges**:
    - Hard purges (URL and Tag) must atomically delete both the metadata Hash AND all associated variant body keys. Zero orphaned keys may remain in Redis.
+7. **Maintain Multi-Module Workspace (`go.work`) Integration**:
+   - Whenever a new module is added to the repository (e.g. framework adapters under `adapter/*`, storage drivers under `storage/*`, or applications under `examples/*`), it **MUST** declare its own `go.mod` and be registered in the root `go.work` file.
+   - Always run `go work sync` to maintain clean workspace dependency resolution.
 
 ---
 
@@ -136,6 +139,7 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 ## 7. Tooling & Development Environment
 
 - **Go Compiler**: Go `1.22+` (utilizes `context.WithoutCancel`, `net/http` enhanced routing).
+- **Go Multi-Module Workspace**: Managed via root `go.work`. All submodules (`adapter/*`, `storage/*`, `examples/*`) must be registered in `go.work` so cross-module imports resolve locally without manual `replace` directives.
 - **Protobuf Generation**: `protoc-gen-go` / `buf` targeting `google.golang.org/protobuf`.
 - **Unit Testing Redis Mock**: Use `github.com/alicebob/miniredis/v2` for self-contained, high-speed unit tests without external Redis dependencies.
 - **Integration Redis Testing**: Real Redis 7+ instance using `github.com/redis/rueidis`.
