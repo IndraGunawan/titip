@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package titip;
+
+option go_package = "github.com/indragunawan/titip/proto;proto";
+
+message HeaderValues {
+  repeated string values = 1;
+}
+
+// VariantInfo stores metadata for a specific Vary header combination
+message VariantInfo {
+  string variant_key = 1;                 // Unique storage subkey e.g., "gzip_en"
+  map<string, string> vary_headers = 2;   // Matched request headers e.g. {"Accept-Encoding": "gzip"}
+  int32 status_code = 3;
+  map<string, HeaderValues> response_headers = 4;
+  string etag = 5;
+  int64 last_modified_unix_nano = 6;
+  uint32 raw_body_size = 7;
+  uint32 compressed_body_size = 8;
+}
+
+// CacheMetadata stores the primary URL index and variant registry
+message CacheMetadata {
+  string primary_key = 1;
+  repeated string vary_header_names = 2;  // e.g. ["Accept-Encoding", "Accept-Language"]
+  map<string, VariantInfo> variants = 3;   // Keyed by normalized vary values
+  int64 created_at_unix_nano = 4;
+  int64 expires_at_unix_nano = 5;
+  int64 stale_until_unix_nano = 6;
+  repeated string tags = 7;
+  bool is_soft_purged = 8;
+}
