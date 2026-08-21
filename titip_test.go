@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/rueidis"
 
 	"github.com/indragunawan/titip/storage"
@@ -453,7 +454,168 @@ func BenchmarkCacheHit(b *testing.B) {
 	}
 }
 
+func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		b.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client, err := rueidis.NewClient(rueidis.ClientOption{
+		InitAddress:  []string{mr.Addr()},
+		DisableCache: true,
+	})
+	if err != nil {
+		b.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	store, err := storageRedis.New(storageRedis.WithClient(client), storageRedis.WithKeyPrefix("bench_par:"))
+	if err != nil {
+		b.Fatalf("failed to create storage: %v", err)
+	}
+
+	mw, err := New(WithStorage(store))
+	if err != nil {
+		b.Fatalf("failed to create titip: %v", err)
+	}
+	defer func() { _ = mw.Close(context.Background()) }()
+
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":"parallel"}`))
+	})
+
+	handler := mw.Handler(originHandler)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench/par", nil)
+
+	// Prime
+	recPrime := httptest.NewRecorder()
+	handler.ServeHTTP(recPrime, req)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			rec := GetResponseRecorder()
+			handler.ServeHTTP(rec, req)
+			PutResponseRecorder(rec)
+		}
+	})
+}
+
+// AC-2: Prometheus Metrics & PromQL Verification
+func TestPrometheusMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	_, _, mw := setupTestTitip(t, WithMetrics(reg))
+
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("metric test data"))
+	})
+
+	handler := mw.Handler(originHandler)
+
+	// 20 misses (different URLs)
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://example.com/metric/%d", i), nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+
+	// 80 hits (requesting the same primed URL 80 times)
+	reqPrime := httptest.NewRequest(http.MethodGet, "http://example.com/metric/0", nil)
+	for i := 0; i < 80; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, reqPrime)
+	}
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	var hitCount, missCount float64
+	for _, mf := range mfs {
+		if mf.GetName() == "titip_requests_total" {
+			for _, m := range mf.GetMetric() {
+				for _, label := range m.GetLabel() {
+					if label.GetName() == "status" {
+						if label.GetValue() == "hit" {
+							hitCount += m.GetCounter().GetValue()
+						} else if label.GetValue() == "miss" {
+							missCount += m.GetCounter().GetValue()
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if hitCount != 80 {
+		t.Errorf("expected 80 hits in metrics, got %v", hitCount)
+	}
+	if missCount != 20 {
+		t.Errorf("expected 20 misses in metrics, got %v", missCount)
+	}
+}
+
+// AC-3: Cache-Status Header Modes
+func TestCacheStatusModes(t *testing.T) {
+	// Mode 1: RFC-9211
+	_, _, mw1 := setupTestTitip(t, WithCacheStatusMode(CacheStatusRFC9211))
+	// Mode 2: Simple Token
+	_, _, mw2 := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+	// Mode 3: None
+	_, _, mw3 := setupTestTitip(t, WithCacheStatusMode(CacheStatusNone))
+
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("status test"))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/status-test", nil)
+
+	// Prime mw1
+	h1 := mw1.Handler(originHandler)
+	rec1Prime := httptest.NewRecorder()
+	h1.ServeHTTP(rec1Prime, req)
+
+	rec1Hit := httptest.NewRecorder()
+	h1.ServeHTTP(rec1Hit, req)
+	if status := rec1Hit.Header().Get("Cache-Status"); !containsAny(status, "titip; hit") {
+		t.Errorf("expected RFC-9211 header, got %s", status)
+	}
+
+	// Prime mw2
+	h2 := mw2.Handler(originHandler)
+	rec2Prime := httptest.NewRecorder()
+	h2.ServeHTTP(rec2Prime, req)
+
+	rec2Hit := httptest.NewRecorder()
+	h2.ServeHTTP(rec2Hit, req)
+	if status := rec2Hit.Header().Get("Cache-Status"); status != "HIT" {
+		t.Errorf("expected SimpleToken header HIT, got %s", status)
+	}
+
+	// Prime mw3
+	h3 := mw3.Handler(originHandler)
+	rec3Prime := httptest.NewRecorder()
+	h3.ServeHTTP(rec3Prime, req)
+
+	rec3Hit := httptest.NewRecorder()
+	h3.ServeHTTP(rec3Hit, req)
+	if status := rec3Hit.Header().Get("Cache-Status"); status != "" {
+		t.Errorf("expected empty Cache-Status in None mode, got %s", status)
+	}
+}
+
 func containsAny(s string, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
 }
+
 

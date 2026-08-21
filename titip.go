@@ -22,6 +22,7 @@ type Titip struct {
 	sf                   singleflight.Group
 	logger               *slog.Logger
 	cacheableStatusCodes map[int]struct{}
+	metrics              *Metrics
 	swrWG                sync.WaitGroup
 	closed               atomic.Bool
 }
@@ -56,6 +57,7 @@ func New(opts ...Option) (*Titip, error) {
 		storage:              cfg.Storage,
 		logger:               cfg.Logger,
 		cacheableStatusCodes: cfg.CacheableStatusCodes,
+		metrics:              newMetrics(cfg.Metrics),
 	}, nil
 }
 

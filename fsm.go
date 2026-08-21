@@ -41,12 +41,14 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 
 	// 1. Automatic Invalidation on Mutating Methods (RFC-7234 §4.4)
 	if isMutatingMethod(r.Method) {
+		t.metrics.RecordRequest(StatusBypass)
 		t.handleMutatingRequest(w, r, next)
 		return
 	}
 
 	// 2. Filter non-cacheable methods (only GET and HEAD are cached)
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		t.metrics.RecordRequest(StatusBypass)
 		t.emitCacheStatus(w, "BYPASS", "fwd=bypass")
 		next.ServeHTTP(w, r)
 		return
@@ -55,6 +57,7 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 	// 3. Client Cache-Control Directives
 	if !t.cfg.IgnoreClientCacheControl {
 		if cc := r.Header.Get("Cache-Control"); strings.Contains(cc, "no-store") {
+			t.metrics.RecordRequest(StatusBypass)
 			t.emitCacheStatus(w, "BYPASS", "fwd=bypass")
 			next.ServeHTTP(w, r)
 			return
@@ -67,6 +70,7 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 	meta, err := t.storage.GetMeta(storeCtx, primaryKey)
 	storeCancel()
 	if err != nil {
+		t.metrics.RecordRequest(StatusError)
 		t.logger.Error("titip: storage error fetching metadata, bypassing to origin", "error", err, "key", primaryKey)
 		t.emitCacheStatus(w, "BYPASS", "fwd=bypass; detail=storage-fallback")
 		next.ServeHTTP(w, r)
@@ -120,6 +124,7 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 	if isFresh {
 		// Conditional Request Validation (If-None-Match / If-Modified-Since)
 		if t.checkConditionalMatch(r, varInfo) {
+			t.metrics.RecordRequest(StatusHit)
 			t.emitCacheStatus(w, "HIT", "hit")
 			w.WriteHeader(http.StatusNotModified)
 			return
@@ -127,6 +132,7 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 
 		// HEAD Request Handling (0 body I/O)
 		if r.Method == http.MethodHead {
+			t.metrics.RecordRequest(StatusHit)
 			t.emitCacheStatus(w, "HIT", fmt.Sprintf("hit; ttl=%d", t.calcTTL(meta.ExpiresAtUnixNano, nowNano)))
 			t.copyProtoHeaders(w, varInfo.ResponseHeaders)
 			w.WriteHeader(int(varInfo.StatusCode))
@@ -148,6 +154,7 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 			currentAge = 0
 		}
 		w.Header().Set("Age", fmt.Sprintf("%d", currentAge))
+		t.metrics.RecordRequest(StatusHit)
 		t.emitCacheStatus(w, "HIT", fmt.Sprintf("hit; ttl=%d", t.calcTTL(meta.ExpiresAtUnixNano, nowNano)))
 		t.copyProtoHeaders(w, varInfo.ResponseHeaders)
 		w.WriteHeader(int(varInfo.StatusCode))
@@ -161,6 +168,7 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 		defer PutBuffer(dstBuf)
 
 		if err := DecompressLZ4(compBody, dstBuf); err == nil {
+			t.metrics.RecordRequest(StatusStaleHit)
 			t.emitCacheStatus(w, "STALE", "hit; stale; detail=swr")
 			t.copyProtoHeaders(w, varInfo.ResponseHeaders)
 			w.WriteHeader(int(varInfo.StatusCode))
@@ -317,6 +325,7 @@ func (t *Titip) fetchOriginAndServe(
 			if fwdStatus == 0 {
 				fwdStatus = 500
 			}
+			t.metrics.RecordRequest(StatusStaleHit)
 			t.emitCacheStatus(w, "STALE", fmt.Sprintf("hit; stale; fwd=stale; fwd-status=%d; detail=stale-if-error", fwdStatus))
 			t.copyProtoHeaders(w, res.fallback.varInfo.ResponseHeaders)
 			w.WriteHeader(int(res.fallback.varInfo.StatusCode))
@@ -333,10 +342,13 @@ func (t *Titip) fetchOriginAndServe(
 	}
 
 	if isSoftPurgeRefresh {
+		t.metrics.RecordRequest(StatusMiss)
 		t.emitCacheStatus(w, "MISS", fmt.Sprintf("fwd=uri-miss; fwd-status=%d; stored; detail=soft-refreshed", res.statusCode))
 	} else if res.ttl > 0 {
+		t.metrics.RecordRequest(StatusMiss)
 		t.emitCacheStatus(w, "MISS", fmt.Sprintf("fwd=uri-miss; fwd-status=%d; stored; ttl=%d", res.statusCode, int(res.ttl.Seconds())))
 	} else {
+		t.metrics.RecordRequest(StatusBypass)
 		t.emitCacheStatus(w, "BYPASS", fmt.Sprintf("fwd=bypass; fwd-status=%d", res.statusCode))
 	}
 
@@ -394,7 +406,9 @@ func (t *Titip) revalidateOrigin(r *http.Request, next http.Handler, primaryKey 
 			CompressedBodySize: uint32(len(compBytes)),
 		}
 
-		_ = t.storage.SetVariant(bgCtx, primaryKey, newMeta, newVariant, compBytes, freshness.EffectiveTTL)
+		if err := t.storage.SetVariant(bgCtx, primaryKey, newMeta, newVariant, compBytes, freshness.EffectiveTTL); err == nil {
+			t.metrics.RecordRequest(StatusRevalidated)
+		}
 	}
 }
 

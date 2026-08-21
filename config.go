@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/indragunawan/titip/storage"
 )
 
@@ -23,6 +25,7 @@ const (
 type Config struct {
 	Storage                  storage.Storage
 	Logger                   *slog.Logger
+	Metrics                  prometheus.Registerer
 	CacheStatusMode          CacheStatusMode
 	IgnoreClientCacheControl bool
 	KeyConfig                KeyConfig
@@ -34,6 +37,13 @@ type Config struct {
 
 // Option configures Titip middleware options.
 type Option func(*Config)
+
+// WithMetrics configures the Prometheus metrics registerer.
+func WithMetrics(reg prometheus.Registerer) Option {
+	return func(c *Config) {
+		c.Metrics = reg
+	}
+}
 
 // WithStorageTimeout configures maximum timeout for storage operations (defaults to 1s).
 func WithStorageTimeout(d time.Duration) Option {
