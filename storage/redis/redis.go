@@ -164,6 +164,9 @@ func (s *RedisStorage) GetMeta(ctx context.Context, primaryKey string) (*pb.Cach
 
 // GetVariant retrieves a specific variant metadata and its compressed body payload in a single pipelined roundtrip.
 func (s *RedisStorage) GetVariant(ctx context.Context, primaryKey, variantKey string) (*pb.VariantInfo, []byte, error) {
+	if variantKey == "" {
+		variantKey = "default"
+	}
 	cmd1 := s.client.B().Hget().Key(s.metaKey(primaryKey)).Field(variantKey).Build()
 	cmd2 := s.client.B().Get().Key(s.bodyKey(primaryKey, variantKey)).Build()
 
@@ -208,6 +211,9 @@ return 0
 
 // SetVariant atomically saves the variant metadata, compressed body, tags, and updates the dynamic metadata TTL.
 func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *pb.CacheMetadata, variant *pb.VariantInfo, body []byte, ttl time.Duration) error {
+	if variant.VariantKey == "" {
+		variant.VariantKey = "default"
+	}
 	// Create lean index without copying the entire variants map into the _index field
 	leanMeta := &pb.CacheMetadata{
 		PrimaryKey:        meta.PrimaryKey,

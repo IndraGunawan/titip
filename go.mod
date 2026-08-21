@@ -11,10 +11,10 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/pquerna/cachecontrol v0.2.0
 	github.com/redis/rueidis v1.0.77
+	golang.org/x/sync v0.22.0
 )
 
 require (
 	github.com/yuin/gopher-lua v1.1.1 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
