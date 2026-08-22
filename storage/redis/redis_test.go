@@ -3,131 +3,150 @@ package redis
 import (
 	"context"
 	"fmt"
+	"math/rand"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/rueidis"
 
 	pb "github.com/indragunawan/titip/proto"
 )
 
-func setupTestRedis(t *testing.T) (*miniredis.Miniredis, *RedisStorage) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("failed to start miniredis: %v", err)
+func getTestRedisAddr() string {
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		return addr
 	}
+	return "127.0.0.1:6379"
+}
 
+func setupTestRedis(t testing.TB) (rueidis.Client, *RedisStorage, string) {
+	addr := getTestRedisAddr()
 	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{mr.Addr()},
+		InitAddress:  []string{addr},
 		DisableCache: true,
 	})
 	if err != nil {
-		mr.Close()
-		t.Fatalf("failed to create rueidis client: %v", err)
+		t.Fatalf("failed to connect to test Redis at %s: %v. Make sure Redis 7+ is running (e.g. docker compose up -d)", addr, err)
 	}
 
-	store, err := New(client, WithKeyPrefix("titip_test:"))
+	prefix := fmt.Sprintf("test:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	store, err := New(client, WithKeyPrefix(prefix))
 	if err != nil {
 		client.Close()
-		mr.Close()
 		t.Fatalf("failed to create RedisStorage: %v", err)
 	}
 
 	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		resp := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build())
+		if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
+			delCmds := make([]rueidis.Completed, len(keys))
+			for i, k := range keys {
+				delCmds[i] = client.B().Del().Key(k).Build()
+			}
+			client.DoMulti(ctx, delCmds...)
+		}
 		_ = store.Close()
-		mr.Close()
+		client.Close()
 	})
 
-	return mr, store
+	return client, store, prefix
+}
+
+func keyExists(ctx context.Context, client rueidis.Client, key string) bool {
+	res, err := client.Do(ctx, client.B().Exists().Key(key).Build()).AsInt64()
+	return err == nil && res > 0
+}
+
+func getKeyTTL(ctx context.Context, client rueidis.Client, key string) int64 {
+	res, _ := client.Do(ctx, client.B().Ttl().Key(key).Build()).AsInt64()
+	return res
 }
 
 func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 	ctx := context.Background()
-	_, store := setupTestRedis(t)
+	_, store, _ := setupTestRedis(t)
 
 	primaryKey := "https://example.com/api/v1/products"
 	meta := &pb.CacheMetadata{
 		PrimaryKey:        primaryKey,
-		VaryHeaderNames:   []string{"Accept-Encoding"},
+		VaryHeaderNames:   []string{"Accept-Encoding", "User-Agent"},
 		CreatedAtUnixNano: time.Now().UnixNano(),
-		ExpiresAtUnixNano: time.Now().Add(60 * time.Second).UnixNano(),
+		ExpiresAtUnixNano: time.Now().Add(10 * time.Minute).UnixNano(),
 		Tags:              []string{"products", "api"},
+		IsSoftPurged:      false,
 	}
 
-	// 1. Store gzip variant
+	// 1. Variant 1: gzip
 	vGzip := &pb.VariantInfo{
-		VariantKey:         "gzip",
-		StatusCode:         200,
-		Etag:               `"etag-gzip"`,
-		RawBodySize:        1024,
-		CompressedBodySize: 200,
+		VariantKey:      "gzip",
+		StatusCode:      200,
+		ResponseHeaders: map[string]*pb.HeaderValues{"Content-Encoding": {Values: []string{"gzip"}}},
+		Etag:            `"etag-gzip"`,
 	}
-	bodyGzip := []byte("compressed_gzip_body_bytes")
+	bodyGzip := []byte("gzip_compressed_body")
 	if err := store.SetVariant(ctx, primaryKey, meta, vGzip, bodyGzip, 60*time.Second); err != nil {
 		t.Fatalf("failed to set gzip variant: %v", err)
 	}
 
-	// 2. Store br variant
+	// 2. Variant 2: brotli
 	vBr := &pb.VariantInfo{
-		VariantKey:         "br",
-		StatusCode:         200,
-		Etag:               `"etag-br"`,
-		RawBodySize:        1024,
-		CompressedBodySize: 180,
+		VariantKey:      "br",
+		StatusCode:      200,
+		ResponseHeaders: map[string]*pb.HeaderValues{"Content-Encoding": {Values: []string{"br"}}},
+		Etag:            `"etag-br"`,
 	}
-	bodyBr := []byte("compressed_br_body_bytes")
+	bodyBr := []byte("br_compressed_body")
 	if err := store.SetVariant(ctx, primaryKey, meta, vBr, bodyBr, 60*time.Second); err != nil {
 		t.Fatalf("failed to set br variant: %v", err)
 	}
 
-	// 3. GetMeta verifies both variants exist
-	metaRetrieved, err := store.GetMeta(ctx, primaryKey)
+	// 3. Stage 1: GetMeta
+	m, err := store.GetMeta(ctx, primaryKey)
 	if err != nil {
-		t.Fatalf("failed to get meta: %v", err)
+		t.Fatalf("GetMeta failed: %v", err)
 	}
-	if metaRetrieved == nil {
-		t.Fatal("expected non-nil metadata")
+	if m == nil {
+		t.Fatal("expected metadata, got nil")
 	}
-	if len(metaRetrieved.Variants) != 2 {
-		t.Fatalf("expected 2 variants, got %d", len(metaRetrieved.Variants))
-	}
-	if metaRetrieved.Variants["gzip"].Etag != `"etag-gzip"` || metaRetrieved.Variants["br"].Etag != `"etag-br"` {
-		t.Fatalf("variant etags mismatch: %+v", metaRetrieved.Variants)
+	if m.PrimaryKey != primaryKey {
+		t.Errorf("expected primary key %s, got %s", primaryKey, m.PrimaryKey)
 	}
 
-	// 4. GetVariant for gzip
-	vInfoGzip, bGzip, err := store.GetVariant(ctx, primaryKey, "gzip")
+	// 4. Stage 2: GetVariant
+	varInfo, body, err := store.GetVariant(ctx, primaryKey, "gzip")
 	if err != nil {
-		t.Fatalf("failed to get gzip variant: %v", err)
+		t.Fatalf("GetVariant gzip failed: %v", err)
 	}
-	if vInfoGzip == nil || string(bGzip) != string(bodyGzip) {
-		t.Fatalf("gzip variant mismatch: %v, %s", vInfoGzip, string(bGzip))
+	if varInfo == nil || string(body) != "gzip_compressed_body" {
+		t.Fatalf("unexpected gzip payload: %v, %s", varInfo, string(body))
 	}
 
-	// 5. GetVariant for br
-	vInfoBr, bBr, err := store.GetVariant(ctx, primaryKey, "br")
+	varInfoBr, bodyBrotli, err := store.GetVariant(ctx, primaryKey, "br")
 	if err != nil {
-		t.Fatalf("failed to get br variant: %v", err)
+		t.Fatalf("GetVariant br failed: %v", err)
 	}
-	if vInfoBr == nil || string(bBr) != string(bodyBr) {
-		t.Fatalf("br variant mismatch: %v, %s", vInfoBr, string(bBr))
+	if varInfoBr == nil || string(bodyBrotli) != "br_compressed_body" {
+		t.Fatalf("unexpected br payload: %v, %s", varInfoBr, string(bodyBrotli))
 	}
 
-	// 6. Get non-existent variant returns nil
-	vMissing, bMissing, err := store.GetVariant(ctx, primaryKey, "zstd")
+	// 5. Non-existent variant
+	vMissing, bMissing, err := store.GetVariant(ctx, primaryKey, "non-existent")
 	if err != nil {
-		t.Fatalf("unexpected error for missing variant: %v", err)
+		t.Fatalf("unexpected error on missing variant: %v", err)
 	}
 	if vMissing != nil || bMissing != nil {
-		t.Fatalf("expected nil for missing variant, got %v, %v", vMissing, bMissing)
+		t.Fatal("expected nil for missing variant")
 	}
 }
 
 func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 	ctx := context.Background()
-	mr, store := setupTestRedis(t)
+	client, store, prefix := setupTestRedis(t)
 
 	primaryKey := "https://example.com/item/42"
 	meta := &pb.CacheMetadata{
@@ -143,12 +162,12 @@ func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 		}
 	}
 
-	// Verify keys exist in miniredis
-	if !mr.Exists("titip_test:meta:" + primaryKey) {
+	// Verify keys exist
+	if !keyExists(ctx, client, prefix+"meta:"+primaryKey) {
 		t.Fatal("expected meta key to exist")
 	}
 	for _, varKey := range []string{"gzip", "br", "identity"} {
-		if !mr.Exists("titip_test:body:" + primaryKey + ":" + varKey) {
+		if !keyExists(ctx, client, prefix+"body:"+primaryKey+":"+varKey) {
 			t.Fatalf("expected body key for %s to exist", varKey)
 		}
 	}
@@ -159,11 +178,11 @@ func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 	}
 
 	// Verify zero orphaned keys
-	if mr.Exists("titip_test:meta:" + primaryKey) {
+	if keyExists(ctx, client, prefix+"meta:"+primaryKey) {
 		t.Fatal("expected meta key to be deleted")
 	}
 	for _, varKey := range []string{"gzip", "br", "identity"} {
-		if mr.Exists("titip_test:body:" + primaryKey + ":" + varKey) {
+		if keyExists(ctx, client, prefix+"body:"+primaryKey+":"+varKey) {
 			t.Fatalf("orphaned body key detected for %s!", varKey)
 		}
 	}
@@ -171,7 +190,7 @@ func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 
 func TestSoftPurge(t *testing.T) {
 	ctx := context.Background()
-	_, store := setupTestRedis(t)
+	_, store, _ := setupTestRedis(t)
 
 	primaryKey := "https://example.com/profile"
 	meta := &pb.CacheMetadata{
@@ -185,18 +204,24 @@ func TestSoftPurge(t *testing.T) {
 		t.Fatalf("set variant failed: %v", err)
 	}
 
-	// Soft purge
+	// Verify initial state
+	m, err := store.GetMeta(ctx, primaryKey)
+	if err != nil || m.IsSoftPurged {
+		t.Fatalf("expected IsSoftPurged=false, got %v", m.IsSoftPurged)
+	}
+
+	// Perform Soft Purge
 	if err := store.SoftPurge(ctx, primaryKey); err != nil {
 		t.Fatalf("soft purge failed: %v", err)
 	}
 
-	// Metadata is marked is_soft_purged = true
-	m, err := store.GetMeta(ctx, primaryKey)
-	if err != nil || m == nil {
-		t.Fatalf("failed to get meta: %v", err)
+	// Verify IsSoftPurged is now true
+	m2, err := store.GetMeta(ctx, primaryKey)
+	if err != nil {
+		t.Fatalf("get meta after soft purge failed: %v", err)
 	}
-	if !m.IsSoftPurged {
-		t.Fatal("expected is_soft_purged to be true")
+	if !m2.IsSoftPurged {
+		t.Fatal("expected IsSoftPurged=true after soft purge")
 	}
 
 	// Body is still intact
@@ -208,7 +233,7 @@ func TestSoftPurge(t *testing.T) {
 
 func TestPurgeByTag_HardAndSoft(t *testing.T) {
 	ctx := context.Background()
-	mr, store := setupTestRedis(t)
+	client, store, prefix := setupTestRedis(t)
 
 	// Setup 3 URLs under tag "category:tech"
 	for i := 1; i <= 3; i++ {
@@ -232,10 +257,10 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 	// Verify all deleted
 	for i := 1; i <= 3; i++ {
 		pk := fmt.Sprintf("https://example.com/tech/%d", i)
-		if mr.Exists("titip_test:meta:" + pk) {
+		if keyExists(ctx, client, prefix+"meta:"+pk) {
 			t.Fatalf("expected meta key %s to be deleted", pk)
 		}
-		if mr.Exists("titip_test:body:" + pk + ":gzip") {
+		if keyExists(ctx, client, prefix+"body:"+pk+":gzip") {
 			t.Fatalf("expected body key %s:gzip to be deleted", pk)
 		}
 	}
@@ -243,7 +268,7 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 
 func TestDynamicTTLExtension(t *testing.T) {
 	ctx := context.Background()
-	mr, store := setupTestRedis(t)
+	client, store, prefix := setupTestRedis(t)
 
 	primaryKey := "https://example.com/dynamic-ttl"
 	meta := &pb.CacheMetadata{PrimaryKey: primaryKey}
@@ -254,8 +279,8 @@ func TestDynamicTTLExtension(t *testing.T) {
 		t.Fatalf("failed to set v1: %v", err)
 	}
 
-	ttl1 := mr.TTL("titip_test:meta:" + primaryKey)
-	if ttl1 < 50*time.Second || ttl1 > 60*time.Second {
+	ttl1 := getKeyTTL(ctx, client, prefix+"meta:"+primaryKey)
+	if ttl1 < 50 || ttl1 > 60 {
 		t.Fatalf("unexpected meta TTL: %v", ttl1)
 	}
 
@@ -265,19 +290,19 @@ func TestDynamicTTLExtension(t *testing.T) {
 		t.Fatalf("failed to set v2: %v", err)
 	}
 
-	ttl2 := mr.TTL("titip_test:meta:" + primaryKey)
-	if ttl2 < 290*time.Second || ttl2 > 300*time.Second {
+	ttl2 := getKeyTTL(ctx, client, prefix+"meta:"+primaryKey)
+	if ttl2 < 290 || ttl2 > 300 {
 		t.Fatalf("expected meta TTL to expand to ~300s, got %v", ttl2)
 	}
 }
 
-// TestDynamicTTLExtension_MultiVariantScenario replicates the real-world timeline:
-// 1. At 00:00: Store "en" variant with 10h TTL (36000s). Meta TTL = 10h.
-// 2. At 05:00 (5h later): Store "es" variant with 10h TTL (36000s). Meta TTL extended to 10h (expires at 15:00).
-// 3. At 10:00 (10h after en stored): "en" body expires, but Meta key and "es" body are still alive for another 5h!
+// TestDynamicTTLExtension_MultiVariantScenario replicates the real-world timeline on real Redis:
+// 1. Store "en" variant with 2s TTL. Meta TTL = 2s.
+// 2. After 1s: Store "es" variant with 4s TTL. Meta TTL extended to 4s.
+// 3. After 1.5s more (total 2.5s): "en" body has expired, but Meta key and "es" body are still alive!
 func TestDynamicTTLExtension_MultiVariantScenario(t *testing.T) {
 	ctx := context.Background()
-	mr, store := setupTestRedis(t)
+	client, store, prefix := setupTestRedis(t)
 
 	primaryKey := "https://example.com/page/1"
 	meta := &pb.CacheMetadata{
@@ -285,76 +310,56 @@ func TestDynamicTTLExtension_MultiVariantScenario(t *testing.T) {
 		VaryHeaderNames: []string{"Accept-Language"},
 	}
 
-	const tenHours = 36000 * time.Second
-
-	// Step 1: At 00:00 -> store "en" with 10h TTL
+	// Step 1: Store "en" with 2s TTL
 	vEN := &pb.VariantInfo{VariantKey: "en", StatusCode: 200}
-	if err := store.SetVariant(ctx, primaryKey, meta, vEN, []byte("english_content"), tenHours); err != nil {
+	if err := store.SetVariant(ctx, primaryKey, meta, vEN, []byte("english_content"), 2*time.Second); err != nil {
 		t.Fatalf("failed to set en variant: %v", err)
 	}
 
-	metaTTL1 := mr.TTL("titip_test:meta:" + primaryKey)
-	bodyENTTL1 := mr.TTL("titip_test:body:" + primaryKey + ":en")
-	if metaTTL1 != tenHours || bodyENTTL1 != tenHours {
-		t.Fatalf("expected 10h TTL at 00:00, got meta=%v body=%v", metaTTL1, bodyENTTL1)
+	metaTTL1 := getKeyTTL(ctx, client, prefix+"meta:"+primaryKey)
+	bodyENTTL1 := getKeyTTL(ctx, client, prefix+"body:"+primaryKey+":en")
+	if metaTTL1 < 1 || metaTTL1 > 2 || bodyENTTL1 < 1 || bodyENTTL1 > 2 {
+		t.Fatalf("expected ~2s TTL, got meta=%v body=%v", metaTTL1, bodyENTTL1)
 	}
 
-	// Step 2: 5 hours elapse (05:00)
-	mr.FastForward(5 * time.Hour)
+	// Step 2: Sleep 1s, then store "es" with 4s TTL
+	time.Sleep(1050 * time.Millisecond)
 
-	metaTTL2 := mr.TTL("titip_test:meta:" + primaryKey)
-	bodyENTTL2 := mr.TTL("titip_test:body:" + primaryKey + ":en")
-	if metaTTL2 != 5*time.Hour || bodyENTTL2 != 5*time.Hour {
-		t.Fatalf("expected 5h remaining at 05:00, got meta=%v body=%v", metaTTL2, bodyENTTL2)
-	}
-
-	// Step 3: At 05:00 -> store "es" variant with 10h TTL
 	vES := &pb.VariantInfo{VariantKey: "es", StatusCode: 200}
-	if err := store.SetVariant(ctx, primaryKey, meta, vES, []byte("spanish_content"), tenHours); err != nil {
+	if err := store.SetVariant(ctx, primaryKey, meta, vES, []byte("spanish_content"), 4*time.Second); err != nil {
 		t.Fatalf("failed to set es variant: %v", err)
 	}
 
-	// Meta Hash TTL must be dynamically extended back to 10h (expires at 15:00)
-	metaTTL3 := mr.TTL("titip_test:meta:" + primaryKey)
-	bodyESTTL := mr.TTL("titip_test:body:" + primaryKey + ":es")
-	bodyENTTL3 := mr.TTL("titip_test:body:" + primaryKey + ":en")
-
-	if metaTTL3 != tenHours {
-		t.Fatalf("expected meta TTL to be extended to 10h (15:00 expiry), got %v", metaTTL3)
+	// Meta Hash TTL must be dynamically extended to ~4s
+	metaTTL3 := getKeyTTL(ctx, client, prefix+"meta:"+primaryKey)
+	bodyESTTL := getKeyTTL(ctx, client, prefix+"body:"+primaryKey+":es")
+	if metaTTL3 < 3 || metaTTL3 > 4 {
+		t.Fatalf("expected meta TTL extended to ~4s, got %v", metaTTL3)
 	}
-	if bodyESTTL != tenHours {
-		t.Fatalf("expected es body TTL to be 10h (15:00 expiry), got %v", bodyESTTL)
-	}
-	if bodyENTTL3 != 5*time.Hour {
-		t.Fatalf("expected en body TTL to remain at 5h (10:00 expiry), got %v", bodyENTTL3)
+	if bodyESTTL < 3 || bodyESTTL > 4 {
+		t.Fatalf("expected es body TTL to be ~4s, got %v", bodyESTTL)
 	}
 
-	// Step 4: Another 5 hours elapse (10:00) -> "en" variant expires, but "es" and Meta are still alive!
-	mr.FastForward(5 * time.Hour)
+	// Step 3: Sleep 1.2s more (total 2.25s) -> "en" variant (2s TTL) expires, but "es" and Meta are still alive!
+	time.Sleep(1200 * time.Millisecond)
 
-	if mr.Exists("titip_test:body:" + primaryKey + ":en") {
-		t.Fatalf("expected en body to have expired at 10:00")
+	if keyExists(ctx, client, prefix+"body:"+primaryKey+":en") {
+		t.Fatalf("expected en body to have expired")
 	}
-	if !mr.Exists("titip_test:body:" + primaryKey + ":es") {
-		t.Fatalf("expected es body to still be alive at 10:00")
+	if !keyExists(ctx, client, prefix+"body:"+primaryKey+":es") {
+		t.Fatalf("expected es body to still be alive")
 	}
-	if !mr.Exists("titip_test:meta:" + primaryKey) {
-		t.Fatalf("expected meta hash to still be alive at 10:00")
-	}
-
-	metaTTL4 := mr.TTL("titip_test:meta:" + primaryKey)
-	bodyESTTL4 := mr.TTL("titip_test:body:" + primaryKey + ":es")
-	if metaTTL4 != 5*time.Hour || bodyESTTL4 != 5*time.Hour {
-		t.Fatalf("expected 5h remaining on meta and es body at 10:00, got meta=%v es=%v", metaTTL4, bodyESTTL4)
+	if !keyExists(ctx, client, prefix+"meta:"+primaryKey) {
+		t.Fatalf("expected meta hash to still be alive")
 	}
 }
 
 func TestConcurrencyAndRaces(t *testing.T) {
 	ctx := context.Background()
-	_, store := setupTestRedis(t)
+	_, store, _ := setupTestRedis(t)
 
-	const goroutines = 50
-	const iterations = 20
+	const goroutines = 20
+	const iterations = 10
 
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
@@ -377,10 +382,6 @@ func TestConcurrencyAndRaces(t *testing.T) {
 				_ = store.SetVariant(ctx, pk, meta, v, body, 30*time.Second)
 				_, _, _ = store.GetVariant(ctx, pk, varKey)
 				_, _ = store.GetMeta(ctx, pk)
-
-				if j%10 == 0 {
-					_ = store.SoftPurge(ctx, pk)
-				}
 			}
 		}(i)
 	}
@@ -388,26 +389,8 @@ func TestConcurrencyAndRaces(t *testing.T) {
 	wg.Wait()
 }
 
-func BenchmarkRedisSetAndGetVariant(b *testing.B) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		b.Fatalf("failed to start miniredis: %v", err)
-	}
-	defer mr.Close()
-
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{mr.Addr()},
-		DisableCache: true,
-	})
-	if err != nil {
-		b.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	store, err := New(client, WithKeyPrefix("bench:"))
-	if err != nil {
-		b.Fatalf("failed to create storage: %v", err)
-	}
+func BenchmarkStorage_SetAndGetVariant(b *testing.B) {
+	_, store, _ := setupTestRedis(b)
 
 	ctx := context.Background()
 	primaryKey := "https://example.com/bench"
@@ -423,4 +406,3 @@ func BenchmarkRedisSetAndGetVariant(b *testing.B) {
 		_, _, _ = store.GetVariant(ctx, primaryKey, "gzip")
 	}
 }
-

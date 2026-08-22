@@ -87,7 +87,7 @@ func GeneratePrimaryKey(r *http.Request, cfg *KeyConfig) string {
 	defer PutBuffer(buf)
 
 	if cfg.IncludeProtocol {
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" || (r.URL != nil && r.URL.Scheme == "https") {
+		if r.TLS != nil || r.Header.Get(HeaderXForwardedProto) == "https" || (r.URL != nil && r.URL.Scheme == "https") {
 			buf.WriteString("https://")
 		} else {
 			buf.WriteString("http://")

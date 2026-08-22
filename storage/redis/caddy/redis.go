@@ -42,7 +42,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	repl := caddy.NewReplacer()
 	addr := repl.ReplaceKnown(r.Address, "")
 	if addr == "" {
-		addr = "localhost:6380"
+		addr = "127.0.0.1:6379"
 	}
 	prefix := repl.ReplaceKnown(r.KeyPrefix, "")
 	if prefix == "" {

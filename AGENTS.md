@@ -144,8 +144,7 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 - **Go Compiler**: Go `1.22+` (utilizes `context.WithoutCancel`, `net/http` enhanced routing).
 - **Go Multi-Module Workspace**: Managed via root `go.work`. All submodules (`adapter/*`, `storage/*`, `examples/*`) must be registered in `go.work` so cross-module imports resolve locally without manual `replace` directives.
 - **Protobuf Generation**: `protoc-gen-go` / `buf` targeting `google.golang.org/protobuf`.
-- **Unit Testing Redis Mock**: Use `github.com/alicebob/miniredis/v2` for self-contained, high-speed unit tests without external Redis dependencies.
-- **Integration Redis Testing**: Real Redis 7+ instance using `github.com/redis/rueidis`.
+- **Redis Testing Environment**: Real Redis 7+ instance using `github.com/redis/rueidis` (`docker compose up -d` with `redis:8-alpine` or `redis:7-alpine`). Employs native `EXPIRE ... GT` and atomic hash operations with isolated test key prefixes.
 
 ---
 

@@ -3,7 +3,6 @@ module github.com/indragunawan/titip/storage/redis/caddy
 go 1.26.1
 
 require (
-	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/caddyserver/caddy/v2 v2.9.1
 	github.com/indragunawan/titip v0.0.0
 	github.com/indragunawan/titip/storage/redis v0.0.0
@@ -31,7 +30,6 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
 	github.com/quic-go/quic-go v0.48.2 // indirect
-	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

@@ -1,16 +1,23 @@
 package caddy
 
 import (
+	"os"
 	"testing"
 
-	"github.com/alicebob/miniredis/v2"
 	caddymain "github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 )
 
+func getTestRedisAddr() string {
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:6379"
+}
+
 func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 	config := `redis {
-		address 127.0.0.1:6380
+		address 127.0.0.1:6379
 		key_prefix custom:
 		username testuser
 		password testpass
@@ -24,8 +31,8 @@ func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 
-	if r.Address != "127.0.0.1:6380" {
-		t.Errorf("expected address 127.0.0.1:6380, got %s", r.Address)
+	if r.Address != "127.0.0.1:6379" {
+		t.Errorf("expected address 127.0.0.1:6379, got %s", r.Address)
 	}
 	if r.KeyPrefix != "custom:" {
 		t.Errorf("expected key_prefix custom:, got %s", r.KeyPrefix)
@@ -45,14 +52,9 @@ func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 }
 
 func TestRedisStorage_ProvisionAndCleanup(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("failed to start miniredis: %v", err)
-	}
-	defer mr.Close()
-
+	addr := getTestRedisAddr()
 	r := &RedisStorage{
-		Address:   mr.Addr(),
+		Address:   addr,
 		KeyPrefix: "caddy_test:",
 	}
 

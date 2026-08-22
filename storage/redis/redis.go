@@ -151,14 +151,6 @@ func (s *RedisStorage) GetVariant(ctx context.Context, primaryKey, variantKey st
 	return varInfo, bodyBytes, nil
 }
 
-const dynamicExpireLua = `
-local curr = redis.call('TTL', KEYS[1])
-if curr < tonumber(ARGV[1]) then
-    return redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-return 0
-`
-
 // SetVariant atomically saves the variant metadata, compressed body, tags, and updates the dynamic metadata TTL.
 func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *pb.CacheMetadata, variant *pb.VariantInfo, body []byte, ttl time.Duration) error {
 	if variant.VariantKey == "" {
@@ -190,7 +182,7 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		ttlSeconds = 1
 	}
 
-	cmds := make([]rueidis.Completed, 0, 4+len(meta.Tags))
+	cmds := make([]rueidis.Completed, 0, 5+len(meta.Tags))
 
 	// 1. HSET metaKey _index <metaBytes> <variantKey> <varBytes>
 	hsetCmd := s.client.B().Hset().
@@ -209,14 +201,10 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		Build()
 	cmds = append(cmds, setBodyCmd)
 
-	// 3. Dynamic TTL: Extend metadata TTL if new TTL is greater via EVAL in single pipeline
-	evalCmd := s.client.B().Eval().
-		Script(dynamicExpireLua).
-		Numkeys(1).
-		Key(s.metaKey(primaryKey)).
-		Arg(fmt.Sprintf("%d", ttlSeconds)).
-		Build()
-	cmds = append(cmds, evalCmd)
+	// 3. Dynamic TTL: Set initial TTL if none exists (NX), or extend if new TTL is greater (GT)
+	expireNXCmd := s.client.B().Expire().Key(s.metaKey(primaryKey)).Seconds(ttlSeconds).Nx().Build()
+	expireGTCmd := s.client.B().Expire().Key(s.metaKey(primaryKey)).Seconds(ttlSeconds).Gt().Build()
+	cmds = append(cmds, expireNXCmd, expireGTCmd)
 
 	// 4. Index tags in Redis Sets
 	for _, tag := range meta.Tags {

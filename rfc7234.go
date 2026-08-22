@@ -97,7 +97,7 @@ func CalculateFreshness(
 
 	info := FreshnessInfo{}
 
-	ccHeader := respHeaders.Get("Cache-Control")
+	ccHeader := respHeaders.Get(HeaderCacheControl)
 	if ccHeader != "" {
 		if d, err := cacheobject.ParseResponseCacheControl(ccHeader); err == nil {
 			info.Directives = d
@@ -105,8 +105,8 @@ func CalculateFreshness(
 	}
 
 	// RFC-7234 §4.2.3 Age Calculations
-	dateVal, _ := ParseDate(respHeaders.Get("Date"))
-	ageVal := ParseAge(respHeaders.Get("Age"))
+	dateVal, _ := ParseDate(respHeaders.Get(HeaderDate))
+	ageVal := ParseAge(respHeaders.Get(HeaderAge))
 
 	// 1. apparent_age = max(0, response_time - date_value)
 	if !dateVal.IsZero() && respTime.After(dateVal) {
@@ -143,7 +143,7 @@ func CalculateFreshness(
 			info.FreshnessLifetime = time.Duration(info.Directives.SMaxAge) * time.Second
 		} else if info.Directives.MaxAge >= 0 {
 			info.FreshnessLifetime = time.Duration(info.Directives.MaxAge) * time.Second
-		} else if expHeader := respHeaders.Get("Expires"); expHeader != "" {
+		} else if expHeader := respHeaders.Get(HeaderExpires); expHeader != "" {
 			expDate, err := ParseDate(expHeader)
 			if err == nil && !expDate.IsZero() && !dateVal.IsZero() && expDate.After(dateVal) {
 				info.FreshnessLifetime = expDate.Sub(dateVal)
@@ -193,7 +193,7 @@ func IsResponseCacheable(
 	}
 
 	// Prohibit caching if Set-Cookie header is present (NEVER leak user sessions)
-	if respHeaders.Get("Set-Cookie") != "" {
+	if respHeaders.Get(HeaderSetCookie) != "" {
 		return false
 	}
 

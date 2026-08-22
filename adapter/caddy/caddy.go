@@ -39,14 +39,14 @@ type StorageModule interface {
 //
 //   api.example.com {
 //       titip {
-//           storage redis { address localhost:6380, key_prefix api: }
+//           storage redis { address localhost:6379, key_prefix api: }
 //       }
 //       reverse_proxy localhost:9000
 //   }
 //
 //   static.example.com {
 //       titip {
-//           storage redis { address localhost:6380, key_prefix static: }
+//           storage redis { address localhost:6379, key_prefix static: }
 //       }
 //       reverse_proxy localhost:9001
 //   }

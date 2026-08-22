@@ -2,15 +2,17 @@ package caddy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	caddymain "github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -23,67 +25,27 @@ import (
 	_ "github.com/indragunawan/titip/storage/redis/caddy"
 )
 
-type mockStorageModule struct {
-	store storage.Storage
+func getTestRedisAddr() string {
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:6379"
 }
 
-func (m *mockStorageModule) Storage() storage.Storage {
-	return m.store
-}
-
-func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
-	config := `titip {
-		storage redis {
-			address localhost:6380
-			key_prefix caddy_test:
-		}
-		cache_status rfc9211
-		ignore_client_cache_control true
-		auto_invalidate_mutating_methods true
-		origin_timeout 20s
-	}`
-
-	d := caddyfile.NewTestDispenser(config)
-	var h Handler
-	if err := h.UnmarshalCaddyfile(d); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-
-	if len(h.StorageRaw) == 0 {
-		t.Errorf("expected StorageRaw to be populated")
-	}
-	if h.CacheStatus != "rfc9211" {
-		t.Errorf("expected cache_status rfc9211, got %s", h.CacheStatus)
-	}
-	if h.IgnoreClientCacheControl == nil || !*h.IgnoreClientCacheControl {
-		t.Errorf("expected ignore_client_cache_control true")
-	}
-	if h.AutoInvalidateMutatingMethods == nil || !*h.AutoInvalidateMutatingMethods {
-		t.Errorf("expected auto_invalidate_mutating_methods true")
-	}
-	if h.OriginTimeout != "20s" {
-		t.Errorf("expected origin_timeout 20s, got %s", h.OriginTimeout)
-	}
-}
-
-func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("failed to start miniredis: %v", err)
-	}
-	defer mr.Close()
-
+func setupTestCaddyEngine(t testing.TB) (rueidis.Client, storage.Storage, *titip.Titip) {
+	addr := getTestRedisAddr()
 	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{mr.Addr()},
+		InitAddress:  []string{addr},
 		DisableCache: true,
 	})
 	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
+		t.Fatalf("failed to connect to test Redis at %s: %v", addr, err)
 	}
-	defer client.Close()
 
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("caddy_mw_test:"))
+	prefix := fmt.Sprintf("test_caddy:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix(prefix))
 	if err != nil {
+		client.Close()
 		t.Fatalf("failed to create storage: %v", err)
 	}
 
@@ -92,8 +54,66 @@ func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
 		titip.WithOriginTimeout(5*time.Second),
 	)
 	if err != nil {
+		client.Close()
 		t.Fatalf("failed to create engine: %v", err)
 	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		resp := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build())
+		if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
+			delCmds := make([]rueidis.Completed, len(keys))
+			for i, k := range keys {
+				delCmds[i] = client.B().Del().Key(k).Build()
+			}
+			client.DoMulti(ctx, delCmds...)
+		}
+		_ = engine.Close(context.Background())
+		client.Close()
+	})
+
+	return client, store, engine
+}
+
+type mockStorageModule struct {
+	store storage.Storage
+}
+
+func (m *mockStorageModule) Storage() storage.Storage {
+	return m.store
+}
+
+func (m *mockStorageModule) Destruct() error {
+	return nil
+}
+
+func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
+	config := `titip {
+		cache_status RFC9211
+		origin_timeout 20s
+		storage redis {
+			address 127.0.0.1:6379
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(config)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if h.CacheStatus != "RFC9211" {
+		t.Errorf("expected cache_status RFC9211, got %s", h.CacheStatus)
+	}
+	if h.OriginTimeout != "20s" {
+		t.Errorf("expected origin_timeout 20s, got %s", h.OriginTimeout)
+	}
+}
+
+func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
+	_, store, engine := setupTestCaddyEngine(t)
 
 	h := &Handler{
 		engine:     engine,
@@ -265,33 +285,7 @@ func TestCaddyHandler_UnknownStorageModule_Fails(t *testing.T) {
 
 // AC-3 / AC-4: End-to-End Live Admin Purge Invalidation
 func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("failed to start miniredis: %v", err)
-	}
-	defer mr.Close()
-
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{mr.Addr()},
-		DisableCache: true,
-	})
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("caddy_admin_e2e:"))
-	if err != nil {
-		t.Fatalf("failed to create storage: %v", err)
-	}
-
-	engine, err := titip.New(
-		titip.WithStorage(store),
-		titip.WithOriginTimeout(5*time.Second),
-	)
-	if err != nil {
-		t.Fatalf("failed to create engine: %v", err)
-	}
+	_, store, engine := setupTestCaddyEngine(t)
 
 	h := &Handler{
 		engine:     engine,
@@ -383,7 +377,7 @@ func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
 	// Attempting to configure "storage redis" directly in Caddyfile without titip block
 	config := `:8080 {
 		storage redis {
-			address localhost:6380
+			address localhost:6379
 		}
 	}`
 

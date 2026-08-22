@@ -11,7 +11,7 @@ Demonstrates native Caddy HTTP reverse proxy caching with dynamic Redis storage 
 # In the root repository directory
 docker compose up -d
 ```
-*(Starts `redis:8-alpine` bound to `localhost:6380`)*
+*(Starts `redis:8-alpine` bound to `localhost:6379`)*
 
 ### Step 2: Start the Mock Upstream Origin
 ```bash

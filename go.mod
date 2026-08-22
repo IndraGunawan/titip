@@ -3,7 +3,6 @@ module github.com/indragunawan/titip
 go 1.26.1
 
 require (
-	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/indragunawan/titip/storage/redis v0.0.0
 	github.com/pierrec/lz4/v4 v4.1.29
 	github.com/pquerna/cachecontrol v0.2.0
@@ -20,7 +19,6 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
-	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
 

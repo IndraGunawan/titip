@@ -6,7 +6,7 @@
 :8080 {
     titip {
         storage redis {
-            address localhost:6380
+            address localhost:6379
             key_prefix caddy_demo:
         }
         cache_status rfc9211

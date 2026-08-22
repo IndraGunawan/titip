@@ -4,15 +4,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/rueidis"
 
@@ -20,47 +21,59 @@ import (
 	storageRedis "github.com/indragunawan/titip/storage/redis"
 )
 
-func setupTestTitip(t *testing.T, opts ...Option) (*miniredis.Miniredis, storage.Storage, *Titip) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("failed to start miniredis: %v", err)
+func getTestRedisAddr() string {
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		return addr
 	}
+	return "127.0.0.1:6379"
+}
 
+func setupTestTitip(t testing.TB, opts ...Option) (rueidis.Client, storage.Storage, *Titip) {
+	addr := getTestRedisAddr()
 	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{mr.Addr()},
+		InitAddress:  []string{addr},
 		DisableCache: true,
 	})
 	if err != nil {
-		mr.Close()
-		t.Fatalf("failed to create rueidis client: %v", err)
+		t.Fatalf("failed to connect to test Redis at %s: %v", addr, err)
 	}
 
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("titip_mw_test:"))
+	prefix := fmt.Sprintf("test_mw:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix(prefix))
 	if err != nil {
 		client.Close()
-		mr.Close()
 		t.Fatalf("failed to create RedisStorage: %v", err)
 	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		resp := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build())
+		if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
+			delCmds := make([]rueidis.Completed, len(keys))
+			for i, k := range keys {
+				delCmds[i] = client.B().Del().Key(k).Build()
+			}
+			client.DoMulti(ctx, delCmds...)
+		}
+		_ = store.Close()
+		client.Close()
+	})
 
 	defaultOpts := []Option{
 		WithStorage(store),
 		WithOriginTimeout(5 * time.Second),
+		WithStorageTimeout(2 * time.Second),
 	}
 	defaultOpts = append(defaultOpts, opts...)
 
 	mw, err := New(defaultOpts...)
 	if err != nil {
-		_ = store.Close()
-		mr.Close()
-		t.Fatalf("failed to create Titip: %v", err)
+		t.Fatalf("failed to create Titip middleware: %v", err)
 	}
 
-	t.Cleanup(func() {
-		_ = mw.Close(context.Background())
-		mr.Close()
-	})
-
-	return mr, store, mw
+	return client, store, mw
 }
 
 // AC-1: Singleflight Stampede & Initiator Cancellation Resilience on Stale Revalidations
@@ -459,35 +472,11 @@ func TestGracefulShutdown(t *testing.T) {
 }
 
 func BenchmarkCacheHit(b *testing.B) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		b.Fatalf("failed to start miniredis: %v", err)
-	}
-	defer mr.Close()
-
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{mr.Addr()},
-		DisableCache: true,
-	})
-	if err != nil {
-		b.Fatalf("failed to create rueidis client: %v", err)
-	}
-	defer client.Close()
-
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("bench_hit:"))
-	if err != nil {
-		b.Fatalf("failed to create storage: %v", err)
-	}
-
-	mw, err := New(WithStorage(store))
-	if err != nil {
-		b.Fatalf("failed to create titip: %v", err)
-	}
-	defer func() { _ = mw.Close(context.Background()) }()
+	_, _, mw := setupTestTitip(b)
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set(HeaderContentType, "application/json")
+		w.Header().Set(HeaderCacheControl, "public, max-age=300")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
@@ -510,34 +499,10 @@ func BenchmarkCacheHit(b *testing.B) {
 }
 
 func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		b.Fatalf("failed to start miniredis: %v", err)
-	}
-	defer mr.Close()
-
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{mr.Addr()},
-		DisableCache: true,
-	})
-	if err != nil {
-		b.Fatalf("failed to create rueidis client: %v", err)
-	}
-	defer client.Close()
-
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("bench_par:"))
-	if err != nil {
-		b.Fatalf("failed to create storage: %v", err)
-	}
-
-	mw, err := New(WithStorage(store))
-	if err != nil {
-		b.Fatalf("failed to create titip: %v", err)
-	}
-	defer func() { _ = mw.Close(context.Background()) }()
+	_, _, mw := setupTestTitip(b)
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set(HeaderCacheControl, "public, max-age=300")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"data":"parallel"}`))
 	})

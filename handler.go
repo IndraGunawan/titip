@@ -41,21 +41,21 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 	}()
 
 	// A. WebSocket Handshake Bypass
-	if strings.EqualFold(ctx.r.Header.Get("Upgrade"), "websocket") {
+	if strings.EqualFold(ctx.r.Header.Get(HeaderUpgrade), UpgradeWebSocket) {
 		t.metrics.RecordRequest(StatusBypass)
 		t.emitCacheStatus(ctx.w, "BYPASS", "fwd=bypass; detail=websocket-upgrade")
 		return stateBypassOrigin
 	}
 
 	// B. Server-Sent Events (SSE) Bypass
-	if strings.Contains(strings.ToLower(ctx.r.Header.Get("Accept")), "text/event-stream") {
+	if strings.Contains(strings.ToLower(ctx.r.Header.Get(HeaderAccept)), ContentTypeEventStream) {
 		t.metrics.RecordRequest(StatusBypass)
 		t.emitCacheStatus(ctx.w, "BYPASS", "fwd=bypass; detail=sse-stream")
 		return stateBypassOrigin
 	}
 
 	// C. Range Byte Request Bypass
-	if ctx.r.Header.Get("Range") != "" {
+	if ctx.r.Header.Get(HeaderRange) != "" {
 		t.metrics.RecordRequest(StatusBypass)
 		t.emitCacheStatus(ctx.w, "BYPASS", "fwd=bypass; detail=range-request")
 		return stateBypassOrigin
@@ -77,7 +77,7 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 
 	// F. Client Cache-Control: no-store
 	if !t.cfg.IgnoreClientCacheControl {
-		if cc := ctx.r.Header.Get("Cache-Control"); strings.Contains(cc, "no-store") {
+		if cc := ctx.r.Header.Get(HeaderCacheControl); strings.Contains(cc, "no-store") {
 			t.metrics.RecordRequest(StatusBypass)
 			t.emitCacheStatus(ctx.w, "BYPASS", "fwd=bypass")
 			return stateBypassOrigin
@@ -91,7 +91,7 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 	ctx.primaryKey = GeneratePrimaryKey(ctx.r, &t.cfg.KeyConfig)
 
-	storeCtx, storeCancel := context.WithTimeout(ctx.r.Context(), t.cfg.StorageTimeout)
+	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.StorageTimeout)
 	meta, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)
 	storeCancel()
 
@@ -181,7 +181,7 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 		return nil
 	}
 
-	varCtx, varCancel := context.WithTimeout(ctx.r.Context(), t.cfg.StorageTimeout)
+	varCtx, varCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.StorageTimeout)
 	varInfo, compBody, err := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 	varCancel()
 
@@ -213,7 +213,7 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	if currentAge < 0 {
 		currentAge = 0
 	}
-	ctx.w.Header().Set("Age", fmt.Sprintf("%d", currentAge))
+	ctx.w.Header().Set(HeaderAge, fmt.Sprintf("%d", currentAge))
 	t.metrics.RecordRequest(StatusHit)
 	t.emitCacheStatus(ctx.w, "HIT", fmt.Sprintf("hit; ttl=%d", t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)))
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
@@ -224,7 +224,7 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 
 // 7. stateServeSWR: Serves stale cached variant and triggers background revalidation
 func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
-	varCtx, varCancel := context.WithTimeout(ctx.r.Context(), t.cfg.StorageTimeout)
+	varCtx, varCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.StorageTimeout)
 	varInfo, compBody, err := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 	varCancel()
 
@@ -298,7 +298,7 @@ func stateFetchOriginCold(t *Titip, ctx *requestContext) stateFn {
 	freshness := CalculateFreshness(rec.Code, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
 
 	// Stream / SSE Response Detection
-	if strings.Contains(strings.ToLower(headersClone.Get("Content-Type")), "text/event-stream") {
+	if strings.Contains(strings.ToLower(headersClone.Get(HeaderContentType)), ContentTypeEventStream) {
 		t.metrics.RecordRequest(StatusBypass)
 		t.emitCacheStatus(ctx.w, "BYPASS", "fwd=bypass; detail=sse-response")
 		for k, vv := range headersClone {
@@ -350,7 +350,7 @@ func stateFetchOriginStale(t *Titip, ctx *requestContext) stateFn {
 	var staleCompBody []byte
 	if ctx.varInfo != nil {
 		staleVar = ctx.varInfo
-		varCtx, varCancel := context.WithTimeout(ctx.r.Context(), t.cfg.StorageTimeout)
+		varCtx, varCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.StorageTimeout)
 		_, staleCompBody, _ = t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 		varCancel()
 	}
@@ -367,10 +367,10 @@ func stateFetchOriginStale(t *Titip, ctx *requestContext) stateFn {
 		revalReq := ctx.r.Clone(originCtx)
 		if staleVar != nil {
 			if staleVar.Etag != "" {
-				revalReq.Header.Set("If-None-Match", staleVar.Etag)
+				revalReq.Header.Set(HeaderIfNoneMatch, staleVar.Etag)
 			}
 			if staleVar.LastModifiedUnixNano > 0 {
-				revalReq.Header.Set("If-Modified-Since", time.Unix(0, staleVar.LastModifiedUnixNano).UTC().Format(http.TimeFormat))
+				revalReq.Header.Set(HeaderIfModifiedSince, time.Unix(0, staleVar.LastModifiedUnixNano).UTC().Format(http.TimeFormat))
 			}
 		}
 
@@ -412,7 +412,12 @@ func stateFetchOriginStale(t *Titip, ctx *requestContext) stateFn {
 					ctx.meta.StaleUntilUnixNano = ctx.meta.ExpiresAtUnixNano + int64(freshness.StaleWhileRevalidateTTL)
 				}
 				ctx.meta.IsSoftPurged = false
-				_ = t.storage.SetVariant(originCtx, ctx.primaryKey, ctx.meta, staleVar, staleCompBody, freshness.EffectiveTTL)
+				staleWindow := max(freshness.StaleWhileRevalidateTTL, freshness.StaleIfErrorTTL)
+				storageTTL := freshness.EffectiveTTL + staleWindow
+				if storageTTL <= 0 {
+					storageTTL = freshness.EffectiveTTL
+				}
+				_ = t.storage.SetVariant(originCtx, ctx.primaryKey, ctx.meta, staleVar, staleCompBody, storageTTL)
 			}
 
 			return &fetchResult{
@@ -578,15 +583,21 @@ func (t *Titip) saveVariantToStorage(
 		VariantKey:         varKey,
 		StatusCode:         int32(statusCode),
 		ResponseHeaders:    protoHeadersFromHTTP(headers),
-		Etag:               headers.Get("ETag"),
+		Etag:               headers.Get(HeaderETag),
 		RawBodySize:        uint32(len(bodyBytes)),
 		CompressedBodySize: uint32(len(compBytes)),
 	}
-	if lm, err := ParseDate(headers.Get("Last-Modified")); err == nil && !lm.IsZero() {
+	if lm, err := ParseDate(headers.Get(HeaderLastModified)); err == nil && !lm.IsZero() {
 		newVariant.LastModifiedUnixNano = lm.UnixNano()
 	}
 
-	if storeErr := t.storage.SetVariant(ctx, primaryKey, newMeta, newVariant, compBytes, freshness.EffectiveTTL); storeErr != nil {
+	staleWindow := max(freshness.StaleWhileRevalidateTTL, freshness.StaleIfErrorTTL)
+	storageTTL := freshness.EffectiveTTL + staleWindow
+	if storageTTL <= 0 {
+		storageTTL = freshness.EffectiveTTL
+	}
+
+	if storeErr := t.storage.SetVariant(ctx, primaryKey, newMeta, newVariant, compBytes, storageTTL); storeErr != nil {
 		if t.logger.Enabled(ctx, slog.LevelError) {
 			t.logger.ErrorContext(ctx, "titip: storage error saving variant", "error", storeErr, "key", primaryKey)
 		}
@@ -643,7 +654,7 @@ func isMutatingMethod(method string) bool {
 
 func (t *Titip) checkConditionalMatch(r *http.Request, varInfo *pb.VariantInfo) bool {
 	// If-None-Match (Weak ETag comparison per RFC-7232 §2.3.2)
-	if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch != "" {
+	if ifNoneMatch := r.Header.Get(HeaderIfNoneMatch); ifNoneMatch != "" {
 		if ifNoneMatch == "*" && varInfo != nil {
 			return true
 		}
@@ -658,7 +669,7 @@ func (t *Titip) checkConditionalMatch(r *http.Request, varInfo *pb.VariantInfo) 
 	}
 
 	// If-Modified-Since
-	if ifModSince := r.Header.Get("If-Modified-Since"); ifModSince != "" && varInfo != nil && varInfo.LastModifiedUnixNano > 0 {
+	if ifModSince := r.Header.Get(HeaderIfModifiedSince); ifModSince != "" && varInfo != nil && varInfo.LastModifiedUnixNano > 0 {
 		clientTime, err := ParseDate(ifModSince)
 		if err == nil {
 			cachedTime := time.Unix(0, varInfo.LastModifiedUnixNano)
@@ -680,9 +691,9 @@ func (t *Titip) calcTTL(expiresAtUnixNano, nowNano int64) int64 {
 func (t *Titip) emitCacheStatus(w http.ResponseWriter, simpleToken, rfc9211Detail string) {
 	switch t.cfg.CacheStatusMode {
 	case CacheStatusRFC9211:
-		w.Header().Set("Cache-Status", fmt.Sprintf("titip; %s", rfc9211Detail))
+		w.Header().Set(HeaderCacheStatus, fmt.Sprintf("titip; %s", rfc9211Detail))
 	case CacheStatusSimpleToken:
-		w.Header().Set("Cache-Status", simpleToken)
+		w.Header().Set(HeaderCacheStatus, simpleToken)
 	case CacheStatusNone:
 		// Do not emit Cache-Status header
 	}
@@ -697,10 +708,10 @@ func (t *Titip) extractTags(headers http.Header) []string {
 			}
 		}
 	} else {
-		if val := headers.Get("Cache-Tag"); val != "" {
+		if val := headers.Get(HeaderCacheTag); val != "" {
 			tags = append(tags, splitAndTrimTags(val)...)
 		}
-		if val := headers.Get("Surrogate-Key"); val != "" {
+		if val := headers.Get(HeaderSurrogateKey); val != "" {
 			tags = append(tags, splitAndTrimTags(val)...)
 		}
 	}
@@ -722,7 +733,7 @@ func splitAndTrimTags(s string) []string {
 }
 
 func (t *Titip) extractVaryHeaderNames(headers http.Header) []string {
-	varyHeader := headers.Get("Vary")
+	varyHeader := headers.Get(HeaderVary)
 	if varyHeader == "" {
 		return nil
 	}
