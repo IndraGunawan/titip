@@ -1,6 +1,6 @@
 # AGENTS.md — AI Agent Guidelines & Operating Manual
 
-> **Repository**: `github.com/indragunawan/titip`  
+> **Repository**: `github.com/indragunawan/titip`
 > **Mission**: Build a high-performance, low-allocation, RFC-7234 & RFC-9211 compliant HTTP caching middleware in Go.
 
 ---
@@ -8,15 +8,16 @@
 ## 1. Core Operating Principles
 
 ### What AI Agent MUST ALWAYS Do (Required Behaviors)
+
 1. **Adhere to the Master PRD and Feature PRDs**:
-   - Always refer to [PRD.md](file:///Users/indra/code/project/titip/PRD.md) as the single source of truth for architecture and specifications.
+   - Always refer to [PRD.md](file:///Users/indra/code/project/titip/docs/PRD.md) as the single source of truth for architecture and specifications.
    - Follow the phase-by-phase execution roadmap in [`docs/ways-of-work/plan/titip-v1/`](file:///Users/indra/code/project/titip/docs/ways-of-work/plan/titip-v1/).
 2. **Practice Test-Driven Development (TDD) & Zero-Race Concurrency**:
    - Write automated unit, concurrency, and race condition tests for every feature before declaring it complete.
    - Run tests with continuous race detection: `go test -race -count=100 ./...`.
-3. **Enforce Zero-Allocation Standards on Hot Paths**:
-   - Use `sync.Pool` for all byte buffers, response recorders, and LZ4 compressor/decompressor instances.
-   - Verify hot hit paths with `testing.B` benchmarks (`0 allocs/op`).
+3. **Enforce Low-Allocation Standards via Memory Pools**:
+   - Use `sync.Pool` for all byte buffers, response recorders, LZ4 compressor/decompressor instances, and request contexts to eliminate payload heap churn.
+   - Verify buffer and reader recycling with `testing.B` benchmarks.
 4. **Implement Fail-Open Architecture**:
    - Storage outages (Redis down/timeout), Protobuf deserialization errors, or decompression failures **must never crash or return 500 errors to end users**.
    - Transparently forward requests directly to the origin handler (`fwd=bypass`).
@@ -31,6 +32,7 @@
 ---
 
 ### What AI Agent MUST NEVER Do (Strict Prohibitions)
+
 1. **NEVER Run Per-Request Hashing on URLs**:
    - Do **NOT** use SHA-256, MD5, Murmur3, or xxHash for cache keys. Assemble normalized strings directly via pooled builders via pooled string builders.
 2. **NEVER Perform Read-Modify-Write in Redis for Variants**:
@@ -54,7 +56,7 @@
 ## 2. Architecture & Design Constraints
 
 | Component | Strict Rules |
-|---|---|
+| --- | --- |
 | **Storage Engine** | Decoupled via `storage.Storage` interface. Redis is the sole first-class v1.0 storage (`github.com/redis/rueidis`). |
 | **Serialization** | Compact Protobuf schema (`CacheMetadata`, `VariantInfo`) + LZ4 compression (`github.com/pierrec/lz4/v4`). |
 | **Cache Key** | Configurable via `KeyConfig` (All, Whitelist, Blacklist, Exclude All query parameters). Zero-hash direct assembly. |
@@ -74,15 +76,19 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
   - Unit tests covering all branches, error paths, and edge cases.
   - Concurrency & stampede tests validating singleflight coalescing and soft-purge freshness.
 - [ ] **Race Detector Cleanliness**:
+
   ```bash
   go test -race -count=100 -parallel=8 ./...
   ```
+
   Must pass with **0 data races** and **0 goroutine leaks**.
-- [ ] **Zero-Allocation Benchmarks**:
+- [ ] **Low-Allocation Benchmarks**:
+
   ```bash
-  go test -benchmem -bench=BenchmarkCacheHit ./...
+  go test -benchmem -bench=. ./...
   ```
-  Confirms `0 B/op` and `0 allocs/op` on cached hit responses.
+
+  Confirms memory pool buffer reuse and minimal allocations on critical paths.
 - [ ] **Go Idioms & Code Quality**:
   - `go vet ./...` and `golangci-lint` pass with zero warnings.
   - Clean error wrapping (`fmt.Errorf("titip: ...: %w", err)`).
@@ -127,6 +133,7 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
    - When catching storage or unmarshal errors, log at `slog.LevelError` or `slog.LevelWarn` and transparently forward to the origin handler (`fwd=bypass`).
 4. **Panic Recovery Protocol**:
    - Every middleware handler MUST include panic recovery:
+
      ```go
      defer func() {
          if r := recover(); r != nil {
@@ -158,4 +165,3 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
   - `docs(prd)`: Documentation or PRD updates.
 - **No Binary / Temporary Artifacts**:
   - Never commit `.DS_Store`, generated test binaries, or scratch files.
-

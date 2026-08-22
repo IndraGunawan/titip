@@ -260,6 +260,27 @@ func TestFailOpen_OnRedisOutage(t *testing.T) {
 	}
 }
 
+// TestPanicRecovery_ColdMiss_NoCrash tests that an upstream panic on a cold request returns 500 without crashing
+func TestPanicRecovery_ColdMiss_NoCrash(t *testing.T) {
+	_, _, mw := setupTestTitip(t)
+
+	panickingHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("critical origin failure")
+	})
+
+	handler := mw.Handler(panickingHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/cold-panic", nil)
+	rec := httptest.NewRecorder()
+
+	// Must not panic or crash process
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 Internal Server Error on unhandled origin panic, got %d", rec.Code)
+	}
+}
+
 // AC-4: Panic Recovery with Stale Fallback
 func TestPanicRecovery_WithStaleFallback(t *testing.T) {
 	_, _, mw := setupTestTitip(t)

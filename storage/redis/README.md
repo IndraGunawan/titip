@@ -22,11 +22,11 @@ graph TD
     Client[HTTP Request] --> S1[Stage 1: Lookup Metadata Hash]
     S1 -->|meta:PRIMARY_KEY| RedisMeta[Redis Hash: _index + Variants]
     RedisMeta --> VaryCheck{Vary Headers & Freshness Check}
-    
+
     VaryCheck -->|Conditional 304 / HEAD Hit| Serve304[Serve 304 / Headers with 0 Body I/O]
     VaryCheck -->|Fresh Variant Hit| S2[Stage 2: Fetch Body]
     VaryCheck -->|Variant Miss / Expired| Origin[Origin Server Revalidation]
-    
+
     S2 -->|body:PRIMARY_KEY:VARIANT_KEY| RedisBody[Redis String: LZ4 Compressed Body]
     RedisBody --> Decompress[Decompress LZ4 & Stream to Client]
 ```
@@ -140,45 +140,45 @@ Because multiple variants for the same URL can have different expiration times (
 package main
 
 import (
-	"context"
-	"log"
-	"time"
+ "context"
+ "log"
+ "time"
 
-	"github.com/redis/rueidis"
+ "github.com/redis/rueidis"
 
-	"github.com/indragunawan/titip"
-	storageRedis "github.com/indragunawan/titip/storage/redis"
+ "github.com/indragunawan/titip"
+ storageRedis "github.com/indragunawan/titip/storage/redis"
 )
 
 func main() {
-	// 1. Initialize Rueidis client
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{"127.0.0.1:6379"},
-		DisableCache: true,
-	})
-	if err != nil {
-		log.Fatalf("failed to connect to Redis: %v", err)
-	}
-	defer client.Close()
+ // 1. Initialize Rueidis client
+ client, err := rueidis.NewClient(rueidis.ClientOption{
+  InitAddress:  []string{"127.0.0.1:6379"},
+  DisableCache: true,
+ })
+ if err != nil {
+  log.Fatalf("failed to connect to Redis: %v", err)
+ }
+ defer client.Close()
 
-	// 2. Initialize Titip Redis Storage Engine
-	store, err := storageRedis.New(
-		client,
-		storageRedis.WithKeyPrefix("myapp:cache:"),
-	)
-	if err != nil {
-		log.Fatalf("failed to initialize storage: %v", err)
-	}
+ // 2. Initialize Titip Redis Storage Engine
+ store, err := storageRedis.New(
+  client,
+  storageRedis.WithKeyPrefix("myapp:cache:"),
+ )
+ if err != nil {
+  log.Fatalf("failed to initialize storage: %v", err)
+ }
 
-	// 3. Attach storage to Titip
-	engine, err := titip.New(
-		titip.WithStorage(store),
-		titip.WithOriginTimeout(5*time.Second),
-		titip.WithStorageTimeout(2*time.Second),
-	)
-	if err != nil {
-		log.Fatalf("failed to initialize titip: %v", err)
-	}
-	defer engine.Close(context.Background())
+ // 3. Attach storage to Titip
+ engine, err := titip.New(
+  titip.WithStorage(store),
+  titip.WithOriginTimeout(5*time.Second),
+  titip.WithStorageTimeout(2*time.Second),
+ )
+ if err != nil {
+  log.Fatalf("failed to initialize titip: %v", err)
+ }
+ defer engine.Close(context.Background())
 }
 ```

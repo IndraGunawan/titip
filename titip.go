@@ -134,7 +134,7 @@ func (t *Titip) Close(ctx context.Context) error {
 	case <-done:
 	case <-ctx.Done():
 		if t.logger.Enabled(ctx, slog.LevelWarn) {
-			t.logger.Warn("titip: close timeout waiting for background swr tasks", "error", ctx.Err())
+			t.logger.WarnContext(ctx, "titip: close timeout waiting for background swr tasks", slog.Any("error", ctx.Err()))
 		}
 	}
 

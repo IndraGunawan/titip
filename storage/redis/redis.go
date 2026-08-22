@@ -188,15 +188,15 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 	hsetCmd := s.client.B().Hset().
 		Key(s.metaKey(primaryKey)).
 		FieldValue().
-		FieldValue(indexField, string(indexBytes)).
-		FieldValue(variant.VariantKey, string(varBytes)).
+		FieldValue(indexField, rueidis.BinaryString(indexBytes)).
+		FieldValue(variant.VariantKey, rueidis.BinaryString(varBytes)).
 		Build()
 	cmds = append(cmds, hsetCmd)
 
 	// 2. SET bodyKey <body> EX <ttl>
 	setBodyCmd := s.client.B().Set().
 		Key(s.bodyKey(primaryKey, variant.VariantKey)).
-		Value(string(body)).
+		Value(rueidis.BinaryString(body)).
 		ExSeconds(ttlSeconds).
 		Build()
 	cmds = append(cmds, setBodyCmd)
@@ -301,7 +301,7 @@ func (s *RedisStorage) SoftPurge(ctx context.Context, primaryKey string) error {
 	hsetCmd := s.client.B().Hset().
 		Key(metaKey).
 		FieldValue().
-		FieldValue(indexField, string(updatedBytes)).
+		FieldValue(indexField, rueidis.BinaryString(updatedBytes)).
 		Build()
 	if err := s.client.Do(ctx, hsetCmd).Error(); err != nil {
 		return fmt.Errorf("titip: redis: soft purge save: %w", err)
