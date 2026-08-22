@@ -238,3 +238,71 @@ func DecompressLZ4(src []byte, dst *bytes.Buffer) error {
 	return nil
 }
 
+// --- Request Context Pool ---
+
+// requestContext holds request-scoped execution state across state transitions.
+// Recycled via sync.Pool to maintain zero allocations on hot hit paths.
+type requestContext struct {
+	w          http.ResponseWriter
+	r          *http.Request
+	next       http.Handler
+	primaryKey string
+	variantKey string
+	meta       *pb.CacheMetadata
+	varInfo    *pb.VariantInfo
+	freshness  FreshnessInfo
+	nowNano    int64
+}
+
+// Reset clears all fields before returning the struct to the pool.
+func (ctx *requestContext) Reset() {
+	ctx.w = nil
+	ctx.r = nil
+	ctx.next = nil
+	ctx.primaryKey = ""
+	ctx.variantKey = ""
+	ctx.meta = nil
+	ctx.varInfo = nil
+	ctx.freshness = FreshnessInfo{}
+	ctx.nowNano = 0
+}
+
+var requestContextPool = sync.Pool{
+	New: func() any {
+		return new(requestContext)
+	},
+}
+
+func acquireRequestContext(w http.ResponseWriter, r *http.Request, next http.Handler) *requestContext {
+	ctx := requestContextPool.Get().(*requestContext)
+	ctx.w = w
+	ctx.r = r
+	ctx.next = next
+	return ctx
+}
+
+func releaseRequestContext(ctx *requestContext) {
+	if ctx == nil {
+		return
+	}
+	ctx.Reset()
+	requestContextPool.Put(ctx)
+}
+
+// ETagMatches performs weak ETag comparison per RFC-7232 Section 2.3.2.
+func ETagMatches(clientETag, cachedETag string) bool {
+	if clientETag == "" || cachedETag == "" {
+		return false
+	}
+	cETag := clientETag
+	if len(cETag) >= 2 && (cETag[:2] == "W/" || cETag[:2] == "w/") {
+		cETag = cETag[2:]
+	}
+	sETag := cachedETag
+	if len(sETag) >= 2 && (sETag[:2] == "W/" || sETag[:2] == "w/") {
+		sETag = sETag[2:]
+	}
+	return cETag == sETag
+}
+
+

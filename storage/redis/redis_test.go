@@ -28,7 +28,7 @@ func setupTestRedis(t *testing.T) (*miniredis.Miniredis, *RedisStorage) {
 		t.Fatalf("failed to create rueidis client: %v", err)
 	}
 
-	store, err := New(WithClient(client), WithKeyPrefix("titip_test:"))
+	store, err := New(client, WithKeyPrefix("titip_test:"))
 	if err != nil {
 		client.Close()
 		mr.Close()
@@ -404,7 +404,7 @@ func BenchmarkRedisSetAndGetVariant(b *testing.B) {
 	}
 	defer client.Close()
 
-	store, err := New(WithClient(client), WithKeyPrefix("bench:"))
+	store, err := New(client, WithKeyPrefix("bench:"))
 	if err != nil {
 		b.Fatalf("failed to create storage: %v", err)
 	}

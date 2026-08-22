@@ -82,7 +82,7 @@ func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
 	}
 	defer client.Close()
 
-	store, err := storageRedis.New(storageRedis.WithClient(client), storageRedis.WithKeyPrefix("caddy_mw_test:"))
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("caddy_mw_test:"))
 	if err != nil {
 		t.Fatalf("failed to create storage: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
 	}
 	defer client.Close()
 
-	store, err := storageRedis.New(storageRedis.WithClient(client), storageRedis.WithKeyPrefix("caddy_admin_e2e:"))
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("caddy_admin_e2e:"))
 	if err != nil {
 		t.Fatalf("failed to create storage: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,7 +35,7 @@ func setupTestTitip(t *testing.T, opts ...Option) (*miniredis.Miniredis, storage
 		t.Fatalf("failed to create rueidis client: %v", err)
 	}
 
-	store, err := storageRedis.New(storageRedis.WithClient(client), storageRedis.WithKeyPrefix("titip_mw_test:"))
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("titip_mw_test:"))
 	if err != nil {
 		client.Close()
 		mr.Close()
@@ -62,7 +63,7 @@ func setupTestTitip(t *testing.T, opts ...Option) (*miniredis.Miniredis, storage
 	return mr, store, mw
 }
 
-// AC-1: Singleflight Stampede & Initiator Cancellation Resilience
+// AC-1: Singleflight Stampede & Initiator Cancellation Resilience on Stale Revalidations
 func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 	_, _, mw := setupTestTitip(t)
 
@@ -78,8 +79,21 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 	})
 
 	handler := mw.Handler(originHandler)
-	const concurrentRequests = 50
 
+	// 1. Prime cache entry
+	reqPrime := httptest.NewRequest(http.MethodGet, "http://example.com/api/stampede", nil)
+	recPrime := httptest.NewRecorder()
+	handler.ServeHTTP(recPrime, reqPrime)
+	if originExecutions.Load() != 1 {
+		t.Fatalf("expected 1 initial origin execution, got %d", originExecutions.Load())
+	}
+
+	// 2. Soft-purge entry to trigger synchronous singleflight revalidation
+	if err := mw.PurgeURL(context.Background(), "http://example.com/api/stampede", WithSoftPurge()); err != nil {
+		t.Fatalf("failed to soft purge: %v", err)
+	}
+
+	const concurrentRequests = 50
 	var wg sync.WaitGroup
 	wg.Add(concurrentRequests)
 
@@ -109,9 +123,9 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 
 	wg.Wait()
 
-	// Exactly 1 origin execution should have occurred
-	if originExecutions.Load() != 1 {
-		t.Fatalf("expected exactly 1 origin execution, got %d", originExecutions.Load())
+	// Exactly 2 origin executions should have occurred: 1 initial prime + 1 coalesced revalidation
+	if originExecutions.Load() != 2 {
+		t.Fatalf("expected exactly 2 origin executions, got %d", originExecutions.Load())
 	}
 
 	// All other requests received full 200 OK
@@ -127,7 +141,7 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 		}
 	}
 
-	// Request #51 gets immediate cache hit
+	// Request #51 gets immediate fresh cache hit
 	req51 := httptest.NewRequest(http.MethodGet, "http://example.com/api/stampede", nil)
 	rec51 := httptest.NewRecorder()
 	handler.ServeHTTP(rec51, req51)
@@ -138,7 +152,7 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 	if status := rec51.Header().Get("Cache-Status"); status == "" || !containsAny(status, "hit") {
 		t.Fatalf("expected Cache-Status hit on request 51, got %q", status)
 	}
-	if originExecutions.Load() != 1 {
+	if originExecutions.Load() != 2 {
 		t.Fatalf("origin executions increased on request 51: %d", originExecutions.Load())
 	}
 }
@@ -456,11 +470,11 @@ func BenchmarkCacheHit(b *testing.B) {
 		DisableCache: true,
 	})
 	if err != nil {
-		b.Fatalf("failed to create client: %v", err)
+		b.Fatalf("failed to create rueidis client: %v", err)
 	}
 	defer client.Close()
 
-	store, err := storageRedis.New(storageRedis.WithClient(client), storageRedis.WithKeyPrefix("bench_hit:"))
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("bench_hit:"))
 	if err != nil {
 		b.Fatalf("failed to create storage: %v", err)
 	}
@@ -507,11 +521,11 @@ func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
 		DisableCache: true,
 	})
 	if err != nil {
-		b.Fatalf("failed to create client: %v", err)
+		b.Fatalf("failed to create rueidis client: %v", err)
 	}
 	defer client.Close()
 
-	store, err := storageRedis.New(storageRedis.WithClient(client), storageRedis.WithKeyPrefix("bench_par:"))
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("bench_par:"))
 	if err != nil {
 		b.Fatalf("failed to create storage: %v", err)
 	}
@@ -780,6 +794,285 @@ func TestMultiVariant_VaryHeaderLifecycle(t *testing.T) {
 		t.Fatalf("expected 3 origin calls, got %d", originExecutions.Load())
 	}
 }
+
+// AC-3: Protocol & Stream Bypass Guards (WebSocket, SSE, Range)
+func TestBypassGuards_WebSocket_SSE_Range(t *testing.T) {
+	_, _, mw := setupTestTitip(t)
+
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			w.Header().Set("Upgrade", "websocket")
+			w.Header().Set("Connection", "Upgrade")
+			w.WriteHeader(http.StatusSwitchingProtocols)
+			return
+		}
+		if r.URL.Path == "/sse" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("data: event-1\n\n"))
+			return
+		}
+		if r.Header.Get("Range") != "" {
+			w.Header().Set("Content-Range", "bytes 0-10/100")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte("partial-data"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	handler := mw.Handler(originHandler)
+
+	// 1. WebSocket Upgrade Bypass
+	reqWS := httptest.NewRequest(http.MethodGet, "http://example.com/ws", nil)
+	reqWS.Header.Set("Upgrade", "websocket")
+	recWS := httptest.NewRecorder()
+	handler.ServeHTTP(recWS, reqWS)
+
+	if recWS.Code != http.StatusSwitchingProtocols {
+		t.Errorf("expected 101 Switching Protocols, got %d", recWS.Code)
+	}
+	if status := recWS.Header().Get("Cache-Status"); !containsAny(status, "detail=websocket-upgrade") {
+		t.Errorf("expected detail=websocket-upgrade, got %s", status)
+	}
+
+	// 2. SSE Accept Request Header Bypass
+	reqSSE := httptest.NewRequest(http.MethodGet, "http://example.com/events", nil)
+	reqSSE.Header.Set("Accept", "text/event-stream")
+	recSSE := httptest.NewRecorder()
+	handler.ServeHTTP(recSSE, reqSSE)
+
+	if status := recSSE.Header().Get("Cache-Status"); !containsAny(status, "detail=sse-stream") {
+		t.Errorf("expected detail=sse-stream, got %s", status)
+	}
+
+	// 3. SSE Content-Type Response Bypass
+	reqSSEResp := httptest.NewRequest(http.MethodGet, "http://example.com/sse", nil)
+	recSSEResp := httptest.NewRecorder()
+	handler.ServeHTTP(recSSEResp, reqSSEResp)
+
+	if status := recSSEResp.Header().Get("Cache-Status"); !containsAny(status, "detail=sse-response") {
+		t.Errorf("expected detail=sse-response, got %s", status)
+	}
+
+	// 4. Range Byte Request Bypass
+	reqRange := httptest.NewRequest(http.MethodGet, "http://example.com/video.mp4", nil)
+	reqRange.Header.Set("Range", "bytes=0-100")
+	recRange := httptest.NewRecorder()
+	handler.ServeHTTP(recRange, reqRange)
+
+	if recRange.Code != http.StatusPartialContent {
+		t.Errorf("expected 206 Partial Content, got %d", recRange.Code)
+	}
+	if status := recRange.Header().Get("Cache-Status"); !containsAny(status, "detail=range-request") {
+		t.Errorf("expected detail=range-request, got %s", status)
+	}
+}
+
+// AC-2: Cold Miss Session Leak Protection (Concurrent Safety & Zero Session Broadcast)
+func TestColdMiss_ConcurrentSafety_ZeroSessionLeak(t *testing.T) {
+	_, _, mw := setupTestTitip(t)
+
+	var originExecutions atomic.Int32
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := originExecutions.Add(1)
+		time.Sleep(10 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "private, no-cache")
+		w.Header().Set("Set-Cookie", fmt.Sprintf("session_id=user-%d; Path=/; HttpOnly", reqID))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"user_id":%d}`, reqID)))
+	})
+
+	handler := mw.Handler(originHandler)
+	const concurrentUsers = 30
+
+	var wg sync.WaitGroup
+	wg.Add(concurrentUsers)
+	userCookies := make([]string, concurrentUsers)
+
+	for i := 0; i < concurrentUsers; i++ {
+		idx := i
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/api/login", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			cookie := rec.Header().Get("Set-Cookie")
+			userCookies[idx] = cookie
+		}()
+	}
+
+	wg.Wait()
+
+	// All 30 cold requests must have reached origin independently
+	if originExecutions.Load() != concurrentUsers {
+		t.Fatalf("expected %d origin executions on cold miss, got %d", concurrentUsers, originExecutions.Load())
+	}
+
+	// Verify all cookies are unique and no session is shared across users
+	seenCookies := make(map[string]struct{})
+	for i, cookie := range userCookies {
+		if cookie == "" {
+			t.Fatalf("user %d received empty cookie", i)
+		}
+		if _, exists := seenCookies[cookie]; exists {
+			t.Fatalf("session cookie leak detected! Duplicate cookie %s received by user %d", cookie, i)
+		}
+		seenCookies[cookie] = struct{}{}
+	}
+}
+
+// AC-4: Downstream 304 Validation with Zero Redis Body I/O
+func TestDownstream304_ZeroBodyIO(t *testing.T) {
+	_, _, mw := setupTestTitip(t)
+
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("ETag", `"v1.0.0"`)
+		w.Header().Set("Last-Modified", "Wed, 21 Oct 2026 07:28:00 GMT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":"payload-version-1"}`))
+	})
+
+	handler := mw.Handler(originHandler)
+
+	// 1. Prime Cache
+	reqPrime := httptest.NewRequest(http.MethodGet, "http://example.com/api/item", nil)
+	recPrime := httptest.NewRecorder()
+	handler.ServeHTTP(recPrime, reqPrime)
+
+	if recPrime.Code != http.StatusOK {
+		t.Fatalf("prime request failed with code %d", recPrime.Code)
+	}
+
+	// 2. Client sends exact matching ETag -> 304 Not Modified
+	reqETag := httptest.NewRequest(http.MethodGet, "http://example.com/api/item", nil)
+	reqETag.Header.Set("If-None-Match", `"v1.0.0"`)
+	recETag := httptest.NewRecorder()
+	handler.ServeHTTP(recETag, reqETag)
+
+	if recETag.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified, got %d", recETag.Code)
+	}
+	if recETag.Body.Len() != 0 {
+		t.Fatalf("304 response must have 0 body length, got %d", recETag.Body.Len())
+	}
+	if recETag.Header().Get("ETag") != `"v1.0.0"` {
+		t.Errorf("expected ETag header in 304 response, got %s", recETag.Header().Get("ETag"))
+	}
+
+	// 3. Client sends weak ETag match -> 304 Not Modified
+	reqWeak := httptest.NewRequest(http.MethodGet, "http://example.com/api/item", nil)
+	reqWeak.Header.Set("If-None-Match", `W/"v1.0.0"`)
+	recWeak := httptest.NewRecorder()
+	handler.ServeHTTP(recWeak, reqWeak)
+
+	if recWeak.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified for weak ETag, got %d", recWeak.Code)
+	}
+
+	// 4. Client sends matching If-Modified-Since -> 304 Not Modified
+	reqIMS := httptest.NewRequest(http.MethodGet, "http://example.com/api/item", nil)
+	reqIMS.Header.Set("If-Modified-Since", "Wed, 21 Oct 2026 07:28:00 GMT")
+	recIMS := httptest.NewRecorder()
+	handler.ServeHTTP(recIMS, reqIMS)
+
+	if recIMS.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified for If-Modified-Since, got %d", recIMS.Code)
+	}
+}
+
+// AC-4: Upstream 304 Revalidation (TTL Refresh & Body Retention)
+func TestUpstream304_TTLRefresh(t *testing.T) {
+	_, _, mw := setupTestTitip(t)
+
+	var originExecutions atomic.Int32
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originExecutions.Add(1)
+		if r.Header.Get("If-None-Match") == `"v2.0.0"` {
+			// Origin validates cached ETag and returns 304
+			w.Header().Set("Cache-Control", "public, max-age=600")
+			w.Header().Set("ETag", `"v2.0.0"`)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=10")
+		w.Header().Set("ETag", `"v2.0.0"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":"upstream-payload"}`))
+	})
+
+	handler := mw.Handler(originHandler)
+
+	// 1. Prime Cache (Origin Call #1)
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/api/refresh", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if originExecutions.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originExecutions.Load())
+	}
+	if rec1.Body.String() != `{"data":"upstream-payload"}` {
+		t.Fatalf("unexpected body: %s", rec1.Body.String())
+	}
+
+	// 2. Soft-purge to trigger synchronous revalidation
+	if err := mw.PurgeURL(context.Background(), "http://example.com/api/refresh", WithSoftPurge()); err != nil {
+		t.Fatalf("failed to soft purge: %v", err)
+	}
+
+	// 3. Next request triggers revalidation -> origin returns 304 -> Titip refreshes TTL and serves cached body
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/api/refresh", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if originExecutions.Load() != 2 {
+		t.Fatalf("expected 2 origin calls (including revalidation), got %d", originExecutions.Load())
+	}
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after 304 revalidation, got %d", rec2.Code)
+	}
+	if rec2.Body.String() != `{"data":"upstream-payload"}` {
+		t.Fatalf("expected cached body retained after 304 revalidation, got %s", rec2.Body.String())
+	}
+	if status := rec2.Header().Get("Cache-Status"); !containsAny(status, "304-refreshed") {
+		t.Errorf("expected 304-refreshed status, got %s", status)
+	}
+
+	// 4. Subsequent request is a direct Cache Hit (0 origin calls)
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/api/refresh", nil)
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+
+	if originExecutions.Load() != 2 {
+		t.Fatalf("cache hit should not invoke origin: %d", originExecutions.Load())
+	}
+	if status := rec3.Header().Get("Cache-Status"); !containsAny(status, "hit") {
+		t.Errorf("expected hit status, got %s", status)
+	}
+}
+
+// BenchmarkRequestContextPool measures zero-allocation performance of requestContext
+func BenchmarkRequestContextPool(b *testing.B) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://example.com/bench", nil)
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		ctx := acquireRequestContext(w, r, next)
+		releaseRequestContext(ctx)
+	}
+}
+
 
 
 

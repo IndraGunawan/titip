@@ -66,7 +66,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	r.client = client
 
 	store, err := storageRedis.New(
-		storageRedis.WithClient(client),
+		client,
 		storageRedis.WithKeyPrefix(prefix),
 	)
 	if err != nil {

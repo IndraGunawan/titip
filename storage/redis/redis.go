@@ -19,10 +19,7 @@ const (
 
 // Config holds configuration options for the Redis storage engine.
 type Config struct {
-	Prefix       string
-	Client       rueidis.Client
-	ClientOption *rueidis.ClientOption
-	URL          string
+	Prefix string
 }
 
 // Option is a function to configure RedisStorage.
@@ -35,70 +32,23 @@ func WithKeyPrefix(prefix string) Option {
 	}
 }
 
-// WithClient configures an existing rueidis.Client instance.
-func WithClient(client rueidis.Client) Option {
-	return func(c *Config) {
-		c.Client = client
-	}
-}
-
-// WithClientOption configures rueidis.ClientOption.
-func WithClientOption(opt rueidis.ClientOption) Option {
-	return func(c *Config) {
-		c.ClientOption = &opt
-	}
-}
-
-// WithURL configures connection via Redis URL.
-func WithURL(rawURL string) Option {
-	return func(c *Config) {
-		c.URL = rawURL
-	}
-}
-
 // RedisStorage implements storage.Storage with atomic Redis Hashes and pipelined operations.
 type RedisStorage struct {
 	client rueidis.Client
 	prefix string
 }
 
-// New creates a new RedisStorage instance.
-func New(opts ...Option) (*RedisStorage, error) {
+// New creates a new RedisStorage instance backed by the provided rueidis.Client.
+func New(client rueidis.Client, opts ...Option) (*RedisStorage, error) {
+	if client == nil {
+		return nil, fmt.Errorf("titip: redis: client is required")
+	}
+
 	cfg := &Config{
 		Prefix: defaultPrefix,
 	}
 	for _, opt := range opts {
 		opt(cfg)
-	}
-
-	var client rueidis.Client
-	if cfg.Client != nil {
-		client = cfg.Client
-	} else if cfg.URL != "" {
-		opt, err := rueidis.ParseURL(cfg.URL)
-		if err != nil {
-			return nil, fmt.Errorf("titip: redis: parse url: %w", err)
-		}
-		c, err := rueidis.NewClient(opt)
-		if err != nil {
-			return nil, fmt.Errorf("titip: redis: create client: %w", err)
-		}
-		client = c
-	} else if cfg.ClientOption != nil {
-		c, err := rueidis.NewClient(*cfg.ClientOption)
-		if err != nil {
-			return nil, fmt.Errorf("titip: redis: create client: %w", err)
-		}
-		client = c
-	} else {
-		// Default local Redis
-		c, err := rueidis.NewClient(rueidis.ClientOption{
-			InitAddress: []string{"127.0.0.1:6379"},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("titip: redis: create default client: %w", err)
-		}
-		client = c
 	}
 
 	return &RedisStorage{

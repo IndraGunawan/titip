@@ -39,11 +39,14 @@
    - Responses lacking explicit cacheable `Cache-Control` directives (`max-age`, `s-maxage`, `public`) must **never** be cached.
 4. **NEVER Leak Sensitive Sessions (`Set-Cookie` / `private`)**:
    - Any origin response containing `Set-Cookie` or `Cache-Control: private` must bypass caching unconditionally.
-5. **NEVER Bleed Dependencies Across Subpackages**:
+5. **NEVER Use Singleflight on Cold Misses (Data Leak Protection)**:
+   - Do **NOT** coalesce concurrent requests on cold/unverified URLs with `singleflight`. Singleflight across concurrent cold requests can broadcast private headers (`Set-Cookie`) to unauthenticated callers.
+   - Restrict `singleflight` exclusively to revalidating known cacheable entries (stale-while-revalidate and expired refresh).
+6. **NEVER Bleed Dependencies Across Subpackages**:
    - Do **NOT** import `github.com/go-chi/chi/v5` into core `titip` or `storage/`.
    - Do **NOT** import `github.com/redis/rueidis` into core `titip` or `adapter/`.
    - Keep core `titip` dependency-free (except Protobuf and LZ4).
-6. **NEVER Leave Goroutine Leaks on Revalidation or Shutdown**:
+7. **NEVER Leave Goroutine Leaks on Revalidation or Shutdown**:
    - All asynchronous `stale-while-revalidate` goroutines must be tracked via `sync.WaitGroup` and awaited cleanly during `titip.Close(ctx)`.
 
 ---
