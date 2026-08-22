@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -34,7 +35,9 @@ const DefaultVariantKey = "default"
 func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	defer func() {
 		if p := recover(); p != nil {
-			t.logger.Error("titip: top-level handler panic recovered", "panic", p)
+			if t.logger.Enabled(r.Context(), slog.LevelError) {
+				t.logger.ErrorContext(r.Context(), "titip: top-level handler panic recovered", "panic", p)
+			}
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
 	}()
@@ -71,7 +74,9 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 	storeCancel()
 	if err != nil {
 		t.metrics.RecordRequest(StatusError)
-		t.logger.Error("titip: storage error fetching metadata, bypassing to origin", "error", err, "key", primaryKey)
+		if t.logger.Enabled(r.Context(), slog.LevelError) {
+			t.logger.ErrorContext(r.Context(), "titip: storage error fetching metadata, bypassing to origin", "error", err, "key", primaryKey)
+		}
 		t.emitCacheStatus(w, "BYPASS", "fwd=bypass; detail=storage-fallback")
 		next.ServeHTTP(w, r)
 		return
@@ -144,9 +149,20 @@ func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 		defer PutBuffer(dstBuf)
 
 		if err := DecompressLZ4(compBody, dstBuf); err != nil {
-			t.logger.Error("titip: decompression error, failing open to origin", "error", err)
+			if t.logger.Enabled(r.Context(), slog.LevelError) {
+				t.logger.ErrorContext(r.Context(), "titip: decompression error, failing open to origin", "error", err)
+			}
 			t.fetchOriginAndServe(w, r, next, primaryKey, meta, variantKey, false, nil)
 			return
+		}
+
+		if t.logger.Enabled(r.Context(), slog.LevelDebug) {
+			t.logger.DebugContext(r.Context(), "titip: payload decompressed",
+				slog.String("key", primaryKey),
+				slog.String("variant", variantKey),
+				slog.Int("raw_bytes", int(varInfo.RawBodySize)),
+				slog.Int("compressed_bytes", len(compBody)),
+			)
 		}
 
 		currentAge := (nowNano - meta.CreatedAtUnixNano) / int64(time.Second)
@@ -220,7 +236,9 @@ func (t *Titip) fetchOriginAndServe(
 			defer func() {
 				if p := recover(); p != nil {
 					panicked = true
-					t.logger.Error("titip: origin handler panic inside singleflight", "panic", p)
+					if t.logger.Enabled(originCtx, slog.LevelError) {
+						t.logger.ErrorContext(originCtx, "titip: origin handler panic inside singleflight", "panic", p)
+					}
 				}
 			}()
 			next.ServeHTTP(rec, r.WithContext(originCtx))
@@ -270,6 +288,22 @@ func (t *Titip) fetchOriginAndServe(
 				varKey = DefaultVariantKey
 			}
 
+			if t.logger.Enabled(r.Context(), slog.LevelDebug) {
+				rawLen := len(bodyBytes)
+				compLen := len(compBytes)
+				ratio := 0.0
+				if rawLen > 0 {
+					ratio = (1.0 - float64(compLen)/float64(rawLen)) * 100.0
+				}
+				t.logger.DebugContext(r.Context(), "titip: payload compressed",
+					slog.String("key", primaryKey),
+					slog.String("variant", varKey),
+					slog.Int("raw_bytes", rawLen),
+					slog.Int("compressed_bytes", compLen),
+					slog.String("savings_pct", fmt.Sprintf("%.2f%%", ratio)),
+				)
+			}
+
 			newMeta := &pb.CacheMetadata{
 				PrimaryKey:        primaryKey,
 				VaryHeaderNames:   varNames,
@@ -296,7 +330,9 @@ func (t *Titip) fetchOriginAndServe(
 
 			// Store in backend
 			if storeErr := t.storage.SetVariant(originCtx, primaryKey, newMeta, newVariant, compBytes, freshness.EffectiveTTL); storeErr != nil {
-				t.logger.Error("titip: storage error saving variant", "error", storeErr, "key", primaryKey)
+				if t.logger.Enabled(originCtx, slog.LevelError) {
+					t.logger.ErrorContext(originCtx, "titip: storage error saving variant", "error", storeErr, "key", primaryKey)
+				}
 			}
 		}
 
@@ -304,7 +340,9 @@ func (t *Titip) fetchOriginAndServe(
 	})
 
 	if err != nil {
-		t.logger.Error("titip: singleflight execution error", "error", err)
+		if t.logger.Enabled(r.Context(), slog.LevelError) {
+			t.logger.ErrorContext(r.Context(), "titip: singleflight execution error", "error", err)
+		}
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -361,7 +399,9 @@ func (t *Titip) fetchOriginAndServe(
 func (t *Titip) revalidateOrigin(r *http.Request, next http.Handler, primaryKey string, meta *pb.CacheMetadata, variantKey string) {
 	defer func() {
 		if p := recover(); p != nil {
-			t.logger.Error("titip: background revalidation panic", "panic", p)
+			if t.logger.Enabled(context.Background(), slog.LevelError) {
+				t.logger.ErrorContext(context.Background(), "titip: background revalidation panic", "panic", p)
+			}
 		}
 	}()
 

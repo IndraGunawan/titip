@@ -659,4 +659,127 @@ func containsAny(s string, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
 }
 
+// TestMultiVariant_VaryHeaderLifecycle verifies how variants are detected, evaluated, and stored
+func TestMultiVariant_VaryHeaderLifecycle(t *testing.T) {
+	_, _, mw := setupTestTitip(t)
+
+	var originExecutions atomic.Int32
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originExecutions.Add(1)
+		lang := r.Header.Get("Accept-Language")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Vary", "Accept-Language")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+
+		switch lang {
+		case "es-ES":
+			_, _ = w.Write([]byte(`{"msg":"hola"}`))
+		case "fr-FR":
+			_, _ = w.Write([]byte(`{"msg":"bonjour"}`))
+		default:
+			_, _ = w.Write([]byte(`{"msg":"hello"}`))
+		}
+	})
+
+	handler := mw.Handler(originHandler)
+	baseURL := "http://example.com/api/greeting"
+
+	// 1. First Request: English variant (Cold URL Miss -> call #1)
+	reqEN := httptest.NewRequest(http.MethodGet, baseURL, nil)
+	reqEN.Header.Set("Accept-Language", "en-US")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, reqEN)
+
+	if rec1.Body.String() != `{"msg":"hello"}` {
+		t.Fatalf("expected hello, got %s", rec1.Body.String())
+	}
+	if originExecutions.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originExecutions.Load())
+	}
+	if status := rec1.Header().Get("Cache-Status"); !containsAny(status, "fwd=uri-miss") {
+		t.Errorf("expected uri-miss, got %s", status)
+	}
+
+	// 2. Second Request: English variant (Cache Hit -> 0 origin calls)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, reqEN)
+
+	if rec2.Body.String() != `{"msg":"hello"}` {
+		t.Fatalf("expected cached hello, got %s", rec2.Body.String())
+	}
+	if originExecutions.Load() != 1 {
+		t.Fatalf("cache hit should not invoke origin: %d", originExecutions.Load())
+	}
+	if status := rec2.Header().Get("Cache-Status"); !containsAny(status, "hit") {
+		t.Errorf("expected hit, got %s", status)
+	}
+
+	// 3. Third Request: Spanish variant (URL exists in cache, but Variant is missing -> call #2)
+	reqES := httptest.NewRequest(http.MethodGet, baseURL, nil)
+	reqES.Header.Set("Accept-Language", "es-ES")
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, reqES)
+
+	if rec3.Body.String() != `{"msg":"hola"}` {
+		t.Fatalf("expected hola, got %s", rec3.Body.String())
+	}
+	if originExecutions.Load() != 2 {
+		t.Fatalf("expected 2 origin calls after new variant, got %d", originExecutions.Load())
+	}
+	if status := rec3.Header().Get("Cache-Status"); !containsAny(status, "fwd=uri-miss") {
+		t.Errorf("expected variant miss fwd=uri-miss, got %s", status)
+	}
+
+	// 4. Fourth Request: Spanish variant (Cache Hit for Spanish -> 0 origin calls)
+	rec4 := httptest.NewRecorder()
+	handler.ServeHTTP(rec4, reqES)
+
+	if rec4.Body.String() != `{"msg":"hola"}` {
+		t.Fatalf("expected cached hola, got %s", rec4.Body.String())
+	}
+	if originExecutions.Load() != 2 {
+		t.Fatalf("expected 2 origin calls, got %d", originExecutions.Load())
+	}
+	if status := rec4.Header().Get("Cache-Status"); !containsAny(status, "hit") {
+		t.Errorf("expected hit, got %s", status)
+	}
+
+	// 5. Fifth Request: English variant again (Cache Hit for English -> 0 origin calls)
+	rec5 := httptest.NewRecorder()
+	handler.ServeHTTP(rec5, reqEN)
+
+	if rec5.Body.String() != `{"msg":"hello"}` {
+		t.Fatalf("expected cached hello, got %s", rec5.Body.String())
+	}
+	if originExecutions.Load() != 2 {
+		t.Fatalf("expected 2 origin calls, got %d", originExecutions.Load())
+	}
+
+	// 6. Sixth Request: French variant (URL exists, 3rd Variant missing -> call #3)
+	reqFR := httptest.NewRequest(http.MethodGet, baseURL, nil)
+	reqFR.Header.Set("Accept-Language", "fr-FR")
+	rec6 := httptest.NewRecorder()
+	handler.ServeHTTP(rec6, reqFR)
+
+	if rec6.Body.String() != `{"msg":"bonjour"}` {
+		t.Fatalf("expected bonjour, got %s", rec6.Body.String())
+	}
+	if originExecutions.Load() != 3 {
+		t.Fatalf("expected 3 origin calls, got %d", originExecutions.Load())
+	}
+
+	// 7. Seventh Request: French variant (Cache Hit -> 0 origin calls)
+	rec7 := httptest.NewRecorder()
+	handler.ServeHTTP(rec7, reqFR)
+
+	if rec7.Body.String() != `{"msg":"bonjour"}` {
+		t.Fatalf("expected cached bonjour, got %s", rec7.Body.String())
+	}
+	if originExecutions.Load() != 3 {
+		t.Fatalf("expected 3 origin calls, got %d", originExecutions.Load())
+	}
+}
+
+
 

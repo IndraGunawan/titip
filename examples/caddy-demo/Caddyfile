@@ -1,0 +1,19 @@
+{
+    admin localhost:2019
+    order titip before reverse_proxy
+}
+
+:8080 {
+    titip {
+        storage redis {
+            address localhost:6380
+            key_prefix caddy_demo:
+        }
+        cache_status rfc9211
+        ignore_client_cache_control true
+        auto_invalidate_mutating_methods true
+        origin_timeout 15s
+    }
+
+    reverse_proxy localhost:9000
+}

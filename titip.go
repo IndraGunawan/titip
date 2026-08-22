@@ -133,7 +133,9 @@ func (t *Titip) Close(ctx context.Context) error {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		t.logger.Warn("titip: close timeout waiting for background swr tasks", "error", ctx.Err())
+		if t.logger.Enabled(ctx, slog.LevelWarn) {
+			t.logger.Warn("titip: close timeout waiting for background swr tasks", "error", ctx.Err())
+		}
 	}
 
 	if err := t.storage.Close(); err != nil {

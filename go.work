@@ -2,7 +2,10 @@ go 1.26.1
 
 use (
 	.
+	./adapter/caddy
 	./adapter/chi
+	./examples/caddy-demo
 	./examples/chi-demo
 	./storage/redis
+	./storage/redis/caddy
 )

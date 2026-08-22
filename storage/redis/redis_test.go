@@ -271,6 +271,84 @@ func TestDynamicTTLExtension(t *testing.T) {
 	}
 }
 
+// TestDynamicTTLExtension_MultiVariantScenario replicates the real-world timeline:
+// 1. At 00:00: Store "en" variant with 10h TTL (36000s). Meta TTL = 10h.
+// 2. At 05:00 (5h later): Store "es" variant with 10h TTL (36000s). Meta TTL extended to 10h (expires at 15:00).
+// 3. At 10:00 (10h after en stored): "en" body expires, but Meta key and "es" body are still alive for another 5h!
+func TestDynamicTTLExtension_MultiVariantScenario(t *testing.T) {
+	ctx := context.Background()
+	mr, store := setupTestRedis(t)
+
+	primaryKey := "https://example.com/page/1"
+	meta := &pb.CacheMetadata{
+		PrimaryKey:      primaryKey,
+		VaryHeaderNames: []string{"Accept-Language"},
+	}
+
+	const tenHours = 36000 * time.Second
+
+	// Step 1: At 00:00 -> store "en" with 10h TTL
+	vEN := &pb.VariantInfo{VariantKey: "en", StatusCode: 200}
+	if err := store.SetVariant(ctx, primaryKey, meta, vEN, []byte("english_content"), tenHours); err != nil {
+		t.Fatalf("failed to set en variant: %v", err)
+	}
+
+	metaTTL1 := mr.TTL("titip_test:meta:" + primaryKey)
+	bodyENTTL1 := mr.TTL("titip_test:body:" + primaryKey + ":en")
+	if metaTTL1 != tenHours || bodyENTTL1 != tenHours {
+		t.Fatalf("expected 10h TTL at 00:00, got meta=%v body=%v", metaTTL1, bodyENTTL1)
+	}
+
+	// Step 2: 5 hours elapse (05:00)
+	mr.FastForward(5 * time.Hour)
+
+	metaTTL2 := mr.TTL("titip_test:meta:" + primaryKey)
+	bodyENTTL2 := mr.TTL("titip_test:body:" + primaryKey + ":en")
+	if metaTTL2 != 5*time.Hour || bodyENTTL2 != 5*time.Hour {
+		t.Fatalf("expected 5h remaining at 05:00, got meta=%v body=%v", metaTTL2, bodyENTTL2)
+	}
+
+	// Step 3: At 05:00 -> store "es" variant with 10h TTL
+	vES := &pb.VariantInfo{VariantKey: "es", StatusCode: 200}
+	if err := store.SetVariant(ctx, primaryKey, meta, vES, []byte("spanish_content"), tenHours); err != nil {
+		t.Fatalf("failed to set es variant: %v", err)
+	}
+
+	// Meta Hash TTL must be dynamically extended back to 10h (expires at 15:00)
+	metaTTL3 := mr.TTL("titip_test:meta:" + primaryKey)
+	bodyESTTL := mr.TTL("titip_test:body:" + primaryKey + ":es")
+	bodyENTTL3 := mr.TTL("titip_test:body:" + primaryKey + ":en")
+
+	if metaTTL3 != tenHours {
+		t.Fatalf("expected meta TTL to be extended to 10h (15:00 expiry), got %v", metaTTL3)
+	}
+	if bodyESTTL != tenHours {
+		t.Fatalf("expected es body TTL to be 10h (15:00 expiry), got %v", bodyESTTL)
+	}
+	if bodyENTTL3 != 5*time.Hour {
+		t.Fatalf("expected en body TTL to remain at 5h (10:00 expiry), got %v", bodyENTTL3)
+	}
+
+	// Step 4: Another 5 hours elapse (10:00) -> "en" variant expires, but "es" and Meta are still alive!
+	mr.FastForward(5 * time.Hour)
+
+	if mr.Exists("titip_test:body:" + primaryKey + ":en") {
+		t.Fatalf("expected en body to have expired at 10:00")
+	}
+	if !mr.Exists("titip_test:body:" + primaryKey + ":es") {
+		t.Fatalf("expected es body to still be alive at 10:00")
+	}
+	if !mr.Exists("titip_test:meta:" + primaryKey) {
+		t.Fatalf("expected meta hash to still be alive at 10:00")
+	}
+
+	metaTTL4 := mr.TTL("titip_test:meta:" + primaryKey)
+	bodyESTTL4 := mr.TTL("titip_test:body:" + primaryKey + ":es")
+	if metaTTL4 != 5*time.Hour || bodyESTTL4 != 5*time.Hour {
+		t.Fatalf("expected 5h remaining on meta and es body at 10:00, got meta=%v es=%v", metaTTL4, bodyESTTL4)
+	}
+}
+
 func TestConcurrencyAndRaces(t *testing.T) {
 	ctx := context.Background()
 	_, store := setupTestRedis(t)
