@@ -390,4 +390,121 @@ func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
 	}
 }
 
+func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
+	config := `titip {
+		storage redis {
+			address localhost:6379
+		}
+		key {
+			include_protocol false
+			include_host false
+			include_path true
+			query whitelist id category page
+			ignore_marketing_params true
+			include_headers X-App-Version Accept-Language
+			include_cookies session_currency
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(config)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if h.Key == nil {
+		t.Fatalf("expected Key config to be populated")
+	}
+	if h.Key.IncludeProtocol == nil || *h.Key.IncludeProtocol != false {
+		t.Errorf("expected IncludeProtocol false, got %v", h.Key.IncludeProtocol)
+	}
+	if h.Key.IncludeHost == nil || *h.Key.IncludeHost != false {
+		t.Errorf("expected IncludeHost false, got %v", h.Key.IncludeHost)
+	}
+	if h.Key.IncludePath == nil || *h.Key.IncludePath != true {
+		t.Errorf("expected IncludePath true, got %v", h.Key.IncludePath)
+	}
+	if h.Key.QueryMode != "whitelist" {
+		t.Errorf("expected QueryMode whitelist, got %s", h.Key.QueryMode)
+	}
+	if len(h.Key.QueryWhitelist) != 3 || h.Key.QueryWhitelist[0] != "id" {
+		t.Errorf("unexpected QueryWhitelist: %v", h.Key.QueryWhitelist)
+	}
+	if h.Key.IgnoreMarketingParams == nil || *h.Key.IgnoreMarketingParams != true {
+		t.Errorf("expected IgnoreMarketingParams true, got %v", h.Key.IgnoreMarketingParams)
+	}
+	if len(h.Key.IncludeHeaders) != 2 || h.Key.IncludeHeaders[0] != "X-App-Version" {
+		t.Errorf("unexpected IncludeHeaders: %v", h.Key.IncludeHeaders)
+	}
+	if len(h.Key.IncludeCookies) != 1 || h.Key.IncludeCookies[0] != "session_currency" {
+		t.Errorf("unexpected IncludeCookies: %v", h.Key.IncludeCookies)
+	}
+}
+
+func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
+	client, _, _ := setupTestCaddyEngine(t)
+	prefix := fmt.Sprintf("test:caddy:key:%d:", rand.Int63())
+
+	includeProto := false
+	includeHost := false
+	ignoreMarketing := true
+	h := &Handler{
+		StorageRaw: json.RawMessage(fmt.Sprintf(`{"name":"redis","address":%q,"key_prefix":%q}`, getTestRedisAddr(), prefix)),
+		Key: &KeyConfig{
+			IncludeProtocol:       &includeProto,
+			IncludeHost:           &includeHost,
+			QueryMode:             "whitelist",
+			QueryWhitelist:        []string{"id"},
+			IgnoreMarketingParams: &ignoreMarketing,
+		},
+	}
+
+	caddyCtx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := h.Provision(caddyCtx); err != nil {
+		t.Fatalf("provision failed: %v", err)
+	}
+	defer func() { _ = h.Cleanup() }()
+
+	var originCalls atomic.Int64
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls := originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"call":%d,"query":%q}`, calls, r.URL.RawQuery)
+	})
+	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		downstream.ServeHTTP(w, r)
+		return nil
+	})
+
+	// 1. Initial request with id=100 and utm_source=twitter (Origin Call #1)
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/api/items?id=100&utm_source=twitter", nil)
+	rec1 := httptest.NewRecorder()
+	if err := h.ServeHTTP(rec1, req1, next); err != nil {
+		t.Fatalf("serve failed: %v", err)
+	}
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+
+	// 2. Second request with id=100 and utm_source=google & fbclid=123 (Must HIT cache because utm/fbclid ignored, only id kept)
+	req2 := httptest.NewRequest(http.MethodGet, "http://different-host.com/api/items?id=100&utm_source=google&fbclid=abc", nil)
+	rec2 := httptest.NewRecorder()
+	if err := h.ServeHTTP(rec2, req2, next); err != nil {
+		t.Fatalf("serve failed: %v", err)
+	}
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cache HIT (1 origin call), got %d", originCalls.Load())
+	}
+	if rec2.Body.String() != `{"call":1,"query":"id=100&utm_source=twitter"}` {
+		t.Fatalf("expected cached response from call 1, got %s", rec2.Body.String())
+	}
+
+	// Clean up redis
+	_ = client.Do(context.Background(), client.B().Del().Key(prefix+"meta:/api/items?id=100").Build()).Error()
+}
+
+
 

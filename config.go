@@ -31,7 +31,7 @@ type Config struct {
 	AutoInvalidateMutatingMethods   bool
 	KeyConfig                       KeyConfig
 	CacheableStatusCodes            map[int]struct{}
-	TagHeaderNames                  []string
+	TagHeaderName                   string
 	OriginTimeout                   time.Duration
 	StorageTimeout                  time.Duration
 }
@@ -106,10 +106,10 @@ func WithCacheableStatusCodes(codes ...int) Option {
 	}
 }
 
-// WithTagHeaderNames configures headers inspected for cache tags (defaults to ["Cache-Tag", "Surrogate-Key"]).
-func WithTagHeaderNames(headers ...string) Option {
+// WithTagHeaderName configures the response header inspected for cache tags (defaults to "Cache-Tag").
+func WithTagHeaderName(name string) Option {
 	return func(c *Config) {
-		c.TagHeaderNames = headers
+		c.TagHeaderName = name
 	}
 }
 

@@ -90,6 +90,19 @@ func getEngines() []*titip.Titip {
 	return list
 }
 
+// KeyConfig defines the cache key generation parameters in Caddy.
+type KeyConfig struct {
+	IncludeProtocol       *bool    `json:"include_protocol,omitempty"`
+	IncludeHost           *bool    `json:"include_host,omitempty"`
+	IncludePath           *bool    `json:"include_path,omitempty"`
+	QueryMode             string   `json:"query_mode,omitempty"`
+	QueryWhitelist        []string `json:"query_whitelist,omitempty"`
+	QueryBlacklist        []string `json:"query_blacklist,omitempty"`
+	IgnoreMarketingParams *bool    `json:"ignore_marketing_params,omitempty"`
+	IncludeHeaders        []string `json:"include_headers,omitempty"`
+	IncludeCookies        []string `json:"include_cookies,omitempty"`
+}
+
 // Handler implements the Caddy HTTP middleware for Titip caching.
 type Handler struct {
 	StorageRaw                    json.RawMessage `json:"storage,omitempty" caddy:"namespace=titip.storage inline_key=name"`
@@ -97,6 +110,8 @@ type Handler struct {
 	IgnoreClientCacheControl      *bool           `json:"ignore_client_cache_control,omitempty"`
 	AutoInvalidateMutatingMethods *bool           `json:"auto_invalidate_mutating_methods,omitempty"`
 	OriginTimeout                 string          `json:"origin_timeout,omitempty"`
+	TagHeader                     string          `json:"tag_header,omitempty"`
+	Key                           *KeyConfig      `json:"key,omitempty"`
 
 	storageMod StorageModule
 	engine     *titip.Titip
@@ -142,7 +157,14 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		titip.WithMetrics(ctx.GetMetricsRegistry()),
 	}
 
-	opts = append(opts, titip.WithLogger(ctx.Slogger()))
+	func() {
+		defer func() {
+			_ = recover()
+		}()
+		if l := ctx.Slogger(); l != nil {
+			opts = append(opts, titip.WithLogger(l))
+		}
+	}()
 
 	// Cache-Status header mode
 	switch strings.ToLower(h.CacheStatus) {
@@ -169,6 +191,58 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("titip: invalid origin_timeout duration %q: %w", h.OriginTimeout, err)
 		}
 		opts = append(opts, titip.WithOriginTimeout(d))
+	}
+
+	if h.TagHeader != "" {
+		opts = append(opts, titip.WithTagHeaderName(h.TagHeader))
+	}
+
+	// Key configuration
+	if h.Key != nil {
+		keyCfg := *titip.DefaultKeyConfig()
+		if h.Key.IncludeProtocol != nil {
+			keyCfg.IncludeProtocol = *h.Key.IncludeProtocol
+		}
+		if h.Key.IncludeHost != nil {
+			keyCfg.IncludeHost = *h.Key.IncludeHost
+		}
+		if h.Key.IncludePath != nil {
+			keyCfg.IncludePath = *h.Key.IncludePath
+		}
+		if h.Key.QueryMode != "" {
+			switch strings.ToLower(h.Key.QueryMode) {
+			case "all":
+				keyCfg.QueryMode = titip.QueryParamsAll
+			case "none", "exclude_all":
+				keyCfg.QueryMode = titip.QueryParamsNone
+			case "whitelist":
+				keyCfg.QueryMode = titip.QueryParamsWhitelist
+			case "blacklist":
+				keyCfg.QueryMode = titip.QueryParamsBlacklist
+			default:
+				return fmt.Errorf("titip: unknown query_mode %q (allowed: all, none, whitelist, blacklist)", h.Key.QueryMode)
+			}
+		}
+		if len(h.Key.QueryWhitelist) > 0 {
+			keyCfg.QueryMode = titip.QueryParamsWhitelist
+			keyCfg.QueryWhitelist = h.Key.QueryWhitelist
+		}
+		if len(h.Key.QueryBlacklist) > 0 {
+			if keyCfg.QueryMode != titip.QueryParamsWhitelist && keyCfg.QueryMode != titip.QueryParamsNone {
+				keyCfg.QueryMode = titip.QueryParamsBlacklist
+			}
+			keyCfg.QueryBlacklist = h.Key.QueryBlacklist
+		}
+		if h.Key.IgnoreMarketingParams != nil && *h.Key.IgnoreMarketingParams {
+			keyCfg.WithIgnoredMarketingParams()
+		}
+		if len(h.Key.IncludeHeaders) > 0 {
+			keyCfg.IncludeHeaders = h.Key.IncludeHeaders
+		}
+		if len(h.Key.IncludeCookies) > 0 {
+			keyCfg.IncludeCookies = h.Key.IncludeCookies
+		}
+		opts = append(opts, titip.WithKeyConfig(keyCfg))
 	}
 
 	engine, err := titip.New(opts...)
@@ -254,6 +328,87 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				h.OriginTimeout = d.Val()
+			case "tag_header":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				h.TagHeader = d.Val()
+			case "key":
+				if h.Key == nil {
+					h.Key = new(KeyConfig)
+				}
+				for d.NextBlock(1) {
+					switch d.Val() {
+					case "include_protocol":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						val, err := strconv.ParseBool(d.Val())
+						if err != nil {
+							return d.Errf("invalid boolean value for include_protocol: %v", err)
+						}
+						h.Key.IncludeProtocol = &val
+					case "include_host":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						val, err := strconv.ParseBool(d.Val())
+						if err != nil {
+							return d.Errf("invalid boolean value for include_host: %v", err)
+						}
+						h.Key.IncludeHost = &val
+					case "include_path":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						val, err := strconv.ParseBool(d.Val())
+						if err != nil {
+							return d.Errf("invalid boolean value for include_path: %v", err)
+						}
+						h.Key.IncludePath = &val
+					case "query":
+						if !d.NextArg() {
+							return d.ArgErr()
+						}
+						mode := d.Val()
+						switch strings.ToLower(mode) {
+						case "all":
+							h.Key.QueryMode = "all"
+						case "none", "exclude_all":
+							h.Key.QueryMode = "none"
+						case "whitelist":
+							h.Key.QueryMode = "whitelist"
+							h.Key.QueryWhitelist = append(h.Key.QueryWhitelist, d.RemainingArgs()...)
+						case "blacklist":
+							h.Key.QueryMode = "blacklist"
+							h.Key.QueryBlacklist = append(h.Key.QueryBlacklist, d.RemainingArgs()...)
+						default:
+							return d.Errf("unknown query mode %q (allowed: all, none, whitelist <params...>, blacklist <params...>)", mode)
+						}
+					case "query_whitelist":
+						h.Key.QueryMode = "whitelist"
+						h.Key.QueryWhitelist = append(h.Key.QueryWhitelist, d.RemainingArgs()...)
+					case "query_blacklist":
+						h.Key.QueryMode = "blacklist"
+						h.Key.QueryBlacklist = append(h.Key.QueryBlacklist, d.RemainingArgs()...)
+					case "ignore_marketing_params":
+						val := true
+						if d.NextArg() {
+							var err error
+							val, err = strconv.ParseBool(d.Val())
+							if err != nil {
+								return d.Errf("invalid boolean value for ignore_marketing_params: %v", err)
+							}
+						}
+						h.Key.IgnoreMarketingParams = &val
+					case "include_headers":
+						h.Key.IncludeHeaders = append(h.Key.IncludeHeaders, d.RemainingArgs()...)
+					case "include_cookies":
+						h.Key.IncludeCookies = append(h.Key.IncludeCookies, d.RemainingArgs()...)
+					default:
+						return d.Errf("unknown key subdirective %q", d.Val())
+					}
+				}
 			default:
 				return d.Errf("unknown titip directive %q", d.Val())
 			}

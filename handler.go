@@ -213,10 +213,10 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	if currentAge < 0 {
 		currentAge = 0
 	}
-	ctx.w.Header().Set(HeaderAge, fmt.Sprintf("%d", currentAge))
 	t.metrics.RecordRequest(StatusHit)
-	t.emitCacheStatus(ctx.w, "HIT", fmt.Sprintf("hit; ttl=%d", t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)))
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
+	ctx.w.Header().Set(HeaderAge, fmt.Sprintf("%d", currentAge))
+	t.emitCacheStatus(ctx.w, "HIT", fmt.Sprintf("hit; ttl=%d", t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)))
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
 	_, _ = ctx.w.Write(dstBuf.Bytes())
 	return nil
@@ -239,9 +239,14 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 		return stateFetchOriginCold
 	}
 
+	currentAge := (ctx.nowNano - ctx.meta.CreatedAtUnixNano) / int64(time.Second)
+	if currentAge < 0 {
+		currentAge = 0
+	}
 	t.metrics.RecordRequest(StatusStaleHit)
-	t.emitCacheStatus(ctx.w, "STALE", "hit; stale; detail=swr")
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
+	ctx.w.Header().Set(HeaderAge, fmt.Sprintf("%d", currentAge))
+	t.emitCacheStatus(ctx.w, "STALE", "hit; stale; detail=swr")
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
 	_, _ = ctx.w.Write(dstBuf.Bytes())
 
@@ -700,22 +705,15 @@ func (t *Titip) emitCacheStatus(w http.ResponseWriter, simpleToken, rfc9211Detai
 }
 
 func (t *Titip) extractTags(headers http.Header) []string {
-	var tags []string
-	if len(t.cfg.TagHeaderNames) > 0 {
-		for _, name := range t.cfg.TagHeaderNames {
-			if val := headers.Get(name); val != "" {
-				tags = append(tags, splitAndTrimTags(val)...)
-			}
-		}
-	} else {
-		if val := headers.Get(HeaderCacheTag); val != "" {
-			tags = append(tags, splitAndTrimTags(val)...)
-		}
-		if val := headers.Get(HeaderSurrogateKey); val != "" {
-			tags = append(tags, splitAndTrimTags(val)...)
-		}
+	name := t.cfg.TagHeaderName
+	if name == "" {
+		name = HeaderCacheTag
 	}
-	return tags
+	val := headers.Get(name)
+	if val == "" {
+		return nil
+	}
+	return splitAndTrimTags(val)
 }
 
 func splitAndTrimTags(s string) []string {
@@ -748,9 +746,48 @@ func (t *Titip) extractVaryHeaderNames(headers http.Header) []string {
 	return names
 }
 
+// isHopByHopHeader checks if a header is a standard hop-by-hop header per RFC 9110 §7.6.1 & RFC 7230 §6.1.
+func isHopByHopHeader(k string) bool {
+	switch http.CanonicalHeaderKey(k) {
+	case "Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Te",
+		"Trailers",
+		"Transfer-Encoding",
+		"Upgrade":
+		return true
+	default:
+		return false
+	}
+}
+
 func protoHeadersFromHTTP(h http.Header) map[string]*pb.HeaderValues {
+	// Parse Connection header tokens for additional custom hop-by-hop headers
+	var connTokens map[string]struct{}
+	if conn := h.Get("Connection"); conn != "" {
+		tokens := strings.Split(conn, ",")
+		connTokens = make(map[string]struct{}, len(tokens))
+		for _, tok := range tokens {
+			tok = http.CanonicalHeaderKey(strings.TrimSpace(tok))
+			if tok != "" {
+				connTokens[tok] = struct{}{}
+			}
+		}
+	}
+
 	m := make(map[string]*pb.HeaderValues, len(h))
 	for k, vv := range h {
+		canon := http.CanonicalHeaderKey(k)
+		if isHopByHopHeader(canon) {
+			continue
+		}
+		if connTokens != nil {
+			if _, ok := connTokens[canon]; ok {
+				continue
+			}
+		}
 		m[k] = &pb.HeaderValues{Values: vv}
 	}
 	return m

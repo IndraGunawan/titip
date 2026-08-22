@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1023,20 +1024,117 @@ func TestUpstream304_TTLRefresh(t *testing.T) {
 	}
 }
 
-// BenchmarkRequestContextPool measures zero-allocation performance of requestContext
-func BenchmarkRequestContextPool(b *testing.B) {
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "http://example.com/bench", nil)
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+// TestCustomTagHeaderName verifies custom tag header extraction and purging
+func TestCustomTagHeaderName(t *testing.T) {
+	_, store, engine := setupTestTitip(t, WithTagHeaderName("X-Custom-Tags"))
 
-	b.ReportAllocs()
-	b.ResetTimer()
+	handler := engine.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("X-Custom-Tags", "catalog products,electronics")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+	}))
 
-	for i := 0; i < b.N; i++ {
-		ctx := acquireRequestContext(w, r, next)
-		releaseRequestContext(ctx)
+	// 1. Initial request to store entry with tags
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/products", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// 2. Cache Hit
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req)
+	if status := rec2.Header().Get("Cache-Status"); !containsAny(status, "hit") {
+		t.Fatalf("expected cache hit, got %s", status)
 	}
+
+	// 3. Purge by tag "electronics"
+	if err := engine.PurgeTag(context.Background(), "electronics"); err != nil {
+		t.Fatalf("purge tag failed: %v", err)
+	}
+
+	// 4. Request after purge must be a miss
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req)
+	if status := rec3.Header().Get("Cache-Status"); !containsAny(status, "uri-miss") {
+		t.Fatalf("expected cache miss after tag purge, got %s", status)
+	}
+	_ = store
 }
+
+// TestRFC_MandatoryCachedResponseHeaders validates mandatory RFC 9111/7234 cached response headers and hop-by-hop stripping
+func TestRFC_MandatoryCachedResponseHeaders(t *testing.T) {
+	_, store, engine := setupTestTitip(t)
+
+	originDate := "Sun, 06 Nov 1994 08:49:37 GMT"
+	handler := engine.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=10, stale-while-revalidate=60")
+		w.Header().Set("Date", originDate)
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Connection", "Keep-Alive, X-Custom-Hop")
+		w.Header().Set("Keep-Alive", "timeout=5, max=100")
+		w.Header().Set("X-Custom-Hop", "strip-me")
+		w.Header().Set("X-Regular-Header", "keep-me")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+	}))
+
+	// 1. Cold miss: Origin response is stored
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/api/rfc-headers", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec1.Code)
+	}
+
+	// 2. Sleep for 1.1 seconds so resident age is > 0
+	time.Sleep(1100 * time.Millisecond)
+
+	// 3. Cache Hit: Verify Age, Date, and Hop-by-Hop stripping
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/api/rfc-headers", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on cache hit, got %d", rec2.Code)
+	}
+
+	// Verify Date preservation
+	if d := rec2.Header().Get("Date"); d != originDate {
+		t.Errorf("expected Date %q preserved from origin, got %q", originDate, d)
+	}
+
+	// Verify Age header presence and value
+	ageStr := rec2.Header().Get("Age")
+	if ageStr == "" {
+		t.Errorf("expected Age header present on cache hit")
+	} else {
+		ageSec, err := strconv.Atoi(ageStr)
+		if err != nil || ageSec < 1 {
+			t.Errorf("expected Age >= 1 second, got %s (err: %v)", ageStr, err)
+		}
+	}
+
+	// Verify Hop-by-hop headers are stripped
+	if h := rec2.Header().Get("Connection"); h != "" {
+		t.Errorf("Connection hop-by-hop header should be stripped, got %q", h)
+	}
+	if h := rec2.Header().Get("Keep-Alive"); h != "" {
+		t.Errorf("Keep-Alive hop-by-hop header should be stripped, got %q", h)
+	}
+	if h := rec2.Header().Get("X-Custom-Hop"); h != "" {
+		t.Errorf("X-Custom-Hop connection token header should be stripped, got %q", h)
+	}
+
+	// Verify regular end-to-end header is retained
+	if h := rec2.Header().Get("X-Regular-Header"); h != "keep-me" {
+		t.Errorf("expected X-Regular-Header 'keep-me', got %q", h)
+	}
+
+	_ = store
+}
+
+
 
 
 

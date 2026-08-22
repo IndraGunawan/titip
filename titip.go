@@ -34,7 +34,7 @@ func New(opts ...Option) (*Titip, error) {
 		IgnoreClientCacheControl: true,
 		KeyConfig:                *DefaultKeyConfig(),
 		CacheableStatusCodes:     DefaultCacheableStatusCodes,
-		TagHeaderNames:           []string{"Cache-Tag", "Surrogate-Key"},
+		TagHeaderName:            HeaderCacheTag,
 		OriginTimeout:            30 * time.Second,
 		StorageTimeout:           1 * time.Second,
 		Logger:                   slog.Default(),

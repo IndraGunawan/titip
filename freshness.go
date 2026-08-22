@@ -9,7 +9,7 @@ import (
 	"github.com/pquerna/cachecontrol/cacheobject"
 )
 
-// MaxCacheTTL is the maximum allowed cache TTL (1 year) per RFC-7234 and Titip architecture constraints.
+// MaxCacheTTL is the maximum allowed cache TTL (1 year) per RFC 9111 / RFC 7234 and Titip architecture constraints.
 const MaxCacheTTL = 365 * 24 * time.Hour
 
 // DefaultCacheableStatusCodes contains the standard standard set of cacheable HTTP status codes.
@@ -36,7 +36,7 @@ var DefaultCacheableStatusCodes = map[int]struct{}{
 	http.StatusGatewayTimeout:             {}, // 504
 }
 
-// FreshnessInfo encapsulates the calculated RFC-7234 Section 4.2.3 freshness metrics.
+// FreshnessInfo encapsulates the calculated RFC 9111 (and RFC 7234 Section 4.2.3) freshness metrics.
 type FreshnessInfo struct {
 	ApparentAge             time.Duration
 	CorrectedInitialAge     time.Duration
@@ -84,7 +84,7 @@ func ParseDate(dateHeader string) (time.Time, error) {
 	return time.Time{}, http.ErrServerClosed
 }
 
-// CalculateFreshness computes RFC-7234 Section 4.2.3 age and freshness values.
+// CalculateFreshness computes RFC 9111 (and RFC 7234 Section 4.2.3) age and freshness values.
 func CalculateFreshness(
 	statusCode int,
 	respHeaders http.Header,
