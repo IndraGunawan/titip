@@ -726,8 +726,8 @@ func TestMultiVariant_VaryHeaderLifecycle(t *testing.T) {
 	if originExecutions.Load() != 2 {
 		t.Fatalf("expected 2 origin calls after new variant, got %d", originExecutions.Load())
 	}
-	if status := rec3.Header().Get("Cache-Status"); !containsAny(status, "fwd=uri-miss") {
-		t.Errorf("expected variant miss fwd=uri-miss, got %s", status)
+	if status := rec3.Header().Get("Cache-Status"); !containsAny(status, "fwd=vary-miss") {
+		t.Errorf("expected variant miss fwd=vary-miss, got %s", status)
 	}
 
 	// 4. Fourth Request: Spanish variant (Cache Hit for Spanish -> 0 origin calls)
@@ -1245,3 +1245,214 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 		t.Fatalf("expected 0 additional origin executions (cache hit), got %d", originExecutions.Load())
 	}
 }
+
+func TestRFC9211_ForwardReasonsAndParameters(t *testing.T) {
+	_, _, mw := setupTestTitip(t, WithIgnoreClientCacheControl(false))
+
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=1, stale-if-error=10")
+		w.Header().Set("Vary", "Accept-Language")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+	})
+
+	handler := mw.Handler(originHandler)
+
+	// 1. Test fwd=method on mutating POST request
+	reqPost := httptest.NewRequest(http.MethodPost, "http://example.com/api/rfc9211", strings.NewReader(`{}`))
+	recPost := httptest.NewRecorder()
+	handler.ServeHTTP(recPost, reqPost)
+	if cs := recPost.Header().Get("Cache-Status"); !strings.Contains(cs, "fwd=method") {
+		t.Errorf("expected POST to have fwd=method, got %q", cs)
+	}
+
+	// 2. Test fwd=method on OPTIONS request
+	reqOptions := httptest.NewRequest(http.MethodOptions, "http://example.com/api/rfc9211", nil)
+	recOptions := httptest.NewRecorder()
+	handler.ServeHTTP(recOptions, reqOptions)
+	if cs := recOptions.Header().Get("Cache-Status"); !strings.Contains(cs, "fwd=method") {
+		t.Errorf("expected OPTIONS to have fwd=method, got %q", cs)
+	}
+
+	// 3. Test fwd=request on client Cache-Control: no-store
+	reqNoStore := httptest.NewRequest(http.MethodGet, "http://example.com/api/rfc9211", nil)
+	reqNoStore.Header.Set("Cache-Control", "no-store")
+	recNoStore := httptest.NewRecorder()
+	handler.ServeHTTP(recNoStore, reqNoStore)
+	if cs := recNoStore.Header().Get("Cache-Status"); !strings.Contains(cs, "fwd=request") {
+		t.Errorf("expected no-store request to have fwd=request, got %q", cs)
+	}
+
+	// 4. Test fwd=uri-miss on fresh URL
+	reqGet := httptest.NewRequest(http.MethodGet, "http://example.com/api/rfc9211", nil)
+	reqGet.Header.Set("Accept-Language", "en")
+	recGet := httptest.NewRecorder()
+	handler.ServeHTTP(recGet, reqGet)
+	if cs := recGet.Header().Get("Cache-Status"); !strings.Contains(cs, "fwd=uri-miss") || !strings.Contains(cs, "stored") {
+		t.Errorf("expected URI miss with stored, got %q", cs)
+	}
+
+	// 5. Test fwd=vary-miss on new variant of existing URL
+	reqGetFR := httptest.NewRequest(http.MethodGet, "http://example.com/api/rfc9211", nil)
+	reqGetFR.Header.Set("Accept-Language", "fr")
+	recGetFR := httptest.NewRecorder()
+	handler.ServeHTTP(recGetFR, reqGetFR)
+	if cs := recGetFR.Header().Get("Cache-Status"); !strings.Contains(cs, "fwd=vary-miss") {
+		t.Errorf("expected variant miss to have fwd=vary-miss, got %q", cs)
+	}
+
+	// 6. Test fwd=stale on expired entry revalidation
+	time.Sleep(1100 * time.Millisecond)
+	reqStale := httptest.NewRequest(http.MethodGet, "http://example.com/api/rfc9211", nil)
+	reqStale.Header.Set("Accept-Language", "en")
+	recStale := httptest.NewRecorder()
+	handler.ServeHTTP(recStale, reqStale)
+	if cs := recStale.Header().Get("Cache-Status"); !strings.Contains(cs, "fwd=stale") {
+		t.Errorf("expected expired revalidation to have fwd=stale, got %q", cs)
+	}
+}
+
+func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
+	_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken), WithIgnoreClientCacheControl(false))
+
+	// Mock origin handler that supports multiple behavior endpoints
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/simple/cacheable":
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"status":"cacheable"}`)
+
+		case "/api/simple/dynamic":
+			// Origin returns Set-Cookie -> Uncacheable Dynamic
+			w.Header().Set("Set-Cookie", "session=xyz123; HttpOnly")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"status":"dynamic"}`)
+
+		case "/api/simple/swr":
+			w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=10")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"status":"swr"}`)
+
+		case "/api/simple/reval":
+			w.Header().Set("Cache-Control", "public, max-age=1, stale-if-error=10")
+			w.Header().Set("ETag", `"v1.0"`)
+			if r.Header.Get("If-None-Match") == `"v1.0"` {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"status":"reval"}`)
+
+		case "/api/simple/expired":
+			w.Header().Set("Cache-Control", "public, max-age=1, stale-if-error=10")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"time":%d}`, time.Now().UnixNano())
+
+		case "/api/simple/failover":
+			if r.Header.Get("If-None-Match") != "" || r.Header.Get("If-Modified-Since") != "" {
+				// Simulate origin 500 failure on revalidation -> fallback to stale
+				http.Error(w, "upstream database timeout", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Cache-Control", "public, max-age=1, stale-if-error=10")
+			w.Header().Set("ETag", `"v-failover"`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"status":"initial-healthy"}`)
+
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	handler := mw.Handler(originHandler)
+
+	// 1. TokenMiss ("MISS"): First request to cacheable URL
+	reqMiss := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/cacheable", nil)
+	recMiss := httptest.NewRecorder()
+	handler.ServeHTTP(recMiss, reqMiss)
+	if cs := recMiss.Header().Get("Cache-Status"); cs != TokenMiss {
+		t.Errorf("expected TokenMiss (%q), got %q", TokenMiss, cs)
+	}
+
+	// 2. TokenHit ("HIT"): Second request to cached URL
+	reqHit := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/cacheable", nil)
+	recHit := httptest.NewRecorder()
+	handler.ServeHTTP(recHit, reqHit)
+	if cs := recHit.Header().Get("Cache-Status"); cs != TokenHit {
+		t.Errorf("expected TokenHit (%q), got %q", TokenHit, cs)
+	}
+
+	// 3. TokenBypass ("BYPASS"): Mutating POST or client no-store
+	reqBypassPost := httptest.NewRequest(http.MethodPost, "http://example.com/api/simple/cacheable", strings.NewReader(`{}`))
+	recBypassPost := httptest.NewRecorder()
+	handler.ServeHTTP(recBypassPost, reqBypassPost)
+	if cs := recBypassPost.Header().Get("Cache-Status"); cs != TokenBypass {
+		t.Errorf("expected TokenBypass on POST (%q), got %q", TokenBypass, cs)
+	}
+
+	reqBypassNoStore := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/cacheable", nil)
+	reqBypassNoStore.Header.Set("Cache-Control", "no-store")
+	recBypassNoStore := httptest.NewRecorder()
+	handler.ServeHTTP(recBypassNoStore, reqBypassNoStore)
+	if cs := recBypassNoStore.Header().Get("Cache-Status"); cs != TokenBypass {
+		t.Errorf("expected TokenBypass on no-store (%q), got %q", TokenBypass, cs)
+	}
+
+	// 4. TokenDynamic ("DYNAMIC"): Response is uncacheable due to origin Set-Cookie
+	reqDynamic := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/dynamic", nil)
+	recDynamic := httptest.NewRecorder()
+	handler.ServeHTTP(recDynamic, reqDynamic)
+	if cs := recDynamic.Header().Get("Cache-Status"); cs != TokenDynamic {
+		t.Errorf("expected TokenDynamic (%q), got %q", TokenDynamic, cs)
+	}
+
+	// 5. TokenUpdating ("UPDATING"): Stale-while-revalidate background update window
+	reqSWR := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/swr", nil)
+	recSWR1 := httptest.NewRecorder()
+	handler.ServeHTTP(recSWR1, reqSWR) // prime (MISS)
+	time.Sleep(1100 * time.Millisecond) // expire max-age=1, enter SWR=10 window
+	recSWR2 := httptest.NewRecorder()
+	handler.ServeHTTP(recSWR2, reqSWR)
+	if cs := recSWR2.Header().Get("Cache-Status"); cs != TokenUpdating {
+		t.Errorf("expected TokenUpdating (%q), got %q", TokenUpdating, cs)
+	}
+
+	// 6. TokenRevalidated ("REVALIDATED"): Origin returns 304 Not Modified
+	reqReval := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/reval", nil)
+	recReval1 := httptest.NewRecorder()
+	handler.ServeHTTP(recReval1, reqReval) // prime (MISS)
+	time.Sleep(1100 * time.Millisecond)   // expire max-age=1
+	recReval2 := httptest.NewRecorder()
+	handler.ServeHTTP(recReval2, reqReval) // revalidates with origin -> 304
+	if cs := recReval2.Header().Get("Cache-Status"); cs != TokenRevalidated {
+		t.Errorf("expected TokenRevalidated (%q), got %q", TokenRevalidated, cs)
+	}
+
+	// 7. TokenExpired ("EXPIRED"): Origin returns fresh 200 OK on revalidation
+	reqExp := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/expired", nil)
+	recExp1 := httptest.NewRecorder()
+	handler.ServeHTTP(recExp1, reqExp) // prime (MISS)
+	time.Sleep(1100 * time.Millisecond) // expire max-age=1
+	recExp2 := httptest.NewRecorder()
+	handler.ServeHTTP(recExp2, reqExp) // revalidates with origin -> 200 OK
+	if cs := recExp2.Header().Get("Cache-Status"); cs != TokenExpired {
+		t.Errorf("expected TokenExpired (%q), got %q", TokenExpired, cs)
+	}
+
+	// 8. TokenStale ("STALE"): Origin 500 error triggers stale-if-error fallback
+	reqFailover := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/failover", nil)
+	recFailover1 := httptest.NewRecorder()
+	handler.ServeHTTP(recFailover1, reqFailover) // prime (MISS)
+	time.Sleep(1100 * time.Millisecond)          // expire max-age=1
+	recFailover2 := httptest.NewRecorder()
+	handler.ServeHTTP(recFailover2, reqFailover) // origin fails -> serves stale
+	if cs := recFailover2.Header().Get("Cache-Status"); cs != TokenStale {
+		t.Errorf("expected TokenStale (%q), got %q", TokenStale, cs)
+	}
+	if recFailover2.Code != http.StatusOK {
+		t.Errorf("expected 200 OK from stale-if-error fallback, got %d", recFailover2.Code)
+	}
+}
+

@@ -252,6 +252,7 @@ type requestContext struct {
 	varInfo    *pb.VariantInfo
 	freshness  FreshnessInfo
 	nowNano    int64
+	isVaryMiss bool
 }
 
 // Reset clears all fields before returning the struct to the pool.
@@ -265,6 +266,7 @@ func (ctx *requestContext) Reset() {
 	ctx.varInfo = nil
 	ctx.freshness = FreshnessInfo{}
 	ctx.nowNano = 0
+	ctx.isVaryMiss = false
 }
 
 var requestContextPool = sync.Pool{
