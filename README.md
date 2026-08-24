@@ -177,7 +177,36 @@ err := cache.PurgeTag(ctx, "catalog")
 err := cache.PurgeAll(ctx, titip.WithSoftPurge())
 ```
 
-*(For Caddy Admin Purge API via HTTP endpoints, see the [Caddy Adapter Guide](adapter/caddy/README.md).)*
+---
+
+## 🧩 Edge Side Includes (ESI)
+
+Titip includes a streaming **Edge Side Includes (ESI 1.0)** engine with parallel fragment fetching, circular loop protection, and SSRF prevention.
+
+### Supported ESI Tags & Syntax
+
+| Syntax | Description |
+| :--- | :--- |
+| `<esi:include src="/fragment" />` | Self-closing fragment include. Fetched concurrently. |
+| `<esi:include src="/fragment" alt="/fallback" onerror="continue" />` | Include with fallback URL on failure or silent omission (`onerror="continue"`). |
+| `<esi:include src="...">Fallback HTML</esi:include>` | Paired include with inline fallback block. |
+| `<!--esi <div>Visible only when ESI active</div> -->` | Unescapes enclosed HTML comments when ESI is enabled. |
+| `<esi:remove><p>Placeholder</p></esi:remove>` | Strips placeholder content intended for non-ESI clients. |
+| `<!--esi-comment text="..." -->` | Strips internal comments without emitting bytes. |
+
+### ESI Configuration Options
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `Enabled` | `bool` | `false` | Master toggle for ESI parsing and fragment splicing. |
+| `HeaderRequired` | `bool` | `false` | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
+| `InternalFetcher` | `InternalFetcherFunc` | `nil` | Custom hook for in-memory virtual subrequests (e.g. `titip.ESIHandlerFetcher(r)`). |
+| `MaxDepth` | `uint32` | `3` | Maximum nesting depth for recursive ESI includes. |
+| `MaxTimeout` | `time.Duration` | `30s` | Maximum time budget per fragment include fetch. |
+| `MaxConcurrentRequests` | `int` | `8` | Maximum concurrent fetch goroutines per document. |
+| `BlockPrivateIPs` | `bool` | `true` | SSRF guard blocking RFC 1918 / loopback / cloud metadata CIDRs. |
+| `AllowedHosts` | `[]string` | `[]` | Whitelist for external domain includes (empty allows all public hosts). |
+| `ForwardFragmentCookies`| `bool` | `true` | Forwards `Set-Cookie` headers from fragments to the client. |
 
 ---
 
@@ -211,7 +240,7 @@ go test -race -count=50 -v ./...
 
 ## 🤝 Contributing
 
-We welcome contributions for new framework adapters (e.g. Gin, Echo, Fiber) and storage drivers (e.g. Memcached, Dragonfly, Cloudflare KV).
+We welcome contributions for new framework adapters and storage drivers.
 
 Please read our [Contributing Guide](CONTRIBUTING.md) for architectural guidelines, interface contracts, and testing standards.
 

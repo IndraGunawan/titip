@@ -18,46 +18,77 @@ xcaddy build \
 
 ## 2. Caddyfile Syntax & Configuration
 
-Add the `titip` directive inside your site block:
+### Option A: Global Configuration (Recommended)
+
+Configure shared storage and default cache policies in the global `{ ... }` block, then simply use `titip` in your site blocks:
+
+```caddyfile
+{
+    # 🌐 Global Titip Cache Configuration (Shared Redis Storage & Default Policies)
+    titip {
+        storage redis {
+            address localhost:6379
+            key_prefix caddy:
+            password {env.REDIS_PASSWORD}
+        }
+        cache_status rfc9211
+        origin_timeout 10s
+        esi {
+            enabled true
+            max_depth 3
+            max_timeout 5s
+            max_concurrent_requests 8
+            block_private_ips true
+            forward_fragment_cookies true
+        }
+    }
+}
+
+:8080 {
+    # 🚀 Inherits all global Titip settings & shared storage automatically!
+    titip
+    reverse_proxy localhost:9000
+}
+```
+
+### Option B: Per-Site / Per-Route Configuration & Overrides
+
+You can also configure `titip` locally or override specific settings per route:
 
 ```caddyfile
 :8080 {
-    route {
+    # Route with custom storage prefix override:
+    handle /api/* {
         titip {
-            # Storage driver configuration
             storage redis {
                 address localhost:6379
-                key_prefix caddy:
-                password {env.REDIS_PASSWORD}
+                key_prefix api_cache:
             }
-
-            # Response header mode: rfc9211 (default), simple, or none
             cache_status rfc9211
-
-            # Origin timeout (e.g. 5s, 10s)
-            origin_timeout 10s
-
-            # Invalidate cached GET requests upon successful mutating POST/PUT/DELETE
-            auto_invalidate_mutating_methods false
-
-            # Custom Tag header name (defaults to "Cache-Tag")
-            tag_header Cache-Tag
-
-            # Cache key customization
-            key {
-                include_protocol false
-                include_host true
-                include_path true
-                query whitelist id category page
-                ignore_marketing_params true
-                include_headers X-App-Version
-                include_cookies currency
-            }
         }
+        reverse_proxy localhost:9000
+    }
+
+    # Catch-all using global defaults:
+    handle {
+        titip
         reverse_proxy localhost:9000
     }
 }
 ```
+
+### ESI Directive Reference
+
+| Subdirective | Default | Description |
+| :--- | :--- | :--- |
+| `enabled <bool>` | `false` | Enable ESI fragment parsing and parallel splicing. |
+| `header_required <bool>` | `false` | Process ESI only if origin sends `Surrogate-Control: content="ESI/1.0"`. |
+| `max_depth <int>` | `3` | Maximum recursion depth for nested `<esi:include>`. |
+| `max_timeout <duration>` | `30s` | Maximum time budget for fetching individual fragment includes. |
+| `max_concurrent_requests <int>` | `8` | Maximum concurrent fetch goroutines per document. |
+| `block_private_ips <bool>` | `true` | SSRF protection: block private/loopback/cloud metadata IPs on external includes. |
+| `allowed_hosts <hosts...>` | `(all)` | Whitelist of allowed external hosts for ESI includes. |
+| `forward_fragment_cookies <bool>` | `true` | Forward `Set-Cookie` headers from fragments to downstream client. |
 
 ---
 

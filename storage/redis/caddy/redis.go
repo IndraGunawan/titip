@@ -68,6 +68,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	store, err := storageRedis.New(
 		client,
 		storageRedis.WithKeyPrefix(prefix),
+		storageRedis.WithLogger(ctx.Slogger()),
 	)
 	if err != nil {
 		client.Close()

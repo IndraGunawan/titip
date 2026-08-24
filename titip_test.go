@@ -1082,7 +1082,7 @@ func TestCustomTagHeaderName(t *testing.T) {
 
 // TestRFC_MandatoryCachedResponseHeaders validates mandatory RFC 9111/7234 cached response headers and hop-by-hop stripping
 func TestRFC_MandatoryCachedResponseHeaders(t *testing.T) {
-	_, store, engine := setupTestTitip(t)
+	_, _, engine := setupTestTitip(t)
 
 	originDate := "Sun, 06 Nov 1994 08:49:37 GMT"
 	handler := engine.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1149,12 +1149,99 @@ func TestRFC_MandatoryCachedResponseHeaders(t *testing.T) {
 	if h := rec2.Header().Get("X-Regular-Header"); h != "keep-me" {
 		t.Errorf("expected X-Regular-Header 'keep-me', got %q", h)
 	}
-
-	_ = store
 }
 
+// TestFailOpen_MetadataExists_BodyEvictedGlitch verifies that if metadata exists in Redis
+// but the variant body key was expired/evicted in a microsecond race, Titip seamlessly fails open
+// to origin without crashing, returning 500, or dropping the response.
+func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
+	client, store, mw := setupTestTitip(t)
 
+	var originExecutions atomic.Int32
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := originExecutions.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"version":%d,"message":"origin data"}`, count)
+	})
 
+	handler := mw.Handler(originHandler)
 
+	targetURL := "http://example.com/api/microsecond-glitch"
 
+	// 1. Prime cache: First request fetches origin and saves both Meta Hash and Body Key
+	req1 := httptest.NewRequest(http.MethodGet, targetURL, nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
 
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on prime request, got %d", rec1.Code)
+	}
+	if originExecutions.Load() != 1 {
+		t.Fatalf("expected 1 origin execution, got %d", originExecutions.Load())
+	}
+
+	// 2. Simulate microsecond glitch: Metadata hash is present in Redis, but Body key was evicted/expired
+	primaryKey := GeneratePrimaryKey(req1, DefaultKeyConfig())
+	meta, err := store.GetMeta(context.Background(), primaryKey)
+	if err != nil || meta == nil {
+		t.Fatalf("expected metadata in Redis, got err=%v meta=%v", err, meta)
+	}
+
+	// Find the exact Redis body key and delete it from Redis
+	varInfo, body, err := store.GetVariant(context.Background(), primaryKey, DefaultVariantKey)
+	if err != nil || varInfo == nil || len(body) == 0 {
+		t.Fatalf("expected body in Redis before eviction simulation")
+	}
+
+	// Delete ONLY the body key directly from Redis (leaving metadata hash intact)
+	resp := client.Do(context.Background(), client.B().Keys().Pattern("*body*"+primaryKey+"*").Build())
+	keys, err := resp.AsStrSlice()
+	if err != nil || len(keys) == 0 {
+		t.Fatalf("expected to find body key in Redis")
+	}
+	for _, k := range keys {
+		if err := client.Do(context.Background(), client.B().Del().Key(k).Build()).Error(); err != nil {
+			t.Fatalf("failed to delete body key: %v", err)
+		}
+	}
+
+	// Verify body is gone but metadata is still present in Redis
+	_, missingBody, _ := store.GetVariant(context.Background(), primaryKey, DefaultVariantKey)
+	if len(missingBody) != 0 {
+		t.Fatalf("expected body to be deleted from Redis")
+	}
+	metaStillThere, _ := store.GetMeta(context.Background(), primaryKey)
+	if metaStillThere == nil {
+		t.Fatalf("expected metadata hash to still exist in Redis")
+	}
+
+	// 3. Second request arrives during this glitch:
+	// Titip should discover the missing body, fail open to origin, re-populate cache, and return 200 OK!
+	req2 := httptest.NewRequest(http.MethodGet, targetURL, nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK despite missing body key, got %d (body: %s)", rec2.Code, rec2.Body.String())
+	}
+	if originExecutions.Load() != 2 {
+		t.Fatalf("expected 2nd origin execution due to transparent fail-open, got %d", originExecutions.Load())
+	}
+	if !strings.Contains(rec2.Body.String(), `"version":2`) {
+		t.Fatalf("expected response body with version 2, got: %s", rec2.Body.String())
+	}
+
+	// 4. Third request: Cache should now be fully restored and hit cleanly!
+	req3 := httptest.NewRequest(http.MethodGet, targetURL, nil)
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on 3rd request, got %d", rec3.Code)
+	}
+	if originExecutions.Load() != 2 {
+		t.Fatalf("expected 0 additional origin executions (cache hit), got %d", originExecutions.Load())
+	}
+}

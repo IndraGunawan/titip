@@ -1,8 +1,13 @@
 package titip
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +27,9 @@ const (
 	CacheStatusNone
 )
 
+// InternalFetcherFunc defines the signature for resolving in-process ESI includes.
+type InternalFetcherFunc func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error)
+
 // ESIConfig defines the configuration options for Edge Side Includes (ESI) processing.
 type ESIConfig struct {
 	// Enabled is the master switch for ESI parsing and fragment splicing (default: false).
@@ -30,8 +38,8 @@ type ESIConfig struct {
 	// HeaderRequired processes ESI only when the origin returns Surrogate-Control or Edge-Control (default: false).
 	HeaderRequired bool
 
-	// InternalRouter provides an explicit root router for in-process virtual subrequests.
-	InternalRouter http.Handler
+	// InternalFetcher provides a custom hook to resolve internal/same-host ESI includes in-process.
+	InternalFetcher InternalFetcherFunc
 
 	// MaxDepth defines the maximum global recursion depth for nested includes (default: 3).
 	MaxDepth uint32
@@ -168,6 +176,49 @@ func WithESI(cfg ESIConfig) Option {
 	}
 }
 
+// ESIHandlerFetcher adapts any standard http.Handler into an InternalFetcherFunc for in-process subrequests.
+func ESIHandlerFetcher(router http.Handler) InternalFetcherFunc {
+	return func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
+		if router == nil {
+			return nil, nil, errors.New("titip: esi: router is nil")
+		}
+
+		parsedURL, err := url.Parse(targetPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("titip: esi: parse url: %w", err)
+		}
+
+		subReq := &http.Request{
+			Method:     http.MethodGet,
+			URL:        parsedURL,
+			RequestURI: targetPath,
+			Header:     r.Header.Clone(),
+			Host:       r.Host,
+			RemoteAddr: "127.0.0.1:10000",
+			Proto:      r.Proto,
+			ProtoMajor: r.ProtoMajor,
+			ProtoMinor: r.ProtoMinor,
+			Body:       http.NoBody,
+		}
+		subReq.Header.Set("Accept-Encoding", "identity")
+		if r.Trailer != nil {
+			subReq.Trailer = r.Trailer.Clone()
+		}
+		subReq = subReq.WithContext(ctx)
+
+		rec := GetResponseRecorder()
+		defer PutResponseRecorder(rec)
+
+		router.ServeHTTP(rec, subReq)
+
+		if rec.Code >= 400 {
+			return nil, rec.Header().Clone(), fmt.Errorf("subrequest returned status %d", rec.Code)
+		}
+
+		return bytes.Clone(rec.Body.Bytes()), rec.Header().Clone(), nil
+	}
+}
+
 // WithESIEnabled enables or disables ESI processing.
 func WithESIEnabled(enabled bool) Option {
 	return func(c *Config) {
@@ -175,10 +226,10 @@ func WithESIEnabled(enabled bool) Option {
 	}
 }
 
-// WithESIInternalRouter configures the root HTTP router for in-process virtual subrequests.
-func WithESIInternalRouter(router http.Handler) Option {
+// WithESIInternalFetcher configures a custom hook to resolve internal/same-host ESI includes in-process.
+func WithESIInternalFetcher(fetcher InternalFetcherFunc) Option {
 	return func(c *Config) {
-		c.ESI.InternalRouter = router
+		c.ESI.InternalFetcher = fetcher
 	}
 }
 

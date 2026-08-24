@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/rueidis"
@@ -20,6 +21,7 @@ const (
 // Config holds configuration options for the Redis storage engine.
 type Config struct {
 	Prefix string
+	Logger *slog.Logger
 }
 
 // Option is a function to configure RedisStorage.
@@ -32,10 +34,18 @@ func WithKeyPrefix(prefix string) Option {
 	}
 }
 
+// WithLogger sets the structured logger for storage operations.
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *Config) {
+		c.Logger = logger
+	}
+}
+
 // RedisStorage implements storage.Storage with atomic Redis Hashes and pipelined operations.
 type RedisStorage struct {
 	client rueidis.Client
 	prefix string
+	logger *slog.Logger
 }
 
 // New creates a new RedisStorage instance backed by the provided rueidis.Client.
@@ -54,6 +64,7 @@ func New(client rueidis.Client, opts ...Option) (*RedisStorage, error) {
 	return &RedisStorage{
 		client: client,
 		prefix: cfg.Prefix,
+		logger: cfg.Logger,
 	}, nil
 }
 
@@ -266,6 +277,14 @@ func (s *RedisStorage) Delete(ctx context.Context, primaryKey string) error {
 		}
 	}
 
+	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "titip: redis: purged cache keys",
+			slog.String("primary_key", primaryKey),
+			slog.Int("keys_count", len(delKeys)),
+			slog.Any("keys", delKeys),
+		)
+	}
+
 	return nil
 }
 
@@ -307,6 +326,13 @@ func (s *RedisStorage) SoftPurge(ctx context.Context, primaryKey string) error {
 		return fmt.Errorf("titip: redis: soft purge save: %w", err)
 	}
 
+	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "titip: redis: soft-purged cache entry",
+			slog.String("primary_key", primaryKey),
+			slog.String("meta_key", metaKey),
+		)
+	}
+
 	return nil
 }
 
@@ -325,6 +351,9 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) er
 
 	primaryKeys, err := resp.AsStrSlice()
 	if err != nil || len(primaryKeys) == 0 {
+		if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
+			s.logger.DebugContext(ctx, "titip: redis: purge tag found 0 keys", slog.String("tag", tag))
+		}
 		return nil
 	}
 
@@ -333,6 +362,13 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) er
 			if err := s.SoftPurge(ctx, pk); err != nil {
 				return err
 			}
+		}
+		if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
+			s.logger.DebugContext(ctx, "titip: redis: soft-purged entries by tag",
+				slog.String("tag", tag),
+				slog.Int("primary_keys_count", len(primaryKeys)),
+				slog.Any("primary_keys", primaryKeys),
+			)
 		}
 		return nil
 	}
@@ -369,6 +405,16 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) er
 		if err := r.Error(); err != nil && !rueidis.IsRedisNil(err) {
 			return fmt.Errorf("titip: redis: purge tag delete: %w", err)
 		}
+	}
+
+	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "titip: redis: hard-purged entries by tag",
+			slog.String("tag", tag),
+			slog.Int("primary_keys_count", len(primaryKeys)),
+			slog.Any("primary_keys", primaryKeys),
+			slog.Int("deleted_keys_count", len(delKeys)),
+			slog.Any("deleted_keys", delKeys),
+		)
 	}
 
 	return nil

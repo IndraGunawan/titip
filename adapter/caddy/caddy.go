@@ -1,10 +1,13 @@
 package caddy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,7 +25,7 @@ import (
 
 func init() {
 	caddy.RegisterModule(Handler{})
-	httpcaddyfile.RegisterDirectiveOrder("titip", httpcaddyfile.Before, "reverse_proxy")
+	httpcaddyfile.RegisterDirectiveOrder("titip", httpcaddyfile.Before, "route")
 	httpcaddyfile.RegisterHandlerDirective("titip", parseCaddyfile)
 }
 
@@ -146,23 +149,36 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 func (h *Handler) Provision(ctx caddy.Context) error {
 	h.id = fmt.Sprintf("titip-%p", h)
 
-	// 1. Provision dynamic storage guest module
-	if len(h.StorageRaw) == 0 {
-		return fmt.Errorf("titip: storage configuration is required")
+	// Check for global App defaults
+	var app *App
+	func() {
+		defer func() { _ = recover() }()
+		if appIface, err := ctx.App("titip"); err == nil && appIface != nil {
+			if a, ok := appIface.(*App); ok && a != nil {
+				app = a
+			}
+		}
+	}()
+
+	// 1. Provision dynamic storage guest module (or inherit from global App)
+	var store storage.Storage
+	if len(h.StorageRaw) > 0 {
+		val, err := ctx.LoadModule(h, "StorageRaw")
+		if err != nil {
+			return fmt.Errorf("titip: storage module not installed or invalid: %w", err)
+		}
+		sMod, ok := val.(StorageModule)
+		if !ok {
+			return fmt.Errorf("titip: module does not implement StorageModule")
+		}
+		h.storageMod = sMod
+		store = sMod.Storage()
+	} else if app != nil && app.storage != nil {
+		store = app.storage
+	} else {
+		return fmt.Errorf("titip: storage configuration is required (neither route nor global storage provided)")
 	}
 
-	val, err := ctx.LoadModule(h, "StorageRaw")
-	if err != nil {
-		return fmt.Errorf("titip: storage module not installed or invalid: %w", err)
-	}
-
-	sMod, ok := val.(StorageModule)
-	if !ok {
-		return fmt.Errorf("titip: module does not implement StorageModule")
-	}
-	h.storageMod = sMod
-
-	store := sMod.Storage()
 	if store == nil {
 		return fmt.Errorf("titip: storage backend failed to initialize")
 	}
@@ -182,29 +198,49 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 	}()
 
-	// Cache-Status header mode
-	switch strings.ToLower(h.CacheStatus) {
-	case "rfc9211":
-		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusRFC9211))
+	// Cache-Status header mode (inherit from app if not set)
+	cacheStatus := h.CacheStatus
+	if cacheStatus == "" && app != nil {
+		cacheStatus = app.CacheStatus
+	}
+	switch strings.ToLower(cacheStatus) {
 	case "simple", "":
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusSimpleToken))
+	case "rfc9211":
+		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusRFC9211))
 	case "none", "disabled":
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusNone))
 	default:
-		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", h.CacheStatus)
+		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
 	}
 
-	if h.IgnoreClientCacheControl != nil {
-		opts = append(opts, titip.WithIgnoreClientCacheControl(*h.IgnoreClientCacheControl))
+	// IgnoreClientCacheControl (inherit from app if not set)
+	ignoreClient := h.IgnoreClientCacheControl
+	if ignoreClient == nil && app != nil {
+		ignoreClient = app.IgnoreClientCacheControl
 	}
-	if h.AutoInvalidateMutatingMethods != nil {
-		opts = append(opts, titip.WithAutoInvalidateMutatingMethods(*h.AutoInvalidateMutatingMethods))
+	if ignoreClient != nil {
+		opts = append(opts, titip.WithIgnoreClientCacheControl(*ignoreClient))
 	}
 
-	if h.OriginTimeout != "" {
-		d, err := caddy.ParseDuration(h.OriginTimeout)
+	// AutoInvalidateMutatingMethods (inherit from app if not set)
+	autoInvalidate := h.AutoInvalidateMutatingMethods
+	if autoInvalidate == nil && app != nil {
+		autoInvalidate = app.AutoInvalidateMutatingMethods
+	}
+	if autoInvalidate != nil {
+		opts = append(opts, titip.WithAutoInvalidateMutatingMethods(*autoInvalidate))
+	}
+
+	// OriginTimeout (inherit from app if not set)
+	originTimeout := h.OriginTimeout
+	if originTimeout == "" && app != nil {
+		originTimeout = app.OriginTimeout
+	}
+	if originTimeout != "" {
+		d, err := caddy.ParseDuration(originTimeout)
 		if err != nil {
-			return fmt.Errorf("titip: invalid origin_timeout duration %q: %w", h.OriginTimeout, err)
+			return fmt.Errorf("titip: invalid origin_timeout duration %q: %w", originTimeout, err)
 		}
 		opts = append(opts, titip.WithOriginTimeout(d))
 	}
@@ -213,56 +249,24 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithTagHeaderName(h.TagHeader))
 	}
 
-	// Key configuration
-	if h.Key != nil {
+	// Key configuration: default -> global App defaults -> route overrides
+	if (app != nil && app.KeyConfig != nil) || h.Key != nil {
 		keyCfg := *titip.DefaultKeyConfig()
-		if h.Key.IncludeProtocol != nil {
-			keyCfg.IncludeProtocol = *h.Key.IncludeProtocol
-		}
-		if h.Key.IncludeHost != nil {
-			keyCfg.IncludeHost = *h.Key.IncludeHost
-		}
-		if h.Key.IncludePath != nil {
-			keyCfg.IncludePath = *h.Key.IncludePath
-		}
-		if h.Key.QueryMode != "" {
-			switch strings.ToLower(h.Key.QueryMode) {
-			case "all":
-				keyCfg.QueryMode = titip.QueryParamsAll
-			case "none", "exclude_all":
-				keyCfg.QueryMode = titip.QueryParamsNone
-			case "whitelist":
-				keyCfg.QueryMode = titip.QueryParamsWhitelist
-			case "blacklist":
-				keyCfg.QueryMode = titip.QueryParamsBlacklist
-			default:
-				return fmt.Errorf("titip: unknown query_mode %q (allowed: all, none, whitelist, blacklist)", h.Key.QueryMode)
+		if app != nil && app.KeyConfig != nil {
+			if err := applyKeyConfig(&keyCfg, app.KeyConfig); err != nil {
+				return err
 			}
 		}
-		if len(h.Key.QueryWhitelist) > 0 {
-			keyCfg.QueryMode = titip.QueryParamsWhitelist
-			keyCfg.QueryWhitelist = h.Key.QueryWhitelist
-		}
-		if len(h.Key.QueryBlacklist) > 0 {
-			if keyCfg.QueryMode != titip.QueryParamsWhitelist && keyCfg.QueryMode != titip.QueryParamsNone {
-				keyCfg.QueryMode = titip.QueryParamsBlacklist
+		if h.Key != nil {
+			if err := applyKeyConfig(&keyCfg, h.Key); err != nil {
+				return err
 			}
-			keyCfg.QueryBlacklist = h.Key.QueryBlacklist
-		}
-		if h.Key.IgnoreMarketingParams != nil && *h.Key.IgnoreMarketingParams {
-			keyCfg.WithIgnoredMarketingParams()
-		}
-		if len(h.Key.IncludeHeaders) > 0 {
-			keyCfg.IncludeHeaders = h.Key.IncludeHeaders
-		}
-		if len(h.Key.IncludeCookies) > 0 {
-			keyCfg.IncludeCookies = h.Key.IncludeCookies
 		}
 		opts = append(opts, titip.WithKeyConfig(keyCfg))
 	}
 
-	// ESI configuration
-	if h.ESI != nil {
+	// ESI configuration: default -> global App defaults -> route overrides
+	if (app != nil && app.ESI != nil) || h.ESI != nil {
 		esiCfg := titip.ESIConfig{
 			Enabled:                true,
 			HeaderRequired:         false,
@@ -273,47 +277,61 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			MaxResponseSize:        10 * 1024 * 1024,
 			ForwardFragmentCookies: true,
 		}
-		if h.ESI.Enabled != nil {
-			esiCfg.Enabled = *h.ESI.Enabled
-		}
-		if h.ESI.HeaderRequired != nil {
-			esiCfg.HeaderRequired = *h.ESI.HeaderRequired
-		}
-		if h.ESI.MaxDepth != nil {
-			esiCfg.MaxDepth = *h.ESI.MaxDepth
-		}
-		if h.ESI.MaxTimeout != "" {
-			d, err := caddy.ParseDuration(h.ESI.MaxTimeout)
-			if err != nil {
-				return fmt.Errorf("titip: invalid esi max_timeout duration %q: %w", h.ESI.MaxTimeout, err)
+		if app != nil && app.ESI != nil {
+			if err := applyESIConfig(&esiCfg, app.ESI); err != nil {
+				return err
 			}
-			esiCfg.MaxTimeout = d
 		}
-		if h.ESI.MaxConcurrentRequests != nil {
-			esiCfg.MaxConcurrentRequests = *h.ESI.MaxConcurrentRequests
-		}
-		if h.ESI.BlockPrivateIPs != nil {
-			esiCfg.BlockPrivateIPs = *h.ESI.BlockPrivateIPs
-		}
-		if len(h.ESI.AllowedHosts) > 0 {
-			esiCfg.AllowedHosts = h.ESI.AllowedHosts
-		}
-		if h.ESI.AllowPrivateIPsForAllowedHosts != nil {
-			esiCfg.AllowPrivateIPsForAllowedHosts = *h.ESI.AllowPrivateIPsForAllowedHosts
-		}
-		if h.ESI.MaxResponseSize != "" {
-			size, err := parseByteSize(h.ESI.MaxResponseSize)
-			if err != nil {
-				return fmt.Errorf("titip: invalid esi max_response_size %q: %w", h.ESI.MaxResponseSize, err)
+		if h.ESI != nil {
+			if err := applyESIConfig(&esiCfg, h.ESI); err != nil {
+				return err
 			}
-			esiCfg.MaxResponseSize = size
 		}
-		if h.ESI.ForwardFragmentCookies != nil {
-			esiCfg.ForwardFragmentCookies = *h.ESI.ForwardFragmentCookies
+
+		// In-process virtual subrequest fetcher adapted from Caddy funcHTTPInclude:
+		// https://github.com/caddyserver/caddy/blob/e2eee6a/modules/caddyhttp/templates/tplcontext.go#L169-L217
+		esiCfg.InternalFetcher = func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
+			parsedURL, err := url.Parse(targetPath)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			virtReq := &http.Request{
+				Method:     http.MethodGet,
+				URL:        parsedURL,
+				RequestURI: targetPath,
+				Header:     r.Header.Clone(),
+				Host:       r.Host,
+				RemoteAddr: "127.0.0.1:10000", // https://github.com/caddyserver/caddy/issues/5835
+				Proto:      r.Proto,
+				ProtoMajor: r.ProtoMajor,
+				ProtoMinor: r.ProtoMinor,
+				Body:       http.NoBody,
+			}
+			virtReq.Header.Set("Accept-Encoding", "identity") // https://github.com/caddyserver/caddy/issues/4352
+			if r.Trailer != nil {
+				virtReq.Trailer = r.Trailer.Clone()
+			}
+			virtReq = virtReq.WithContext(ctx)
+
+			rec := titip.GetResponseRecorder()
+			defer titip.PutResponseRecorder(rec)
+
+			if srv, ok := r.Context().Value(caddyhttp.ServerCtxKey).(http.Handler); ok && srv != nil {
+				srv.ServeHTTP(rec, virtReq)
+			} else if srv, ok := r.Context().Value(caddyhttp.ServerCtxKey).(caddyhttp.Handler); ok && srv != nil {
+				_ = srv.ServeHTTP(rec, virtReq)
+			} else {
+				return nil, nil, errors.New("titip: caddy: server context missing")
+			}
+
+			if rec.Code >= 400 {
+				return nil, rec.Header().Clone(), fmt.Errorf("subrequest returned status %d", rec.Code)
+			}
+
+			return bytes.Clone(rec.Body.Bytes()), rec.Header().Clone(), nil
 		}
-		if h.ESI.ErrorMarker != "" {
-			esiCfg.IncludeErrorMarker = h.ESI.ErrorMarker
-		}
+
 		opts = append(opts, titip.WithESI(esiCfg))
 	}
 
@@ -355,12 +373,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	downstream := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		if req.Body == nil {
 			req.Body = http.NoBody
-		}
-		if repl, ok := req.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer); ok && repl != nil && req.URL != nil {
-			repl.Set("http.request.uri.path", req.URL.Path)
-			repl.Set("http.request.orig_uri.path", req.URL.Path)
-			repl.Set("http.request.uri", req.URL.RequestURI())
-			repl.Set("http.request.orig_uri", req.URL.RequestURI())
 		}
 		_ = next.ServeHTTP(rw, req)
 	})
@@ -421,177 +433,191 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if h.Key == nil {
 					h.Key = new(KeyConfig)
 				}
-				for d.NextBlock(1) {
-					switch d.Val() {
-					case "include_protocol":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						val, err := strconv.ParseBool(d.Val())
-						if err != nil {
-							return d.Errf("invalid boolean value for include_protocol: %v", err)
-						}
-						h.Key.IncludeProtocol = &val
-					case "include_host":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						val, err := strconv.ParseBool(d.Val())
-						if err != nil {
-							return d.Errf("invalid boolean value for include_host: %v", err)
-						}
-						h.Key.IncludeHost = &val
-					case "include_path":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						val, err := strconv.ParseBool(d.Val())
-						if err != nil {
-							return d.Errf("invalid boolean value for include_path: %v", err)
-						}
-						h.Key.IncludePath = &val
-					case "query":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						mode := d.Val()
-						switch strings.ToLower(mode) {
-						case "all":
-							h.Key.QueryMode = "all"
-						case "none", "exclude_all":
-							h.Key.QueryMode = "none"
-						case "whitelist":
-							h.Key.QueryMode = "whitelist"
-							h.Key.QueryWhitelist = append(h.Key.QueryWhitelist, d.RemainingArgs()...)
-						case "blacklist":
-							h.Key.QueryMode = "blacklist"
-							h.Key.QueryBlacklist = append(h.Key.QueryBlacklist, d.RemainingArgs()...)
-						default:
-							return d.Errf("unknown query mode %q (allowed: all, none, whitelist <params...>, blacklist <params...>)", mode)
-						}
-					case "query_whitelist":
-						h.Key.QueryMode = "whitelist"
-						h.Key.QueryWhitelist = append(h.Key.QueryWhitelist, d.RemainingArgs()...)
-					case "query_blacklist":
-						h.Key.QueryMode = "blacklist"
-						h.Key.QueryBlacklist = append(h.Key.QueryBlacklist, d.RemainingArgs()...)
-					case "ignore_marketing_params":
-						val := true
-						if d.NextArg() {
-							var err error
-							val, err = strconv.ParseBool(d.Val())
-							if err != nil {
-								return d.Errf("invalid boolean value for ignore_marketing_params: %v", err)
-							}
-						}
-						h.Key.IgnoreMarketingParams = &val
-					case "include_headers":
-						h.Key.IncludeHeaders = append(h.Key.IncludeHeaders, d.RemainingArgs()...)
-					case "include_cookies":
-						h.Key.IncludeCookies = append(h.Key.IncludeCookies, d.RemainingArgs()...)
-					default:
-						return d.Errf("unknown key subdirective %q", d.Val())
-					}
+				if err := h.Key.unmarshalCaddyfile(d); err != nil {
+					return err
 				}
 			case "esi":
 				if h.ESI == nil {
 					h.ESI = new(ESIConfig)
 				}
-				for d.NextBlock(1) {
-					switch d.Val() {
-					case "enabled":
-						val := true
-						if d.NextArg() {
-							var err error
-							val, err = strconv.ParseBool(d.Val())
-							if err != nil {
-								return d.Errf("invalid boolean value for esi enabled: %v", err)
-							}
-						}
-						h.ESI.Enabled = &val
-					case "header_required":
-						val := true
-						if d.NextArg() {
-							var err error
-							val, err = strconv.ParseBool(d.Val())
-							if err != nil {
-								return d.Errf("invalid boolean value for esi header_required: %v", err)
-							}
-						}
-						h.ESI.HeaderRequired = &val
-					case "max_depth":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						val, err := strconv.ParseUint(d.Val(), 10, 32)
-						if err != nil {
-							return d.Errf("invalid integer for max_depth: %v", err)
-						}
-						uVal := uint32(val)
-						h.ESI.MaxDepth = &uVal
-					case "max_timeout":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						h.ESI.MaxTimeout = d.Val()
-					case "max_concurrent_requests":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						val, err := strconv.Atoi(d.Val())
-						if err != nil {
-							return d.Errf("invalid integer for max_concurrent_requests: %v", err)
-						}
-						h.ESI.MaxConcurrentRequests = &val
-					case "block_private_ips":
-						val := true
-						if d.NextArg() {
-							var err error
-							val, err = strconv.ParseBool(d.Val())
-							if err != nil {
-								return d.Errf("invalid boolean value for block_private_ips: %v", err)
-							}
-						}
-						h.ESI.BlockPrivateIPs = &val
-					case "allowed_hosts":
-						h.ESI.AllowedHosts = append(h.ESI.AllowedHosts, d.RemainingArgs()...)
-					case "allow_private_ips_for_allowed_hosts":
-						val := true
-						if d.NextArg() {
-							var err error
-							val, err = strconv.ParseBool(d.Val())
-							if err != nil {
-								return d.Errf("invalid boolean value for allow_private_ips_for_allowed_hosts: %v", err)
-							}
-						}
-						h.ESI.AllowPrivateIPsForAllowedHosts = &val
-					case "max_response_size":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						h.ESI.MaxResponseSize = d.Val()
-					case "forward_fragment_cookies":
-						val := true
-						if d.NextArg() {
-							var err error
-							val, err = strconv.ParseBool(d.Val())
-							if err != nil {
-								return d.Errf("invalid boolean value for forward_fragment_cookies: %v", err)
-							}
-						}
-						h.ESI.ForwardFragmentCookies = &val
-					case "error_marker":
-						if !d.NextArg() {
-							return d.ArgErr()
-						}
-						h.ESI.ErrorMarker = d.Val()
-					default:
-						return d.Errf("unknown esi subdirective %q", d.Val())
-					}
+				if err := h.ESI.unmarshalCaddyfile(d); err != nil {
+					return err
 				}
 			default:
 				return d.Errf("unknown titip directive %q", d.Val())
 			}
+		}
+	}
+	return nil
+}
+
+func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.NextBlock(1) {
+		switch d.Val() {
+		case "include_protocol":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.ParseBool(d.Val())
+			if err != nil {
+				return d.Errf("invalid boolean value for include_protocol: %v", err)
+			}
+			kc.IncludeProtocol = &val
+		case "include_host":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.ParseBool(d.Val())
+			if err != nil {
+				return d.Errf("invalid boolean value for include_host: %v", err)
+			}
+			kc.IncludeHost = &val
+		case "include_path":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.ParseBool(d.Val())
+			if err != nil {
+				return d.Errf("invalid boolean value for include_path: %v", err)
+			}
+			kc.IncludePath = &val
+		case "query":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			mode := d.Val()
+			switch strings.ToLower(mode) {
+			case "all":
+				kc.QueryMode = "all"
+			case "none", "exclude_all":
+				kc.QueryMode = "none"
+			case "whitelist":
+				kc.QueryMode = "whitelist"
+				kc.QueryWhitelist = append(kc.QueryWhitelist, d.RemainingArgs()...)
+			case "blacklist":
+				kc.QueryMode = "blacklist"
+				kc.QueryBlacklist = append(kc.QueryBlacklist, d.RemainingArgs()...)
+			default:
+				return d.Errf("unknown query mode %q (allowed: all, none, whitelist <params...>, blacklist <params...>)", mode)
+			}
+		case "query_whitelist":
+			kc.QueryMode = "whitelist"
+			kc.QueryWhitelist = append(kc.QueryWhitelist, d.RemainingArgs()...)
+		case "query_blacklist":
+			kc.QueryMode = "blacklist"
+			kc.QueryBlacklist = append(kc.QueryBlacklist, d.RemainingArgs()...)
+		case "ignore_marketing_params":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for ignore_marketing_params: %v", err)
+				}
+			}
+			kc.IgnoreMarketingParams = &val
+		case "include_headers":
+			kc.IncludeHeaders = append(kc.IncludeHeaders, d.RemainingArgs()...)
+		case "include_cookies":
+			kc.IncludeCookies = append(kc.IncludeCookies, d.RemainingArgs()...)
+		default:
+			return d.Errf("unknown key subdirective %q", d.Val())
+		}
+	}
+	return nil
+}
+
+func (e *ESIConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.NextBlock(1) {
+		switch d.Val() {
+		case "enabled":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for esi enabled: %v", err)
+				}
+			}
+			e.Enabled = &val
+		case "header_required":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for esi header_required: %v", err)
+				}
+			}
+			e.HeaderRequired = &val
+		case "max_depth":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.ParseUint(d.Val(), 10, 32)
+			if err != nil {
+				return d.Errf("invalid integer for max_depth: %v", err)
+			}
+			uVal := uint32(val)
+			e.MaxDepth = &uVal
+		case "max_timeout":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			e.MaxTimeout = d.Val()
+		case "max_concurrent_requests":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.Atoi(d.Val())
+			if err != nil {
+				return d.Errf("invalid integer for max_concurrent_requests: %v", err)
+			}
+			e.MaxConcurrentRequests = &val
+		case "block_private_ips":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for block_private_ips: %v", err)
+				}
+			}
+			e.BlockPrivateIPs = &val
+		case "allowed_hosts":
+			e.AllowedHosts = append(e.AllowedHosts, d.RemainingArgs()...)
+		case "allow_private_ips_for_allowed_hosts":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for allow_private_ips_for_allowed_hosts: %v", err)
+				}
+			}
+			e.AllowPrivateIPsForAllowedHosts = &val
+		case "max_response_size":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			e.MaxResponseSize = d.Val()
+		case "forward_fragment_cookies":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for forward_fragment_cookies: %v", err)
+				}
+			}
+			e.ForwardFragmentCookies = &val
+		case "error_marker":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			e.ErrorMarker = d.Val()
+		default:
+			return d.Errf("unknown esi subdirective %q", d.Val())
 		}
 	}
 	return nil
@@ -627,6 +653,105 @@ func parseByteSize(s string) (int64, error) {
 		return 0, err
 	}
 	return val * multi, nil
+}
+
+func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
+	if src == nil {
+		return nil
+	}
+	if src.IncludeProtocol != nil {
+		target.IncludeProtocol = *src.IncludeProtocol
+	}
+	if src.IncludeHost != nil {
+		target.IncludeHost = *src.IncludeHost
+	}
+	if src.IncludePath != nil {
+		target.IncludePath = *src.IncludePath
+	}
+	if src.QueryMode != "" {
+		switch strings.ToLower(src.QueryMode) {
+		case "all":
+			target.QueryMode = titip.QueryParamsAll
+		case "none", "exclude_all":
+			target.QueryMode = titip.QueryParamsNone
+		case "whitelist":
+			target.QueryMode = titip.QueryParamsWhitelist
+			target.QueryWhitelist = src.QueryWhitelist
+		case "blacklist":
+			target.QueryMode = titip.QueryParamsBlacklist
+			target.QueryBlacklist = src.QueryBlacklist
+		default:
+			return fmt.Errorf("titip: unknown query_mode %q (allowed: all, none, whitelist, blacklist)", src.QueryMode)
+		}
+	}
+	if len(src.QueryWhitelist) > 0 {
+		target.QueryMode = titip.QueryParamsWhitelist
+		target.QueryWhitelist = src.QueryWhitelist
+	}
+	if len(src.QueryBlacklist) > 0 {
+		if target.QueryMode != titip.QueryParamsWhitelist && target.QueryMode != titip.QueryParamsNone {
+			target.QueryMode = titip.QueryParamsBlacklist
+		}
+		target.QueryBlacklist = src.QueryBlacklist
+	}
+	if src.IgnoreMarketingParams != nil && *src.IgnoreMarketingParams {
+		target.WithIgnoredMarketingParams()
+	}
+	if len(src.IncludeHeaders) > 0 {
+		target.IncludeHeaders = src.IncludeHeaders
+	}
+	if len(src.IncludeCookies) > 0 {
+		target.IncludeCookies = src.IncludeCookies
+	}
+	return nil
+}
+
+func applyESIConfig(target *titip.ESIConfig, src *ESIConfig) error {
+	if src == nil {
+		return nil
+	}
+	if src.Enabled != nil {
+		target.Enabled = *src.Enabled
+	}
+	if src.HeaderRequired != nil {
+		target.HeaderRequired = *src.HeaderRequired
+	}
+	if src.MaxDepth != nil {
+		target.MaxDepth = *src.MaxDepth
+	}
+	if src.MaxTimeout != "" {
+		d, err := caddy.ParseDuration(src.MaxTimeout)
+		if err != nil {
+			return fmt.Errorf("titip: invalid esi max_timeout duration %q: %w", src.MaxTimeout, err)
+		}
+		target.MaxTimeout = d
+	}
+	if src.MaxConcurrentRequests != nil {
+		target.MaxConcurrentRequests = *src.MaxConcurrentRequests
+	}
+	if src.BlockPrivateIPs != nil {
+		target.BlockPrivateIPs = *src.BlockPrivateIPs
+	}
+	if len(src.AllowedHosts) > 0 {
+		target.AllowedHosts = src.AllowedHosts
+	}
+	if src.AllowPrivateIPsForAllowedHosts != nil {
+		target.AllowPrivateIPsForAllowedHosts = *src.AllowPrivateIPsForAllowedHosts
+	}
+	if src.MaxResponseSize != "" {
+		size, err := parseByteSize(src.MaxResponseSize)
+		if err != nil {
+			return fmt.Errorf("titip: invalid esi max_response_size %q: %w", src.MaxResponseSize, err)
+		}
+		target.MaxResponseSize = size
+	}
+	if src.ForwardFragmentCookies != nil {
+		target.ForwardFragmentCookies = *src.ForwardFragmentCookies
+	}
+	if src.ErrorMarker != "" {
+		target.IncludeErrorMarker = src.ErrorMarker
+	}
+	return nil
 }
 
 // Interface guards

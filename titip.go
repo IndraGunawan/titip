@@ -130,12 +130,24 @@ func (t *Titip) PurgeURL(ctx context.Context, rawURL string, opts ...PurgeOption
 	primaryKey := GeneratePrimaryKey(req, &t.cfg.KeyConfig)
 
 	if cfg.Soft {
+		if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
+			t.logger.DebugContext(ctx, "titip: purge url (soft)",
+				slog.String("url", rawURL),
+				slog.String("primary_key", primaryKey),
+			)
+		}
 		if err := t.storage.SoftPurge(ctx, primaryKey); err != nil {
 			return fmt.Errorf("titip: soft purge url: %w", err)
 		}
 		return nil
 	}
 
+	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
+		t.logger.DebugContext(ctx, "titip: purge url (hard)",
+			slog.String("url", rawURL),
+			slog.String("primary_key", primaryKey),
+		)
+	}
 	if err := t.storage.Delete(ctx, primaryKey); err != nil {
 		return fmt.Errorf("titip: purge url delete: %w", err)
 	}
@@ -147,6 +159,13 @@ func (t *Titip) PurgeTag(ctx context.Context, tag string, opts ...PurgeOption) e
 	cfg := &PurgeConfig{}
 	for _, opt := range opts {
 		opt(cfg)
+	}
+
+	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
+		t.logger.DebugContext(ctx, "titip: purge tag",
+			slog.String("tag", tag),
+			slog.Bool("soft", cfg.Soft),
+		)
 	}
 
 	if err := t.storage.PurgeByTag(ctx, tag, cfg.Soft); err != nil {

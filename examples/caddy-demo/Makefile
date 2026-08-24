@@ -21,18 +21,12 @@ origin: ## Run the mock upstream origin server on :9000
 	@echo "Starting mock upstream origin on http://localhost:9000 ..."
 	@go run main.go
 
-run: redis-up ## Start Redis, mock origin (:9000), and Caddy (:8080) in one command
-	@if [ -f .origin.pid ]; then \
-		kill -9 $$(cat .origin.pid) 2>/dev/null || true; \
-		rm -f .origin.pid; \
-	fi
-	@if [ ! -f ./caddy ]; then \
-		$(MAKE) build-caddy; \
-	fi
+run: redis-up build-caddy ## Start Redis, mock origin (:9000), and Caddy (:8080) in one command
+	@echo "Ensuring port 9000 is clean..."
+	@lsof -ti:9000 | xargs kill -9 2>/dev/null || true
 	@echo "Starting mock upstream origin on :9000 in background..."; \
 	go run main.go & ORIGIN_PID=$$!; \
-	echo $$ORIGIN_PID > .origin.pid; \
-	trap "kill -9 $$ORIGIN_PID 2>/dev/null; rm -f .origin.pid" EXIT INT TERM; \
+	trap "kill -9 $$ORIGIN_PID 2>/dev/null; lsof -ti:9000 | xargs kill -9 2>/dev/null || true" EXIT INT TERM; \
 	sleep 1; \
 	echo "Starting Caddy on http://localhost:8080 (Admin on :2019)..."; \
 	./caddy run --config Caddyfile
@@ -41,5 +35,7 @@ test-curl: ## Run automated smoke test curl against ESI endpoint
 	@echo "Fetching Caddy ESI demo endpoint..."
 	@curl -i http://localhost:8080/esi-demo
 
-clean: ## Remove compiled local Caddy binary
-	@rm -f ./caddy
+clean: ## Remove compiled local Caddy binary and clean ports
+	@lsof -ti:9000 | xargs kill -9 2>/dev/null || true
+	@rm -f ./caddy .origin.pid
+

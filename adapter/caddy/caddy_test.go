@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,11 +21,9 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	_ "github.com/caddyserver/caddy/v2/modules/standard"
 	"github.com/redis/rueidis"
 
-	"github.com/indragunawan/titip"
-	"github.com/indragunawan/titip/storage"
-	storageRedis "github.com/indragunawan/titip/storage/redis"
 	_ "github.com/indragunawan/titip/storage/redis/caddy"
 )
 
@@ -32,71 +34,36 @@ func getTestRedisAddr() string {
 	return "127.0.0.1:6379"
 }
 
-func setupTestCaddyEngine(t testing.TB) (rueidis.Client, storage.Storage, *titip.Titip) {
-	addr := getTestRedisAddr()
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{addr},
-		DisableCache: true,
-	})
-	if err != nil {
-		t.Fatalf("failed to connect to test Redis at %s: %v", addr, err)
+// parseAndProvisionHandler is a helper that parses a Caddyfile snippet and provisions the Handler.
+func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, func()) {
+	t.Helper()
+	d := caddyfile.NewTestDispenser(caddyfileBlock)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
 	}
 
-	prefix := fmt.Sprintf("test_caddy:%d:%d:", time.Now().UnixNano(), rand.Int63())
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix(prefix))
-	if err != nil {
-		client.Close()
-		t.Fatalf("failed to create storage: %v", err)
+	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
+	if err := h.Provision(ctx); err != nil {
+		cancel()
+		t.Fatalf("provision error: %v", err)
 	}
 
-	engine, err := titip.New(
-		titip.WithStorage(store),
-		titip.WithOriginTimeout(5*time.Second),
-	)
-	if err != nil {
-		client.Close()
-		t.Fatalf("failed to create engine: %v", err)
+	cleanup := func() {
+		_ = h.Cleanup()
+		cancel()
 	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		resp := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build())
-		if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
-			delCmds := make([]rueidis.Completed, len(keys))
-			for i, k := range keys {
-				delCmds[i] = client.B().Del().Key(k).Build()
-			}
-			client.DoMulti(ctx, delCmds...)
-		}
-		_ = engine.Close(context.Background())
-		client.Close()
-	})
-
-	return client, store, engine
-}
-
-type mockStorageModule struct {
-	store storage.Storage
-}
-
-func (m *mockStorageModule) Storage() storage.Storage {
-	return m.store
-}
-
-func (m *mockStorageModule) Destruct() error {
-	return nil
+	return &h, cleanup
 }
 
 func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
-	config := `titip {
+	config := fmt.Sprintf(`titip {
 		cache_status RFC9211
 		origin_timeout 20s
 		storage redis {
-			address 127.0.0.1:6379
+			address %q
 		}
-	}`
+	}`, getTestRedisAddr())
 
 	d := caddyfile.NewTestDispenser(config)
 	var h Handler
@@ -113,12 +80,18 @@ func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
 }
 
 func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
-	_, store, engine := setupTestCaddyEngine(t)
+	prefix := fmt.Sprintf("test_caddy_mw:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	caddyfileInput := fmt.Sprintf(`titip {
+		cache_status rfc9211
+		origin_timeout 5s
+		storage redis {
+			address %q
+			key_prefix %q
+		}
+	}`, getTestRedisAddr(), prefix)
 
-	h := &Handler{
-		engine:     engine,
-		storageMod: &mockStorageModule{store: store},
-	}
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
 
 	var upstreamCalls atomic.Int32
 	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
@@ -159,13 +132,25 @@ func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
 }
 
 func TestCaddyHandler_ProvisionMissingStorage(t *testing.T) {
-	h := &Handler{}
-	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: t.Context()})
+	config := `titip {
+		cache_status rfc9211
+	}`
+
+	d := caddyfile.NewTestDispenser(config)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
 	defer cancel()
 
 	err := h.Provision(ctx)
 	if err == nil {
 		t.Fatalf("expected error when storage is missing")
+	}
+	if !strings.Contains(err.Error(), "storage configuration is required") {
+		t.Errorf("expected missing storage error, got %v", err)
 	}
 }
 
@@ -248,7 +233,7 @@ func TestCaddyHandler_UndefinedStorage_FailsProvisioning(t *testing.T) {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 
-	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: t.Context()})
+	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
 	defer cancel()
 
 	err := h.Provision(ctx)
@@ -272,8 +257,7 @@ func TestCaddyHandler_UnknownStorageModule_Fails(t *testing.T) {
 	var h Handler
 	err := h.UnmarshalCaddyfile(d)
 	if err == nil {
-		// If unmarshal succeeded (raw json created), provisioning must fail to load unknown module
-		ctx, cancel := caddymain.NewContext(caddymain.Context{Context: t.Context()})
+		ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
 		defer cancel()
 		err = h.Provision(ctx)
 	}
@@ -285,14 +269,19 @@ func TestCaddyHandler_UnknownStorageModule_Fails(t *testing.T) {
 
 // AC-3 / AC-4: End-to-End Live Admin Purge Invalidation
 func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
-	_, store, engine := setupTestCaddyEngine(t)
+	prefix := fmt.Sprintf("test_caddy_purge:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	caddyfileInput := fmt.Sprintf(`titip {
+		storage redis {
+			address %q
+			key_prefix %q
+		}
+	}`, getTestRedisAddr(), prefix)
 
-	h := &Handler{
-		engine:     engine,
-		storageMod: &mockStorageModule{store: store},
-		id:         "test-admin-e2e",
-	}
-	registerEngine(h.id, engine)
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
+
+	h.id = "test-admin-e2e"
+	registerEngine(h.id, h.engine)
 	defer unregisterEngine(h.id)
 
 	var originCalls atomic.Int32
@@ -374,7 +363,6 @@ func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
 
 // TestCaddy_StandaloneStorageDirective_Fails verifies that storage modules cannot be configured standalone
 func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
-	// Attempting to configure "storage redis" directly in Caddyfile without titip block
 	config := `:8080 {
 		storage redis {
 			address localhost:6379
@@ -391,9 +379,9 @@ func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
 }
 
 func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
-	config := `titip {
+	config := fmt.Sprintf(`titip {
 		storage redis {
-			address localhost:6379
+			address %q
 		}
 		key {
 			include_protocol false
@@ -404,7 +392,7 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 			include_headers X-App-Version Accept-Language
 			include_cookies session_currency
 		}
-	}`
+	}`, getTestRedisAddr())
 
 	d := caddyfile.NewTestDispenser(config)
 	var h Handler
@@ -442,30 +430,22 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 }
 
 func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
-	client, _, _ := setupTestCaddyEngine(t)
 	prefix := fmt.Sprintf("test:caddy:key:%d:", rand.Int63())
+	caddyfileInput := fmt.Sprintf(`titip {
+		storage redis {
+			address %q
+			key_prefix %q
+		}
+		key {
+			include_protocol false
+			include_host false
+			query whitelist id
+			ignore_marketing_params true
+		}
+	}`, getTestRedisAddr(), prefix)
 
-	includeProto := false
-	includeHost := false
-	ignoreMarketing := true
-	h := &Handler{
-		StorageRaw: json.RawMessage(fmt.Sprintf(`{"name":"redis","address":%q,"key_prefix":%q}`, getTestRedisAddr(), prefix)),
-		Key: &KeyConfig{
-			IncludeProtocol:       &includeProto,
-			IncludeHost:           &includeHost,
-			QueryMode:             "whitelist",
-			QueryWhitelist:        []string{"id"},
-			IgnoreMarketingParams: &ignoreMarketing,
-		},
-	}
-
-	caddyCtx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
-	defer cancel()
-
-	if err := h.Provision(caddyCtx); err != nil {
-		t.Fatalf("provision failed: %v", err)
-	}
-	defer func() { _ = h.Cleanup() }()
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
 
 	var originCalls atomic.Int64
 	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -501,16 +481,13 @@ func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
 	if rec2.Body.String() != `{"call":1,"query":"id=100&utm_source=twitter"}` {
 		t.Fatalf("expected cached response from call 1, got %s", rec2.Body.String())
 	}
-
-	// Clean up redis
-	_ = client.Do(context.Background(), client.B().Del().Key(prefix+"meta:/api/items?id=100").Build()).Error()
 }
 
 func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
-	config := `titip {
+	config := fmt.Sprintf(`titip {
 		cache_status simple
 		storage redis {
-			address 127.0.0.1:6379
+			address %q
 		}
 		esi {
 			enabled true
@@ -524,7 +501,7 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 			forward_fragment_cookies true
 			error_marker "<!-- error -->"
 		}
-	}`
+	}`, getTestRedisAddr())
 
 	d := caddyfile.NewTestDispenser(config)
 	var h Handler
@@ -558,5 +535,479 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 	}
 }
 
+func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
+	prefix := fmt.Sprintf("test:caddy:esi:%d:", rand.Int63())
+	caddyfileInput := fmt.Sprintf(`titip {
+		storage redis {
+			address %q
+			key_prefix %q
+		}
+		esi {
+			enabled true
+		}
+	}`, getTestRedisAddr(), prefix)
 
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
 
+	// 1. Define a root Caddy server handler that routes both /page and /api/fragment
+	rootServer := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		switch r.URL.Path {
+		case "/page":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<div>Page Content: <esi:include src="/api/fragment" /></div>`)
+		case "/api/fragment":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<span>Dynamic Spliced Fragment</span>`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, `404 Not Found`)
+		}
+		return nil
+	})
+
+	// 2. Next handler represents only Route A's downstream (which ONLY knows /page)
+	routeANext := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		if r.URL.Path == "/page" {
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<div>Page Content: <esi:include src="/api/fragment" /></div>`)
+			return nil
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprint(w, `Route A does not know this path`)
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
+	ctx := context.WithValue(req.Context(), caddyhttp.ServerCtxKey, rootServer)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	if err := h.ServeHTTP(rec, req, routeANext); err != nil {
+		t.Fatalf("serve failed: %v", err)
+	}
+
+	expected := `<div>Page Content: <span>Dynamic Spliced Fragment</span></div>`
+	if rec.Body.String() != expected {
+		t.Fatalf("ESI multi-route splicing failed.\nExpected: %s\nGot:      %s", expected, rec.Body.String())
+	}
+}
+
+func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
+	prefix := fmt.Sprintf("test:caddy:replacer:%d:", rand.Int63())
+	caddyfileInput := fmt.Sprintf(`titip {
+		storage redis {
+			address %q
+			key_prefix %q
+		}
+		esi {
+			enabled true
+		}
+	}`, getTestRedisAddr(), prefix)
+
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
+
+	rootServer := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		switch r.URL.Path {
+		case "/multi-frag":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<doc><esi:include src="/f1" /><esi:include src="/f2" /><esi:include src="/f3" /><esi:include src="/f4" /></doc>`)
+		case "/f1":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `[F1]`)
+		case "/f2":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `[F2]`)
+		case "/f3":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `[F3]`)
+		case "/f4":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `[F4]`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+		return nil
+	})
+
+	var wg sync.WaitGroup
+	concurrentRequests := 20
+	for i := 0; i < concurrentRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/multi-frag", nil)
+			repl := caddymain.NewReplacer()
+			ctx := context.WithValue(req.Context(), caddymain.ReplacerCtxKey, repl)
+			ctx = context.WithValue(ctx, caddyhttp.ServerCtxKey, rootServer)
+			req = req.WithContext(ctx)
+
+			rec := httptest.NewRecorder()
+			if err := h.ServeHTTP(rec, req, rootServer); err != nil {
+				t.Errorf("serve failed: %v", err)
+				return
+			}
+
+			expected := `<doc>[F1][F2][F3][F4]</doc>`
+			if rec.Body.String() != expected {
+				t.Errorf("unexpected body: got %q, want %q", rec.Body.String(), expected)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestCaddyGlobalOption_Adapt verifies that { titip { ... } } in global options
+// compiles properly to apps.titip in Caddy JSON.
+func TestCaddyGlobalOption_Adapt(t *testing.T) {
+	prefix := fmt.Sprintf("test:caddy:global:inherit:%d:", rand.Int63())
+
+	caddyfileInput := fmt.Sprintf(`{
+		titip {
+			storage redis {
+				address %q
+				key_prefix %q
+			}
+			cache_status rfc9211
+			origin_timeout 5s
+			ignore_client_cache_control true
+			auto_invalidate_mutating_methods true
+			esi {
+				enabled true
+				max_depth 3
+				max_timeout 5s
+			}
+			key {
+				include_protocol true
+				query whitelist a b
+			}
+		}
+	}
+	:8080 {
+		route {
+			titip
+			respond "Hello Global"
+		}
+	}`, getTestRedisAddr(), prefix)
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+	if cadAdapter == nil {
+		t.Fatalf("caddyfile adapter not registered")
+	}
+	jsonBytes, warnings, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+	if err != nil {
+		t.Fatalf("adapt failed: %v", err)
+	}
+	for _, w := range warnings {
+		t.Logf("warning: %v", w)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(jsonBytes, &root); err != nil {
+		t.Fatalf("unmarshal adapted json: %v", err)
+	}
+
+	apps, ok := root["apps"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected apps map in adapted json, got %v", root)
+	}
+
+	titipApp, ok := apps["titip"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected titip app in apps map, got %v", apps)
+	}
+
+	storageMap := titipApp["storage"].(map[string]any)
+	if storageMap["name"] != "redis" {
+		t.Errorf("expected storage.name='redis', got %v", storageMap["name"])
+	}
+	if titipApp["cache_status"] != "rfc9211" {
+		t.Errorf("expected cache_status rfc9211, got %v", titipApp["cache_status"])
+	}
+	if titipApp["origin_timeout"] != "5s" {
+		t.Errorf("expected origin_timeout 5s, got %v", titipApp["origin_timeout"])
+	}
+}
+
+// TestCaddyGlobalOption_InheritanceAndOverride tests App provisioning and Handler inheritance via full Caddyfile.
+func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
+	prefix := fmt.Sprintf("test:caddy:global:inherit:%d:", rand.Int63())
+
+	caddyfileInput := fmt.Sprintf(`{
+		admin off
+		titip {
+			storage redis {
+				address %q
+				key_prefix %q
+			}
+			cache_status rfc9211
+			origin_timeout 10s
+			ignore_client_cache_control true
+			auto_invalidate_mutating_methods true
+			esi {
+				enabled true
+				max_depth 3
+			}
+		}
+	}
+	:18091 {
+		route {
+			titip
+			respond "Hello Global Inherit" 200
+		}
+	}`, getTestRedisAddr(), prefix)
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+	if err != nil {
+		t.Fatalf("adapt failed: %v", err)
+	}
+
+	cfg := new(caddymain.Config)
+	if err := json.Unmarshal(jsonBytes, cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if err := caddymain.Run(cfg); err != nil {
+		t.Fatalf("caddy run failed: %v", err)
+	}
+	defer func() { _ = caddymain.Stop() }()
+
+	resp, err := http.Get("http://localhost:18091")
+	if err != nil {
+		t.Fatalf("http get failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status code = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestDeepMerge_ESIAndKeyConfig_Caddyfile verifies that route-level overrides
+// in Caddyfile merge cleanly on top of global defaults during full Caddyfile compilation.
+func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
+	prefix := fmt.Sprintf("test:caddy:deepmerge:%d:", rand.Int63())
+
+	caddyfileInput := fmt.Sprintf(`{
+		admin off
+		titip {
+			storage redis {
+				address %q
+				key_prefix %q
+			}
+			cache_status rfc9211
+			origin_timeout 5s
+			esi {
+				enabled true
+				max_depth 3
+				max_timeout 5s
+				max_concurrent_requests 8
+			}
+			key {
+				include_protocol true
+				query whitelist a b
+			}
+		}
+	}
+	:18092 {
+		route {
+			titip {
+				esi {
+					max_depth 10
+				}
+				key {
+					query whitelist a b c
+				}
+			}
+			respond "Deep Merge Route" 200
+		}
+	}`, getTestRedisAddr(), prefix)
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+	if err != nil {
+		t.Fatalf("adapt failed: %v", err)
+	}
+
+	cfg := new(caddymain.Config)
+	if err := json.Unmarshal(jsonBytes, cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if err := caddymain.Run(cfg); err != nil {
+		t.Fatalf("caddy run failed: %v", err)
+	}
+	defer func() { _ = caddymain.Stop() }()
+
+	resp, err := http.Get("http://localhost:18092")
+	if err != nil {
+		t.Fatalf("http get failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status code = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes tests compiling a real Caddyfile
+// with global titip options and route-wrapped multi-handle routes, verifying live cache HITs.
+func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
+	prefix := fmt.Sprintf("test:caddy:e2e:%d:", rand.Int63())
+
+	var originHitCount int64
+	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&originHitCount, 1)
+		switch r.URL.Path {
+		case "/api/time":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"hits":%d,"time":%d}`, atomic.LoadInt64(&originHitCount), time.Now().UnixNano())
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer originServer.Close()
+
+	originURL, err := url.Parse(originServer.URL)
+	if err != nil {
+		t.Fatalf("parse origin url: %v", err)
+	}
+
+	caddyfileInput := fmt.Sprintf(`{
+		admin off
+		titip {
+			storage redis {
+				address %q
+				key_prefix %q
+			}
+			cache_status rfc9211
+			origin_timeout 5s
+		}
+	}
+	:18090 {
+		route {
+			titip
+
+			handle /api/esi/caddy-static {
+				header Content-Type "text/html; charset=utf-8"
+				respond "<div>Caddy Native</div>" 200
+			}
+
+			handle {
+				reverse_proxy %s
+			}
+		}
+	}`, getTestRedisAddr(), prefix, originURL.Host)
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+	if cadAdapter == nil {
+		t.Fatalf("caddyfile adapter not registered")
+	}
+	jsonBytes, warnings, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+	if err != nil {
+		t.Fatalf("adapt failed: %v", err)
+	}
+	for _, w := range warnings {
+		t.Logf("warning: %v", w)
+	}
+
+	// 1. Verify JSON AST correctness
+	var root map[string]any
+	if err := json.Unmarshal(jsonBytes, &root); err != nil {
+		t.Fatalf("unmarshal adapted json: %v", err)
+	}
+	apps := root["apps"].(map[string]any)
+	titipApp := apps["titip"].(map[string]any)
+	storageMap := titipApp["storage"].(map[string]any)
+	if storageMap["name"] != "redis" {
+		t.Errorf("expected storage.name='redis', got %v", storageMap["name"])
+	}
+
+	// 2. Load and start Caddy instance
+	cfg := new(caddymain.Config)
+	if err := json.Unmarshal(jsonBytes, cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if err := caddymain.Run(cfg); err != nil {
+		t.Fatalf("caddy run failed: %v", err)
+	}
+	defer func() {
+		_ = caddymain.Stop()
+	}()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Test 1: First request to /api/time -> MISS
+	req1, _ := http.NewRequest(http.MethodGet, "http://localhost:18090/api/time", nil)
+	resp1, err := client.Do(req1)
+	if err != nil {
+		t.Fatalf("request 1 failed: %v", err)
+	}
+	body1, _ := io.ReadAll(resp1.Body)
+	_ = resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Errorf("request 1 status = %d, want 200", resp1.StatusCode)
+	}
+	cacheStatus1 := resp1.Header.Get("Cache-Status")
+	if !strings.Contains(cacheStatus1, "fwd=origin") && !strings.Contains(cacheStatus1, "miss") {
+		t.Errorf("request 1 expected MISS/fwd=origin in Cache-Status, got %q", cacheStatus1)
+	}
+
+	// Test 2: Second request to /api/time -> HIT
+	req2, _ := http.NewRequest(http.MethodGet, "http://localhost:18090/api/time", nil)
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("request 2 failed: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	_ = resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("request 2 status = %d, want 200", resp2.StatusCode)
+	}
+	cacheStatus2 := resp2.Header.Get("Cache-Status")
+	if !strings.Contains(cacheStatus2, "hit") {
+		t.Errorf("request 2 expected HIT in Cache-Status, got %q", cacheStatus2)
+	}
+	if string(body1) != string(body2) {
+		t.Errorf("request 2 body mismatch: want cached %q, got %q", string(body1), string(body2))
+	}
+	if atomic.LoadInt64(&originHitCount) != 1 {
+		t.Errorf("expected originHitCount=1 (cached), got %d", atomic.LoadInt64(&originHitCount))
+	}
+
+	// Test 3: Request to Caddy Native respond
+	req3, _ := http.NewRequest(http.MethodGet, "http://localhost:18090/api/esi/caddy-static", nil)
+	resp3, err := client.Do(req3)
+	if err != nil {
+		t.Fatalf("request 3 failed: %v", err)
+	}
+	body3, _ := io.ReadAll(resp3.Body)
+	_ = resp3.Body.Close()
+	if !strings.Contains(string(body3), "Caddy Native") {
+		t.Errorf("unexpected body for native respond: %q", string(body3))
+	}
+}
+
+// Ensure unused import warning prevention for rueidis
+var _ = rueidis.Nil
