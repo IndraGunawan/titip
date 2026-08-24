@@ -66,6 +66,7 @@ func setupTestTitip(t testing.TB, opts ...Option) (rueidis.Client, storage.Stora
 		WithStorage(store),
 		WithOriginTimeout(5 * time.Second),
 		WithStorageTimeout(2 * time.Second),
+		WithCacheStatusMode(CacheStatusRFC9211),
 	}
 	defaultOpts = append(defaultOpts, opts...)
 
@@ -510,10 +511,7 @@ func BenchmarkCacheHit(b *testing.B) {
 	recPrime := httptest.NewRecorder()
 	handler.ServeHTTP(recPrime, req)
 
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rec := GetResponseRecorder()
 		handler.ServeHTTP(rec, req)
 		PutResponseRecorder(rec)

@@ -506,5 +506,57 @@ func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
 	_ = client.Do(context.Background(), client.B().Del().Key(prefix+"meta:/api/items?id=100").Build()).Error()
 }
 
+func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
+	config := `titip {
+		cache_status simple
+		storage redis {
+			address 127.0.0.1:6379
+		}
+		esi {
+			enabled true
+			header_required false
+			max_depth 3
+			max_timeout 15s
+			max_concurrent_requests 4
+			block_private_ips true
+			allowed_hosts cdn.example.com api.partner.com
+			max_response_size 5MB
+			forward_fragment_cookies true
+			error_marker "<!-- error -->"
+		}
+	}`
+
+	d := caddyfile.NewTestDispenser(config)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("failed to unmarshal caddyfile with esi: %v", err)
+	}
+
+	if h.ESI == nil {
+		t.Fatalf("expected ESI configuration to be populated")
+	}
+	if h.ESI.Enabled == nil || !*h.ESI.Enabled {
+		t.Errorf("expected ESI.Enabled to be true")
+	}
+	if h.ESI.MaxDepth == nil || *h.ESI.MaxDepth != 3 {
+		t.Errorf("expected MaxDepth 3, got %v", h.ESI.MaxDepth)
+	}
+	if h.ESI.MaxTimeout != "15s" {
+		t.Errorf("expected MaxTimeout 15s, got %s", h.ESI.MaxTimeout)
+	}
+	if h.ESI.MaxConcurrentRequests == nil || *h.ESI.MaxConcurrentRequests != 4 {
+		t.Errorf("expected MaxConcurrentRequests 4, got %v", h.ESI.MaxConcurrentRequests)
+	}
+	if len(h.ESI.AllowedHosts) != 2 || h.ESI.AllowedHosts[0] != "cdn.example.com" {
+		t.Errorf("unexpected allowed hosts: %v", h.ESI.AllowedHosts)
+	}
+	if h.ESI.MaxResponseSize != "5MB" {
+		t.Errorf("expected MaxResponseSize 5MB, got %s", h.ESI.MaxResponseSize)
+	}
+	if h.ESI.ErrorMarker != "<!-- error -->" {
+		t.Errorf("expected ErrorMarker <!-- error -->, got %s", h.ESI.ErrorMarker)
+	}
+}
+
 
 

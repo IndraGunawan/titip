@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/indragunawan/titip/esi"
 	"github.com/indragunawan/titip/storage"
 )
 
@@ -25,12 +26,13 @@ type Titip struct {
 	metrics              *Metrics
 	swrWG                sync.WaitGroup
 	closed               atomic.Bool
+	esiHTTPClient        *http.Client
 }
 
 // New creates a new Titip caching middleware instance.
 func New(opts ...Option) (*Titip, error) {
 	cfg := Config{
-		CacheStatusMode:          CacheStatusRFC9211,
+		CacheStatusMode:          CacheStatusSimpleToken,
 		IgnoreClientCacheControl: true,
 		KeyConfig:                *DefaultKeyConfig(),
 		CacheableStatusCodes:     DefaultCacheableStatusCodes,
@@ -38,6 +40,16 @@ func New(opts ...Option) (*Titip, error) {
 		OriginTimeout:            30 * time.Second,
 		StorageTimeout:           1 * time.Second,
 		Logger:                   slog.Default(),
+		ESI: ESIConfig{
+			Enabled:                false,
+			HeaderRequired:         false,
+			MaxDepth:               3,
+			MaxTimeout:             30 * time.Second,
+			MaxConcurrentRequests:  8,
+			BlockPrivateIPs:        true,
+			MaxResponseSize:        10 * 1024 * 1024,
+			ForwardFragmentCookies: true,
+		},
 	}
 
 	for _, opt := range opts {
@@ -52,12 +64,36 @@ func New(opts ...Option) (*Titip, error) {
 		cfg.CacheableStatusCodes = DefaultCacheableStatusCodes
 	}
 
+	if cfg.ESI.MaxDepth == 0 {
+		cfg.ESI.MaxDepth = 3
+	}
+	if cfg.ESI.MaxTimeout <= 0 {
+		cfg.ESI.MaxTimeout = 30 * time.Second
+	}
+	if cfg.ESI.MaxConcurrentRequests <= 0 {
+		cfg.ESI.MaxConcurrentRequests = 8
+	}
+	if cfg.ESI.MaxResponseSize <= 0 {
+		cfg.ESI.MaxResponseSize = 10 * 1024 * 1024
+	}
+
+	ssrfCfg := esi.SSRFConfig{
+		BlockPrivateIPs:                cfg.ESI.BlockPrivateIPs,
+		AllowedHosts:                   cfg.ESI.AllowedHosts,
+		AllowPrivateIPsForAllowedHosts: cfg.ESI.AllowPrivateIPsForAllowedHosts,
+	}
+
+	esiTransport := esi.NewSSRFSafeTransport(ssrfCfg, 10*time.Second)
+
 	return &Titip{
 		cfg:                  cfg,
 		storage:              cfg.Storage,
 		logger:               cfg.Logger,
 		cacheableStatusCodes: cfg.CacheableStatusCodes,
 		metrics:              newMetrics(cfg.Metrics),
+		esiHTTPClient: &http.Client{
+			Transport: esiTransport,
+		},
 	}, nil
 }
 

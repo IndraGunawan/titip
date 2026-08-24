@@ -1,0 +1,8 @@
+# Compiled Caddy demo binary
+caddy
+
+# Temporary xcaddy build environments
+buildenv_*
+
+# Local PID file
+.origin.pid

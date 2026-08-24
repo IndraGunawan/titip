@@ -8,6 +8,17 @@ message HeaderValues {
   repeated string values = 1;
 }
 
+message EsiFragment {
+  int32 start_pos = 1;
+  int32 end_pos = 2;
+  string src = 3;
+  string alt = 4;
+  string on_error = 5;
+  uint32 max_depth = 6;
+  uint32 timeout_ms = 7;
+  bytes fallback_body = 8;
+}
+
 // VariantInfo stores metadata for a specific Vary header combination
 message VariantInfo {
   string variant_key = 1;                 // Unique storage subkey e.g., "gzip_en"
@@ -18,6 +29,7 @@ message VariantInfo {
   int64 last_modified_unix_nano = 6;
   uint32 raw_body_size = 7;
   uint32 compressed_body_size = 8;
+  repeated EsiFragment esi_fragments = 10;
 }
 
 // CacheMetadata stores the primary URL index and variant registry

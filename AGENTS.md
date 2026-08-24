@@ -148,10 +148,13 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 
 ## 7. Tooling & Development Environment
 
-- **Go Compiler**: Go `1.22+` (utilizes `context.WithoutCancel`, `net/http` enhanced routing).
+- **Go Compiler**: Go `1.26.1+` (utilizes `context.WithoutCancel`, `b.Loop()`, `net/http` enhanced routing).
 - **Go Multi-Module Workspace**: Managed via root `go.work`. All submodules (`adapter/*`, `storage/*`, `examples/*`) must be registered in `go.work` so cross-module imports resolve locally without manual `replace` directives.
 - **Protobuf Generation**: `protoc-gen-go` / `buf` targeting `google.golang.org/protobuf`.
 - **Redis Testing Environment**: Real Redis 7+ instance using `github.com/redis/rueidis` (`docker compose up -d` with `redis:8-alpine` or `redis:7-alpine`). Employs native `EXPIRE ... GT` and atomic hash operations with isolated test key prefixes.
+- **Makefile Scoping Policy**:
+  - The root `Makefile` is strictly reserved for core library workflows: `test`, `race`, `bench`, `vet`, `redis-up`, and `redis-down`.
+  - **NEVER** add demo-specific or application-specific run commands to the root `Makefile`. Keep all demo and example lifecycle commands self-contained in their own subdirectories (e.g. `examples/chi-demo/Makefile`, `examples/caddy-demo/Makefile`).
 
 ---
 

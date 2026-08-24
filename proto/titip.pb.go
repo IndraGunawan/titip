@@ -65,6 +65,106 @@ func (x *HeaderValues) GetValues() []string {
 	return nil
 }
 
+type EsiFragment struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	StartPos      int32                  `protobuf:"varint,1,opt,name=start_pos,json=startPos,proto3" json:"start_pos,omitempty"`
+	EndPos        int32                  `protobuf:"varint,2,opt,name=end_pos,json=endPos,proto3" json:"end_pos,omitempty"`
+	Src           string                 `protobuf:"bytes,3,opt,name=src,proto3" json:"src,omitempty"`
+	Alt           string                 `protobuf:"bytes,4,opt,name=alt,proto3" json:"alt,omitempty"`
+	OnError       string                 `protobuf:"bytes,5,opt,name=on_error,json=onError,proto3" json:"on_error,omitempty"`
+	MaxDepth      uint32                 `protobuf:"varint,6,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
+	TimeoutMs     uint32                 `protobuf:"varint,7,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	FallbackBody  []byte                 `protobuf:"bytes,8,opt,name=fallback_body,json=fallbackBody,proto3" json:"fallback_body,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EsiFragment) Reset() {
+	*x = EsiFragment{}
+	mi := &file_titip_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EsiFragment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EsiFragment) ProtoMessage() {}
+
+func (x *EsiFragment) ProtoReflect() protoreflect.Message {
+	mi := &file_titip_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EsiFragment.ProtoReflect.Descriptor instead.
+func (*EsiFragment) Descriptor() ([]byte, []int) {
+	return file_titip_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *EsiFragment) GetStartPos() int32 {
+	if x != nil {
+		return x.StartPos
+	}
+	return 0
+}
+
+func (x *EsiFragment) GetEndPos() int32 {
+	if x != nil {
+		return x.EndPos
+	}
+	return 0
+}
+
+func (x *EsiFragment) GetSrc() string {
+	if x != nil {
+		return x.Src
+	}
+	return ""
+}
+
+func (x *EsiFragment) GetAlt() string {
+	if x != nil {
+		return x.Alt
+	}
+	return ""
+}
+
+func (x *EsiFragment) GetOnError() string {
+	if x != nil {
+		return x.OnError
+	}
+	return ""
+}
+
+func (x *EsiFragment) GetMaxDepth() uint32 {
+	if x != nil {
+		return x.MaxDepth
+	}
+	return 0
+}
+
+func (x *EsiFragment) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
+	}
+	return 0
+}
+
+func (x *EsiFragment) GetFallbackBody() []byte {
+	if x != nil {
+		return x.FallbackBody
+	}
+	return nil
+}
+
 // VariantInfo stores metadata for a specific Vary header combination
 type VariantInfo struct {
 	state                protoimpl.MessageState   `protogen:"open.v1"`
@@ -76,13 +176,14 @@ type VariantInfo struct {
 	LastModifiedUnixNano int64                    `protobuf:"varint,6,opt,name=last_modified_unix_nano,json=lastModifiedUnixNano,proto3" json:"last_modified_unix_nano,omitempty"`
 	RawBodySize          uint32                   `protobuf:"varint,7,opt,name=raw_body_size,json=rawBodySize,proto3" json:"raw_body_size,omitempty"`
 	CompressedBodySize   uint32                   `protobuf:"varint,8,opt,name=compressed_body_size,json=compressedBodySize,proto3" json:"compressed_body_size,omitempty"`
+	EsiFragments         []*EsiFragment           `protobuf:"bytes,10,rep,name=esi_fragments,json=esiFragments,proto3" json:"esi_fragments,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
 
 func (x *VariantInfo) Reset() {
 	*x = VariantInfo{}
-	mi := &file_titip_proto_msgTypes[1]
+	mi := &file_titip_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -94,7 +195,7 @@ func (x *VariantInfo) String() string {
 func (*VariantInfo) ProtoMessage() {}
 
 func (x *VariantInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_titip_proto_msgTypes[1]
+	mi := &file_titip_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -107,7 +208,7 @@ func (x *VariantInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VariantInfo.ProtoReflect.Descriptor instead.
 func (*VariantInfo) Descriptor() ([]byte, []int) {
-	return file_titip_proto_rawDescGZIP(), []int{1}
+	return file_titip_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *VariantInfo) GetVariantKey() string {
@@ -166,6 +267,13 @@ func (x *VariantInfo) GetCompressedBodySize() uint32 {
 	return 0
 }
 
+func (x *VariantInfo) GetEsiFragments() []*EsiFragment {
+	if x != nil {
+		return x.EsiFragments
+	}
+	return nil
+}
+
 // CacheMetadata stores the primary URL index and variant registry
 type CacheMetadata struct {
 	state              protoimpl.MessageState  `protogen:"open.v1"`
@@ -183,7 +291,7 @@ type CacheMetadata struct {
 
 func (x *CacheMetadata) Reset() {
 	*x = CacheMetadata{}
-	mi := &file_titip_proto_msgTypes[2]
+	mi := &file_titip_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -195,7 +303,7 @@ func (x *CacheMetadata) String() string {
 func (*CacheMetadata) ProtoMessage() {}
 
 func (x *CacheMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_titip_proto_msgTypes[2]
+	mi := &file_titip_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -208,7 +316,7 @@ func (x *CacheMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheMetadata.ProtoReflect.Descriptor instead.
 func (*CacheMetadata) Descriptor() ([]byte, []int) {
-	return file_titip_proto_rawDescGZIP(), []int{2}
+	return file_titip_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CacheMetadata) GetPrimaryKey() string {
@@ -273,7 +381,17 @@ const file_titip_proto_rawDesc = "" +
 	"\n" +
 	"\vtitip.proto\x12\x05titip\"&\n" +
 	"\fHeaderValues\x12\x16\n" +
-	"\x06values\x18\x01 \x03(\tR\x06values\"\xa5\x04\n" +
+	"\x06values\x18\x01 \x03(\tR\x06values\"\xe3\x01\n" +
+	"\vEsiFragment\x12\x1b\n" +
+	"\tstart_pos\x18\x01 \x01(\x05R\bstartPos\x12\x17\n" +
+	"\aend_pos\x18\x02 \x01(\x05R\x06endPos\x12\x10\n" +
+	"\x03src\x18\x03 \x01(\tR\x03src\x12\x10\n" +
+	"\x03alt\x18\x04 \x01(\tR\x03alt\x12\x19\n" +
+	"\bon_error\x18\x05 \x01(\tR\aonError\x12\x1b\n" +
+	"\tmax_depth\x18\x06 \x01(\rR\bmaxDepth\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\a \x01(\rR\ttimeoutMs\x12#\n" +
+	"\rfallback_body\x18\b \x01(\fR\ffallbackBody\"\xde\x04\n" +
 	"\vVariantInfo\x12\x1f\n" +
 	"\vvariant_key\x18\x01 \x01(\tR\n" +
 	"variantKey\x12F\n" +
@@ -284,7 +402,9 @@ const file_titip_proto_rawDesc = "" +
 	"\x04etag\x18\x05 \x01(\tR\x04etag\x125\n" +
 	"\x17last_modified_unix_nano\x18\x06 \x01(\x03R\x14lastModifiedUnixNano\x12\"\n" +
 	"\rraw_body_size\x18\a \x01(\rR\vrawBodySize\x120\n" +
-	"\x14compressed_body_size\x18\b \x01(\rR\x12compressedBodySize\x1a>\n" +
+	"\x14compressed_body_size\x18\b \x01(\rR\x12compressedBodySize\x127\n" +
+	"\resi_fragments\x18\n" +
+	" \x03(\v2\x12.titip.EsiFragmentR\fesiFragments\x1a>\n" +
 	"\x10VaryHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aW\n" +
@@ -317,26 +437,28 @@ func file_titip_proto_rawDescGZIP() []byte {
 	return file_titip_proto_rawDescData
 }
 
-var file_titip_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_titip_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_titip_proto_goTypes = []any{
 	(*HeaderValues)(nil),  // 0: titip.HeaderValues
-	(*VariantInfo)(nil),   // 1: titip.VariantInfo
-	(*CacheMetadata)(nil), // 2: titip.CacheMetadata
-	nil,                   // 3: titip.VariantInfo.VaryHeadersEntry
-	nil,                   // 4: titip.VariantInfo.ResponseHeadersEntry
-	nil,                   // 5: titip.CacheMetadata.VariantsEntry
+	(*EsiFragment)(nil),   // 1: titip.EsiFragment
+	(*VariantInfo)(nil),   // 2: titip.VariantInfo
+	(*CacheMetadata)(nil), // 3: titip.CacheMetadata
+	nil,                   // 4: titip.VariantInfo.VaryHeadersEntry
+	nil,                   // 5: titip.VariantInfo.ResponseHeadersEntry
+	nil,                   // 6: titip.CacheMetadata.VariantsEntry
 }
 var file_titip_proto_depIdxs = []int32{
-	3, // 0: titip.VariantInfo.vary_headers:type_name -> titip.VariantInfo.VaryHeadersEntry
-	4, // 1: titip.VariantInfo.response_headers:type_name -> titip.VariantInfo.ResponseHeadersEntry
-	5, // 2: titip.CacheMetadata.variants:type_name -> titip.CacheMetadata.VariantsEntry
-	0, // 3: titip.VariantInfo.ResponseHeadersEntry.value:type_name -> titip.HeaderValues
-	1, // 4: titip.CacheMetadata.VariantsEntry.value:type_name -> titip.VariantInfo
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	4, // 0: titip.VariantInfo.vary_headers:type_name -> titip.VariantInfo.VaryHeadersEntry
+	5, // 1: titip.VariantInfo.response_headers:type_name -> titip.VariantInfo.ResponseHeadersEntry
+	1, // 2: titip.VariantInfo.esi_fragments:type_name -> titip.EsiFragment
+	6, // 3: titip.CacheMetadata.variants:type_name -> titip.CacheMetadata.VariantsEntry
+	0, // 4: titip.VariantInfo.ResponseHeadersEntry.value:type_name -> titip.HeaderValues
+	2, // 5: titip.CacheMetadata.VariantsEntry.value:type_name -> titip.VariantInfo
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_titip_proto_init() }
@@ -350,7 +472,7 @@ func file_titip_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_titip_proto_rawDesc), len(file_titip_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

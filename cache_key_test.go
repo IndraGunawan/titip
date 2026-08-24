@@ -189,10 +189,7 @@ func BenchmarkGeneratePrimaryKey(b *testing.B) {
 	}
 	cfg := DefaultKeyConfig()
 
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = GeneratePrimaryKey(req, cfg)
 	}
 }
@@ -206,10 +203,7 @@ func BenchmarkGenerateVariantKey(b *testing.B) {
 	}
 	vary := []string{"Accept-Encoding", "Accept-Language"}
 
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = GenerateVariantKey(req, vary)
 	}
 }

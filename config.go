@@ -2,6 +2,7 @@ package titip
 
 import (
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -13,27 +14,67 @@ import (
 type CacheStatusMode int
 
 const (
+	// CacheStatusSimpleToken outputs single-token status header (e.g. HIT, MISS, BYPASS, STALE) by default.
+	CacheStatusSimpleToken CacheStatusMode = iota
 	// CacheStatusRFC9211 outputs structured RFC-9211 Cache-Status header (e.g. Cache-Status: titip; hit; ttl=240).
-	CacheStatusRFC9211 CacheStatusMode = iota
-	// CacheStatusSimpleToken outputs single-token status header (e.g. HIT, MISS, BYPASS, STALE).
-	CacheStatusSimpleToken
+	CacheStatusRFC9211
 	// CacheStatusNone disables cache status header generation.
 	CacheStatusNone
 )
 
+// ESIConfig defines the configuration options for Edge Side Includes (ESI) processing.
+type ESIConfig struct {
+	// Enabled is the master switch for ESI parsing and fragment splicing (default: false).
+	Enabled bool
+
+	// HeaderRequired processes ESI only when the origin returns Surrogate-Control or Edge-Control (default: false).
+	HeaderRequired bool
+
+	// InternalRouter provides an explicit root router for in-process virtual subrequests.
+	InternalRouter http.Handler
+
+	// MaxDepth defines the maximum global recursion depth for nested includes (default: 3).
+	MaxDepth uint32
+
+	// MaxTimeout specifies the global maximum time budget for fetching an include fragment (default: 30s).
+	MaxTimeout time.Duration
+
+	// MaxConcurrentRequests caps concurrent fragment fetch goroutines per document (default: 8).
+	MaxConcurrentRequests int
+
+	// BlockPrivateIPs blocks private, loopback, and cloud metadata CIDRs at dial time (default: true).
+	BlockPrivateIPs bool
+
+	// AllowedHosts restricts external HTTP includes to matching domain patterns (default: empty = all public).
+	AllowedHosts []string
+
+	// AllowPrivateIPsForAllowedHosts allows internal IPs for explicitly whitelisted hosts (default: false).
+	AllowPrivateIPsForAllowedHosts bool
+
+	// MaxResponseSize caps the maximum allowed fragment body size in bytes (default: 10MB, 0 = unlimited).
+	MaxResponseSize int64
+
+	// ForwardFragmentCookies forwards Set-Cookie headers from subrequests to the client (default: true).
+	ForwardFragmentCookies bool
+
+	// IncludeErrorMarker is the HTML placeholder rendered on unhandled fetch errors (default: "").
+	IncludeErrorMarker string
+}
+
 // Config defines the configuration parameters for the Titip middleware.
 type Config struct {
-	Storage                         storage.Storage
-	Logger                          *slog.Logger
-	Metrics                         prometheus.Registerer
-	CacheStatusMode                 CacheStatusMode
-	IgnoreClientCacheControl        bool
-	AutoInvalidateMutatingMethods   bool
-	KeyConfig                       KeyConfig
-	CacheableStatusCodes            map[int]struct{}
-	TagHeaderName                   string
-	OriginTimeout                   time.Duration
-	StorageTimeout                  time.Duration
+	Storage                       storage.Storage
+	Logger                        *slog.Logger
+	Metrics                       prometheus.Registerer
+	CacheStatusMode               CacheStatusMode
+	IgnoreClientCacheControl      bool
+	AutoInvalidateMutatingMethods bool
+	KeyConfig                     KeyConfig
+	CacheableStatusCodes          map[int]struct{}
+	TagHeaderName                 string
+	OriginTimeout                 time.Duration
+	StorageTimeout                time.Duration
+	ESI                           ESIConfig
 }
 
 // Option configures Titip middleware options.
@@ -117,6 +158,77 @@ func WithTagHeaderName(name string) Option {
 func WithOriginTimeout(d time.Duration) Option {
 	return func(c *Config) {
 		c.OriginTimeout = d
+	}
+}
+
+// WithESI configures full ESI options.
+func WithESI(cfg ESIConfig) Option {
+	return func(c *Config) {
+		c.ESI = cfg
+	}
+}
+
+// WithESIEnabled enables or disables ESI processing.
+func WithESIEnabled(enabled bool) Option {
+	return func(c *Config) {
+		c.ESI.Enabled = enabled
+	}
+}
+
+// WithESIInternalRouter configures the root HTTP router for in-process virtual subrequests.
+func WithESIInternalRouter(router http.Handler) Option {
+	return func(c *Config) {
+		c.ESI.InternalRouter = router
+	}
+}
+
+// WithESIMaxTimeout configures the global maximum time budget for fetching an include fragment.
+func WithESIMaxTimeout(timeout time.Duration) Option {
+	return func(c *Config) {
+		c.ESI.MaxTimeout = timeout
+	}
+}
+
+// WithESIMaxDepth configures the global maximum recursion depth for nested includes.
+func WithESIMaxDepth(depth uint32) Option {
+	return func(c *Config) {
+		c.ESI.MaxDepth = depth
+	}
+}
+
+// WithESIMaxConcurrentRequests configures maximum concurrent fragment fetch goroutines per document.
+func WithESIMaxConcurrentRequests(maxConcurrent int) Option {
+	return func(c *Config) {
+		c.ESI.MaxConcurrentRequests = maxConcurrent
+	}
+}
+
+// WithESISSRFProtection configures dial-time SSRF blocking and allowed host patterns.
+func WithESISSRFProtection(blockPrivateIPs bool, allowedHosts ...string) Option {
+	return func(c *Config) {
+		c.ESI.BlockPrivateIPs = blockPrivateIPs
+		c.ESI.AllowedHosts = allowedHosts
+	}
+}
+
+// WithESIForwardFragmentCookies configures whether Set-Cookie headers from subrequests are forwarded to client.
+func WithESIForwardFragmentCookies(forward bool) Option {
+	return func(c *Config) {
+		c.ESI.ForwardFragmentCookies = forward
+	}
+}
+
+// WithESIMaxResponseSize configures maximum allowed fragment body size in bytes.
+func WithESIMaxResponseSize(maxBytes int64) Option {
+	return func(c *Config) {
+		c.ESI.MaxResponseSize = maxBytes
+	}
+}
+
+// WithESIErrorMarker configures the HTML placeholder rendered on unhandled fetch errors.
+func WithESIErrorMarker(marker string) Option {
+	return func(c *Config) {
+		c.ESI.IncludeErrorMarker = marker
 	}
 }
 

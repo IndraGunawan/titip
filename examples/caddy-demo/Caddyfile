@@ -1,9 +1,12 @@
 {
-    admin localhost:2019
-    order titip before reverse_proxy
+    admin localhost:2019 {
+        origins localhost:2019 127.0.0.1:2019
+    }
 }
 
 :8080 {
+    metrics /metrics
+
     titip {
         storage redis {
             address localhost:6379
@@ -13,6 +16,14 @@
         ignore_client_cache_control true
         auto_invalidate_mutating_methods true
         origin_timeout 15s
+        esi {
+            enabled true
+            max_depth 3
+            max_timeout 5s
+            max_concurrent_requests 8
+            block_private_ips false
+            forward_fragment_cookies true
+        }
     }
 
     reverse_proxy localhost:9000

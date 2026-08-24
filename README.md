@@ -209,6 +209,14 @@ go test -race -count=50 -v ./...
 
 ---
 
+## 🤝 Contributing
+
+We welcome contributions for new framework adapters (e.g. Gin, Echo, Fiber) and storage drivers (e.g. Memcached, Dragonfly, Cloudflare KV).
+
+Please read our [Contributing Guide](CONTRIBUTING.md) for architectural guidelines, interface contracts, and testing standards.
+
+---
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).

@@ -364,7 +364,7 @@ func TestConcurrencyAndRaces(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
 
@@ -374,7 +374,7 @@ func TestConcurrencyAndRaces(t *testing.T) {
 				Tags:       []string{"concurrent"},
 			}
 
-			for j := 0; j < iterations; j++ {
+			for j := range iterations {
 				varKey := fmt.Sprintf("v_%d", j%3)
 				v := &pb.VariantInfo{VariantKey: varKey, StatusCode: 200}
 				body := []byte(fmt.Sprintf("body_%d_%d", id, j))
@@ -398,10 +398,7 @@ func BenchmarkStorage_SetAndGetVariant(b *testing.B) {
 	v := &pb.VariantInfo{VariantKey: "gzip", StatusCode: 200}
 	body := []byte("bench_body_payload")
 
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = store.SetVariant(ctx, primaryKey, meta, v, body, 60*time.Second)
 		_, _, _ = store.GetVariant(ctx, primaryKey, "gzip")
 	}

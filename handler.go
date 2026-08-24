@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/indragunawan/titip/esi"
 	pb "github.com/indragunawan/titip/proto"
 )
 
@@ -213,6 +214,21 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	if currentAge < 0 {
 		currentAge = 0
 	}
+
+	// Check if cached entry has ESI fragments pre-compiled
+	if t.cfg.ESI.Enabled && len(varInfo.EsiFragments) > 0 {
+		t.metrics.RecordRequest(StatusHit)
+		protoHeaders := make(http.Header)
+		for k, hv := range varInfo.ResponseHeaders {
+			for _, v := range hv.Values {
+				protoHeaders.Add(k, v)
+			}
+		}
+		protoHeaders.Set(HeaderAge, fmt.Sprintf("%d", currentAge))
+		t.processESI(ctx, dstBuf.Bytes(), varInfo.EsiFragments, int(varInfo.StatusCode), protoHeaders, "HIT", fmt.Sprintf("hit; ttl=%d", t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)))
+		return nil
+	}
+
 	t.metrics.RecordRequest(StatusHit)
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
 	ctx.w.Header().Set(HeaderAge, fmt.Sprintf("%d", currentAge))
@@ -243,6 +259,35 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	if currentAge < 0 {
 		currentAge = 0
 	}
+
+	// Check if cached entry has ESI fragments pre-compiled
+	if t.cfg.ESI.Enabled && len(varInfo.EsiFragments) > 0 {
+		t.metrics.RecordRequest(StatusStaleHit)
+		protoHeaders := make(http.Header)
+		for k, hv := range varInfo.ResponseHeaders {
+			for _, v := range hv.Values {
+				protoHeaders.Add(k, v)
+			}
+		}
+		protoHeaders.Set(HeaderAge, fmt.Sprintf("%d", currentAge))
+		t.processESI(ctx, dstBuf.Bytes(), varInfo.EsiFragments, int(varInfo.StatusCode), protoHeaders, "STALE", "hit; stale; detail=swr")
+
+		// Async Background Revalidation
+		if !t.closed.Load() {
+			t.swrWG.Add(1)
+			reqClone := ctx.r.Clone(context.Background())
+			nextHandler := ctx.next
+			pk := ctx.primaryKey
+			m := ctx.meta
+			vk := ctx.variantKey
+			go func() {
+				defer t.swrWG.Done()
+				t.revalidateOrigin(reqClone, nextHandler, pk, m, vk)
+			}()
+		}
+		return nil
+	}
+
 	t.metrics.RecordRequest(StatusStaleHit)
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
 	ctx.w.Header().Set(HeaderAge, fmt.Sprintf("%d", currentAge))
@@ -321,6 +366,36 @@ func stateFetchOriginCold(t *Titip, ctx *requestContext) stateFn {
 	// Cache if eligible and not closed
 	if freshness.IsCacheable && !t.closed.Load() {
 		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
+	}
+
+	// ESI Processing on Cold Miss
+	if t.cfg.ESI.Enabled {
+		headerEligible := true
+		if t.cfg.ESI.HeaderRequired {
+			surr := headersClone.Get("Surrogate-Control")
+			edge := headersClone.Get("Edge-Control")
+			if !strings.Contains(surr, "ESI/1.0") && !strings.Contains(edge, "ESI/1.0") {
+				headerEligible = false
+			}
+		}
+		if headerEligible {
+			hasESI, fragments := esi.Scan(bodyBytes)
+			if hasESI && len(fragments) > 0 {
+				var statusToken string
+				var rfc9211Detail string
+				if freshness.EffectiveTTL > 0 && freshness.IsCacheable {
+					t.metrics.RecordRequest(StatusMiss)
+					statusToken = "MISS"
+					rfc9211Detail = fmt.Sprintf("fwd=uri-miss; fwd-status=%d; stored; ttl=%d", rec.Code, int(freshness.EffectiveTTL.Seconds()))
+				} else {
+					t.metrics.RecordRequest(StatusBypass)
+					statusToken = "BYPASS"
+					rfc9211Detail = fmt.Sprintf("fwd=bypass; fwd-status=%d", rec.Code)
+				}
+				t.processESI(ctx, bodyBytes, fragments, rec.Code, headersClone, statusToken, rfc9211Detail)
+				return nil
+			}
+		}
 	}
 
 	// Serve Response to Client
@@ -466,6 +541,23 @@ func stateFetchOriginStale(t *Titip, ctx *requestContext) stateFn {
 		defer PutBuffer(dstBuf)
 
 		if err := DecompressLZ4(res.fallback.body, dstBuf); err == nil {
+			if t.cfg.ESI.Enabled && len(res.fallback.varInfo.EsiFragments) > 0 {
+				protoHeaders := make(http.Header)
+				for k, hv := range res.fallback.varInfo.ResponseHeaders {
+					for _, v := range hv.Values {
+						protoHeaders.Add(k, v)
+					}
+				}
+				if res.is304Origin {
+					t.metrics.RecordRequest(StatusMiss)
+					t.processESI(ctx, dstBuf.Bytes(), res.fallback.varInfo.EsiFragments, int(res.fallback.varInfo.StatusCode), protoHeaders, "MISS", "fwd=uri-miss; fwd-status=304; stored; detail=304-refreshed")
+				} else {
+					t.metrics.RecordRequest(StatusStaleHit)
+					t.processESI(ctx, dstBuf.Bytes(), res.fallback.varInfo.EsiFragments, int(res.fallback.varInfo.StatusCode), protoHeaders, "STALE", "hit; stale; detail=stale-if-error")
+				}
+				return nil
+			}
+
 			t.copyProtoHeaders(ctx.w, res.fallback.varInfo.ResponseHeaders)
 			if res.is304Origin {
 				t.metrics.RecordRequest(StatusMiss)
@@ -483,6 +575,26 @@ func stateFetchOriginStale(t *Titip, ctx *requestContext) stateFn {
 				_, _ = ctx.w.Write(dstBuf.Bytes())
 			}
 			return nil
+		}
+	}
+
+	// ESI Processing on fresh revalidation
+	if t.cfg.ESI.Enabled {
+		headerEligible := true
+		if t.cfg.ESI.HeaderRequired {
+			surr := res.headers.Get("Surrogate-Control")
+			edge := res.headers.Get("Edge-Control")
+			if !strings.Contains(surr, "ESI/1.0") && !strings.Contains(edge, "ESI/1.0") {
+				headerEligible = false
+			}
+		}
+		if headerEligible {
+			hasESI, fragments := esi.Scan(res.body)
+			if hasESI && len(fragments) > 0 {
+				t.metrics.RecordRequest(StatusMiss)
+				t.processESI(ctx, res.body, fragments, res.statusCode, res.headers, "MISS", fmt.Sprintf("fwd=uri-miss; fwd-status=%d; stored; detail=soft-refreshed", res.statusCode))
+				return nil
+			}
 		}
 	}
 
@@ -540,6 +652,22 @@ func (t *Titip) saveVariantToStorage(
 ) {
 	tags := t.extractTags(headers)
 
+	// Check for ESI directives in body
+	var fragments []*pb.EsiFragment
+	if t.cfg.ESI.Enabled {
+		headerEligible := true
+		if t.cfg.ESI.HeaderRequired {
+			surr := headers.Get("Surrogate-Control")
+			edge := headers.Get("Edge-Control")
+			if !strings.Contains(surr, "ESI/1.0") && !strings.Contains(edge, "ESI/1.0") {
+				headerEligible = false
+			}
+		}
+		if headerEligible {
+			_, fragments = esi.Scan(bodyBytes)
+		}
+	}
+
 	// Compress body payload
 	compBuf := GetBuffer()
 	_ = CompressLZ4(bodyBytes, compBuf)
@@ -591,6 +719,7 @@ func (t *Titip) saveVariantToStorage(
 		Etag:               headers.Get(HeaderETag),
 		RawBodySize:        uint32(len(bodyBytes)),
 		CompressedBodySize: uint32(len(compBytes)),
+		EsiFragments:       fragments,
 	}
 	if lm, err := ParseDate(headers.Get(HeaderLastModified)); err == nil && !lm.IsZero() {
 		newVariant.LastModifiedUnixNano = lm.UnixNano()

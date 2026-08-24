@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -311,10 +312,7 @@ func TestPoolConcurrencyAndRaces(t *testing.T) {
 // --- Benchmarks ---
 
 func BenchmarkBufferPool(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		buf := GetBuffer()
 		buf.WriteString("benchmark buffer data payload")
 		PutBuffer(buf)
@@ -323,10 +321,8 @@ func BenchmarkBufferPool(b *testing.B) {
 
 func BenchmarkResponseRecorderPool(b *testing.B) {
 	payload := []byte(`{"status":"cached"}`)
-	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		rec := GetResponseRecorder()
 		rec.WriteHeader(http.StatusOK)
 		rec.Write(payload)
@@ -335,10 +331,7 @@ func BenchmarkResponseRecorderPool(b *testing.B) {
 }
 
 func BenchmarkProtobufPool(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		m := GetCacheMetadata()
 		m.PrimaryKey = "https://example.com/api/v1"
 		PutCacheMetadata(m)
@@ -358,13 +351,106 @@ func BenchmarkLZ4CompressDecompress(b *testing.B) {
 	compBytes := bytes.Clone(compBuf.Bytes())
 	PutBuffer(compBuf)
 
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		dst := GetBuffer()
 		_ = DecompressLZ4(compBytes, dst)
 		PutBuffer(dst)
 	}
 }
 
+// TestESIMemoryPoolRecycling verifies that all response recorders and splicing byte buffers
+// utilized during ESI execution are safely recycled back to their respective sync.Pools.
+func TestESIMemoryPoolRecycling(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/pool-esi-page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/f1" /><esi:include src="/f2" /></div>`))
+	})
+	mux.HandleFunc("/f1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Fragment 1</span>`))
+	})
+	mux.HandleFunc("/f2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Fragment 2</span>`))
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(ESIConfig{
+			Enabled:        true,
+			InternalRouter: mux,
+		}),
+	)
+	handler := mw.Handler(mux)
+
+	// Execute 100 concurrent requests, ensuring zero pool corruption or buffer retention
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Go(func() {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/pool-esi-page", nil)
+			rec := GetResponseRecorder()
+			defer PutResponseRecorder(rec)
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("expected 200, got %d", rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "<span>Fragment 1</span><span>Fragment 2</span>") {
+				t.Errorf("unexpected body: %s", rec.Body.String())
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// BenchmarkESI_MemoryPoolReuse benchmarks the memory efficiency and zero-leak pool recycling
+// during complete ESI subrequest execution and buffer splicing.
+func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/bench-pool-esi", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/b1" /><esi:include src="/b2" /></div>`))
+	})
+	mux.HandleFunc("/b1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>B1</span>`))
+	})
+	mux.HandleFunc("/b2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>B2</span>`))
+	})
+
+	_, _, mw := setupTestTitip(b,
+		WithESI(ESIConfig{
+			Enabled:        true,
+			InternalRouter: mux,
+		}),
+	)
+	handler := mw.Handler(mux)
+
+	// Warm up cache once
+	warmReq := httptest.NewRequest(http.MethodGet, "http://example.com/bench-pool-esi", nil)
+	warmRec := httptest.NewRecorder()
+	handler.ServeHTTP(warmRec, warmReq)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench-pool-esi", nil)
+
+	for b.Loop() {
+		rec := GetResponseRecorder()
+		handler.ServeHTTP(rec, req)
+		PutResponseRecorder(rec)
+	}
+}
