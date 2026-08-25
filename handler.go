@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,14 +15,15 @@ import (
 	pb "github.com/indragunawan/titip/proto"
 )
 
-// DefaultVariantKey is used as the variant key when no Vary headers are specified.
-const DefaultVariantKey = "default"
+// defaultVariantKey is used as the variant key when no Vary headers are specified.
+const defaultVariantKey = "default"
 
 // stateFn represents a single state transition in the request processing pipeline.
 // Returning nil terminates the state machine loop.
 type stateFn func(t *Titip, ctx *requestContext) stateFn
 
-func (t *Titip) serveHTTP(w http.ResponseWriter, r *http.Request, next http.Handler) {
+// ServeHTTP executes the Titip caching middleware pipeline for a request and forwards to next on cache miss or revalidation.
+func (t *Titip) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	ctx := acquireRequestContext(w, r, next)
 	defer releaseRequestContext(ctx)
 
@@ -42,46 +44,46 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 	}()
 
 	// A. WebSocket Handshake Bypass
-	if strings.EqualFold(ctx.r.Header.Get(HeaderUpgrade), UpgradeWebSocket) {
-		t.metrics.RecordRequest(StatusBypass)
-		t.emitCacheStatus(ctx.w, TokenBypass, "fwd=bypass; detail=websocket-upgrade")
+	if strings.EqualFold(ctx.r.Header.Get(headerUpgrade), upgradeWebSocket) {
+		t.recordRequest(ctx, statusBypass)
+		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=websocket-upgrade")
 		return stateBypassOrigin
 	}
 
 	// B. Server-Sent Events (SSE) Bypass
-	if strings.Contains(strings.ToLower(ctx.r.Header.Get(HeaderAccept)), ContentTypeEventStream) {
-		t.metrics.RecordRequest(StatusBypass)
-		t.emitCacheStatus(ctx.w, TokenBypass, "fwd=bypass; detail=sse-stream")
+	if strings.Contains(strings.ToLower(ctx.r.Header.Get(headerAccept)), contentTypeEventStream) {
+		t.recordRequest(ctx, statusBypass)
+		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=sse-stream")
 		return stateBypassOrigin
 	}
 
 	// C. Range Byte Request Bypass
-	if ctx.r.Header.Get(HeaderRange) != "" {
-		t.metrics.RecordRequest(StatusBypass)
-		t.emitCacheStatus(ctx.w, TokenBypass, "fwd=bypass; detail=range-request")
+	if ctx.r.Header.Get(headerRange) != "" {
+		t.recordRequest(ctx, statusBypass)
+		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=range-request")
 		return stateBypassOrigin
 	}
 
 	// D. Mutating Methods (POST, PUT, DELETE, PATCH)
 	if isMutatingMethod(ctx.r.Method) {
-		t.metrics.RecordRequest(StatusBypass)
-		t.emitCacheStatus(ctx.w, TokenBypass, "fwd=method")
+		t.recordRequest(ctx, statusBypass)
+		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=method")
 		t.handleMutatingRequest(ctx.w, ctx.r, ctx.next)
 		return nil
 	}
 
 	// E. Non-Cacheable Methods (only GET and HEAD are cached)
 	if ctx.r.Method != http.MethodGet && ctx.r.Method != http.MethodHead {
-		t.metrics.RecordRequest(StatusBypass)
-		t.emitCacheStatus(ctx.w, TokenBypass, "fwd=method")
+		t.recordRequest(ctx, statusBypass)
+		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=method")
 		return stateBypassOrigin
 	}
 
 	// F. Client Cache-Control: no-store
 	if !t.cfg.IgnoreClientCacheControl {
-		if cc := ctx.r.Header.Get(HeaderCacheControl); strings.Contains(cc, "no-store") {
-			t.metrics.RecordRequest(StatusBypass)
-			t.emitCacheStatus(ctx.w, TokenBypass, "fwd=request; detail=no-store")
+		if cc := ctx.r.Header.Get(headerCacheControl); strings.Contains(cc, "no-store") {
+			t.recordRequest(ctx, statusBypass)
+			t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=no-store")
 			return stateBypassOrigin
 		}
 	}
@@ -91,18 +93,18 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 
 // 2. stateLookupMetadata: Generates Primary Key and looks up Stage 1 metadata in Redis
 func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
-	ctx.primaryKey = GeneratePrimaryKey(ctx.r, &t.cfg.KeyConfig)
+	ctx.primaryKey = generatePrimaryKey(ctx.r, &t.cfg.KeyConfig)
 
 	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.StorageTimeout)
 	meta, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)
 	storeCancel()
 
 	if err != nil {
-		t.metrics.RecordRequest(StatusError)
+		t.recordRequest(ctx, statusError)
 		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
 			t.logger.ErrorContext(ctx.r.Context(), "titip: storage error fetching metadata, bypassing to origin", "error", err, "key", ctx.primaryKey)
 		}
-		t.emitCacheStatus(ctx.w, TokenBypass, "fwd=bypass; detail=storage-fallback")
+		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=storage-fallback")
 		return stateBypassOrigin
 	}
 
@@ -118,9 +120,9 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 
 // 3. stateMatchVariant: Evaluates Vary headers and matches variant in metadata
 func stateMatchVariant(t *Titip, ctx *requestContext) stateFn {
-	ctx.variantKey = GenerateVariantKey(ctx.r, ctx.meta.VaryHeaderNames)
+	ctx.variantKey = generateVariantKey(ctx.r, ctx.meta.VaryHeaderNames)
 	if ctx.variantKey == "" {
-		ctx.variantKey = DefaultVariantKey
+		ctx.variantKey = defaultVariantKey
 	}
 
 	varInfo, exists := ctx.meta.Variants[ctx.variantKey]
@@ -167,8 +169,8 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 
 // 5. stateServe304: Writes HTTP 304 Not Modified directly with 0 Redis Body I/O
 func stateServe304(t *Titip, ctx *requestContext) stateFn {
-	t.metrics.RecordRequest(StatusHit)
-	t.emitCacheStatus(ctx.w, TokenHit, "hit")
+	t.recordRequest(ctx, statusHit)
+	t.emitCacheStatus(ctx.w, tokenHit, "hit")
 	t.copyProtoHeaders(ctx.w, ctx.varInfo.ResponseHeaders)
 	ctx.w.WriteHeader(http.StatusNotModified)
 	return nil
@@ -178,8 +180,9 @@ func stateServe304(t *Titip, ctx *requestContext) stateFn {
 func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	// HEAD Request Handling (0 body I/O)
 	if ctx.r.Method == http.MethodHead {
-		t.metrics.RecordRequest(StatusHit)
-		t.emitCacheStatus(ctx.w, TokenHit, fmt.Sprintf("hit; ttl=%d", t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)))
+		t.recordRequest(ctx, statusHit)
+		ttlStr := strconv.FormatInt(t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano), 10)
+		t.emitCacheStatus(ctx.w, tokenHit, "hit; ttl="+ttlStr)
 		t.copyProtoHeaders(ctx.w, ctx.varInfo.ResponseHeaders)
 		ctx.w.WriteHeader(int(ctx.varInfo.StatusCode))
 		return nil
@@ -194,10 +197,10 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 		return stateFetchOriginMiss
 	}
 
-	dstBuf := GetBuffer()
-	defer PutBuffer(dstBuf)
+	dstBuf := getBuffer()
+	defer putBuffer(dstBuf)
 
-	if err := DecompressLZ4(compBody, dstBuf); err != nil {
+	if err := decompressLZ4(compBody, dstBuf); err != nil {
 		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
 			t.logger.ErrorContext(ctx.r.Context(), "titip: decompression error, failing open to origin", "error", err)
 		}
@@ -218,24 +221,27 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 		currentAge = 0
 	}
 
+	ageStr := strconv.FormatInt(currentAge, 10)
+	ttlStr := strconv.FormatInt(t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano), 10)
+
 	// Check if cached entry has ESI fragments pre-compiled
 	if t.cfg.ESI.Enabled && len(varInfo.EsiFragments) > 0 {
-		t.metrics.RecordRequest(StatusHit)
+		t.recordRequest(ctx, statusHit)
 		protoHeaders := make(http.Header)
 		for k, hv := range varInfo.ResponseHeaders {
 			for _, v := range hv.Values {
 				protoHeaders.Add(k, v)
 			}
 		}
-		protoHeaders.Set(HeaderAge, fmt.Sprintf("%d", currentAge))
-		t.processESI(ctx, dstBuf.Bytes(), varInfo.EsiFragments, int(varInfo.StatusCode), protoHeaders, TokenHit, fmt.Sprintf("hit; ttl=%d", t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)))
+		protoHeaders.Set(headerAge, ageStr)
+		t.processESI(ctx, dstBuf.Bytes(), varInfo.EsiFragments, int(varInfo.StatusCode), protoHeaders, tokenHit, "hit; ttl="+ttlStr)
 		return nil
 	}
 
-	t.metrics.RecordRequest(StatusHit)
+	t.recordRequest(ctx, statusHit)
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
-	ctx.w.Header().Set(HeaderAge, fmt.Sprintf("%d", currentAge))
-	t.emitCacheStatus(ctx.w, TokenHit, fmt.Sprintf("hit; ttl=%d", t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)))
+	ctx.w.Header().Set(headerAge, ageStr)
+	t.emitCacheStatus(ctx.w, tokenHit, "hit; ttl="+ttlStr)
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
 	_, _ = ctx.w.Write(dstBuf.Bytes())
 	return nil
@@ -251,10 +257,10 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 		return stateFetchOriginMiss
 	}
 
-	dstBuf := GetBuffer()
-	defer PutBuffer(dstBuf)
+	dstBuf := getBuffer()
+	defer putBuffer(dstBuf)
 
-	if err := DecompressLZ4(compBody, dstBuf); err != nil {
+	if err := decompressLZ4(compBody, dstBuf); err != nil {
 		return stateFetchOriginMiss
 	}
 
@@ -263,17 +269,19 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 		currentAge = 0
 	}
 
+	ageStr := strconv.FormatInt(currentAge, 10)
+
 	// Check if cached entry has ESI fragments pre-compiled
 	if t.cfg.ESI.Enabled && len(varInfo.EsiFragments) > 0 {
-		t.metrics.RecordRequest(StatusStaleHit)
+		t.recordRequest(ctx, statusStaleHit)
 		protoHeaders := make(http.Header)
 		for k, hv := range varInfo.ResponseHeaders {
 			for _, v := range hv.Values {
 				protoHeaders.Add(k, v)
 			}
 		}
-		protoHeaders.Set(HeaderAge, fmt.Sprintf("%d", currentAge))
-		t.processESI(ctx, dstBuf.Bytes(), varInfo.EsiFragments, int(varInfo.StatusCode), protoHeaders, TokenUpdating, "hit; stale; detail=swr")
+		protoHeaders.Set(headerAge, ageStr)
+		t.processESI(ctx, dstBuf.Bytes(), varInfo.EsiFragments, int(varInfo.StatusCode), protoHeaders, tokenUpdating, "hit; stale; detail=swr")
 
 		// Async Background Revalidation
 		if !t.closed.Load() {
@@ -291,10 +299,10 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 		return nil
 	}
 
-	t.metrics.RecordRequest(StatusStaleHit)
+	t.recordRequest(ctx, statusStaleHit)
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
-	ctx.w.Header().Set(HeaderAge, fmt.Sprintf("%d", currentAge))
-	t.emitCacheStatus(ctx.w, TokenUpdating, "hit; stale; detail=swr")
+	ctx.w.Header().Set(headerAge, ageStr)
+	t.emitCacheStatus(ctx.w, tokenUpdating, "hit; stale; detail=swr")
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
 	_, _ = ctx.w.Write(dstBuf.Bytes())
 
@@ -321,8 +329,8 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	originCtx, cancel := context.WithTimeout(detachedCtx, t.cfg.OriginTimeout)
 	defer cancel()
 
-	rec := GetResponseRecorder()
-	defer PutResponseRecorder(rec)
+	rec := getResponseRecorder()
+	defer putResponseRecorder(rec)
 
 	reqTime := time.Now()
 	var panicked bool
@@ -348,12 +356,12 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	headersClone := rec.Header().Clone()
 
 	// Calculate freshness & evaluate cacheability
-	freshness := CalculateFreshness(rec.Code, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
+	freshness := calculateFreshness(rec.Code, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
 
 	// Stream / SSE Response Detection
-	if strings.Contains(strings.ToLower(headersClone.Get(HeaderContentType)), ContentTypeEventStream) {
-		t.metrics.RecordRequest(StatusBypass)
-		t.emitCacheStatus(ctx.w, TokenDynamic, "fwd=bypass; detail=sse-response")
+	if strings.Contains(strings.ToLower(headersClone.Get(headerContentType)), contentTypeEventStream) {
+		t.recordRequest(ctx, statusBypass)
+		t.emitCacheStatus(ctx.w, tokenDynamic, "fwd=bypass; detail=sse-response")
 		for k, vv := range headersClone {
 			for _, v := range vv {
 				ctx.w.Header().Add(k, v)
@@ -391,12 +399,12 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 					missReason = "fwd=vary-miss"
 				}
 				if freshness.EffectiveTTL > 0 && freshness.IsCacheable {
-					t.metrics.RecordRequest(StatusMiss)
-					statusToken = TokenMiss
+					t.recordRequest(ctx, statusMiss)
+					statusToken = tokenMiss
 					rfc9211Detail = fmt.Sprintf("%s; fwd-status=%d; stored; ttl=%d", missReason, rec.Code, int(freshness.EffectiveTTL.Seconds()))
 				} else {
-					t.metrics.RecordRequest(StatusBypass)
-					statusToken = TokenDynamic
+					t.recordRequest(ctx, statusBypass)
+					statusToken = tokenDynamic
 					rfc9211Detail = fmt.Sprintf("fwd=bypass; fwd-status=%d", rec.Code)
 				}
 				t.processESI(ctx, bodyBytes, fragments, rec.Code, headersClone, statusToken, rfc9211Detail)
@@ -417,11 +425,11 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		missReason = "fwd=vary-miss"
 	}
 	if freshness.EffectiveTTL > 0 && freshness.IsCacheable {
-		t.metrics.RecordRequest(StatusMiss)
-		t.emitCacheStatus(ctx.w, TokenMiss, fmt.Sprintf("%s; fwd-status=%d; stored; ttl=%d", missReason, rec.Code, int(freshness.EffectiveTTL.Seconds())))
+		t.recordRequest(ctx, statusMiss)
+		t.emitCacheStatus(ctx.w, tokenMiss, fmt.Sprintf("%s; fwd-status=%d; stored; ttl=%d", missReason, rec.Code, int(freshness.EffectiveTTL.Seconds())))
 	} else {
-		t.metrics.RecordRequest(StatusBypass)
-		t.emitCacheStatus(ctx.w, TokenDynamic, fmt.Sprintf("fwd=bypass; fwd-status=%d", rec.Code))
+		t.recordRequest(ctx, statusBypass)
+		t.emitCacheStatus(ctx.w, tokenDynamic, fmt.Sprintf("fwd=bypass; fwd-status=%d", rec.Code))
 	}
 
 	ctx.w.WriteHeader(rec.Code)
@@ -451,17 +459,17 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		originCtx, cancel := context.WithTimeout(detachedCtx, t.cfg.OriginTimeout)
 		defer cancel()
 
-		rec := GetResponseRecorder()
-		defer PutResponseRecorder(rec)
+		rec := getResponseRecorder()
+		defer putResponseRecorder(rec)
 
 		// Attach conditional headers for Upstream 304 Revalidation
 		revalReq := ctx.r.Clone(originCtx)
 		if staleVar != nil {
 			if staleVar.Etag != "" {
-				revalReq.Header.Set(HeaderIfNoneMatch, staleVar.Etag)
+				revalReq.Header.Set(headerIfNoneMatch, staleVar.Etag)
 			}
 			if staleVar.LastModifiedUnixNano > 0 {
-				revalReq.Header.Set(HeaderIfModifiedSince, time.Unix(0, staleVar.LastModifiedUnixNano).UTC().Format(http.TimeFormat))
+				revalReq.Header.Set(headerIfModifiedSince, time.Unix(0, staleVar.LastModifiedUnixNano).UTC().Format(http.TimeFormat))
 			}
 		}
 
@@ -472,21 +480,18 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 				if p := recover(); p != nil {
 					panicked = true
 					if t.logger.Enabled(originCtx, slog.LevelError) {
-						t.logger.ErrorContext(originCtx, "titip: revalidation origin handler panic", "panic", p)
+						t.logger.ErrorContext(originCtx, "titip: singleflight origin panic", "panic", p)
 					}
 				}
 			}()
 			ctx.next.ServeHTTP(rec, revalReq)
 		}()
 
-		// Fallback to stale cache on 5xx or panic
-		if (panicked || rec.Code >= 500) && staleVar != nil && len(staleCompBody) > 0 {
-			return &fetchResult{
-				isFallback: true,
-				fallback:   &staleFallback{varInfo: staleVar, body: staleCompBody, meta: ctx.meta},
-				statusCode: rec.Code,
-				panicked:   panicked,
-			}, nil
+		if panicked {
+			if staleVar != nil {
+				return &fetchResult{isFallback: true, fallback: &staleFallback{varInfo: staleVar, body: staleCompBody, meta: ctx.meta}}, nil
+			}
+			return &fetchResult{statusCode: http.StatusInternalServerError}, nil
 		}
 
 		respTime := time.Now()
@@ -495,7 +500,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 		// Upstream 304 Not Modified Handling
 		if rec.Code == http.StatusNotModified && staleVar != nil && len(staleCompBody) > 0 {
-			freshness := CalculateFreshness(200, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
+			freshness := calculateFreshness(200, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
 			if freshness.EffectiveTTL > 0 && !t.closed.Load() {
 				// Refresh Redis TTL without rewriting body
 				ctx.meta.ExpiresAtUnixNano = respTime.Add(freshness.EffectiveTTL).UnixNano()
@@ -515,11 +520,19 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 				statusCode:  200,
 				is304Origin: true,
 				fallback:    &staleFallback{varInfo: staleVar, body: staleCompBody, meta: ctx.meta},
-				ttl:         freshness.EffectiveTTL,
 			}, nil
 		}
 
-		freshness := CalculateFreshness(rec.Code, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
+		// Fallback to stale if origin returns 5xx
+		if rec.Code >= 500 && staleVar != nil && len(staleCompBody) > 0 {
+			return &fetchResult{
+				isFallback: true,
+				fallback:   &staleFallback{varInfo: staleVar, body: staleCompBody, meta: ctx.meta},
+				statusCode: rec.Code,
+			}, nil
+		}
+
+		freshness := calculateFreshness(rec.Code, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
 		if freshness.IsCacheable && !t.closed.Load() {
 			t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
 		}
@@ -553,10 +566,10 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 	// Serve stale fallback or origin 304 refreshed cached body
 	if (res.isFallback || res.is304Origin) && res.fallback != nil {
-		dstBuf := GetBuffer()
-		defer PutBuffer(dstBuf)
+		dstBuf := getBuffer()
+		defer putBuffer(dstBuf)
 
-		if err := DecompressLZ4(res.fallback.body, dstBuf); err == nil {
+		if err := decompressLZ4(res.fallback.body, dstBuf); err == nil {
 			if t.cfg.ESI.Enabled && len(res.fallback.varInfo.EsiFragments) > 0 {
 				protoHeaders := make(http.Header)
 				for k, hv := range res.fallback.varInfo.ResponseHeaders {
@@ -565,26 +578,26 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 					}
 				}
 				if res.is304Origin {
-					t.metrics.RecordRequest(StatusMiss)
-					t.processESI(ctx, dstBuf.Bytes(), res.fallback.varInfo.EsiFragments, int(res.fallback.varInfo.StatusCode), protoHeaders, TokenRevalidated, fmt.Sprintf("fwd=stale; fwd-status=304%s; stored; detail=304-refreshed", collapsedToken))
+					t.recordRequest(ctx, statusRevalidated)
+					t.processESI(ctx, dstBuf.Bytes(), res.fallback.varInfo.EsiFragments, int(res.fallback.varInfo.StatusCode), protoHeaders, tokenRevalidated, fmt.Sprintf("fwd=stale; fwd-status=304%s; stored; detail=304-refreshed", collapsedToken))
 				} else {
-					t.metrics.RecordRequest(StatusStaleHit)
-					t.processESI(ctx, dstBuf.Bytes(), res.fallback.varInfo.EsiFragments, int(res.fallback.varInfo.StatusCode), protoHeaders, TokenStale, "hit; stale; detail=stale-if-error")
+					t.recordRequest(ctx, statusStaleHit)
+					t.processESI(ctx, dstBuf.Bytes(), res.fallback.varInfo.EsiFragments, int(res.fallback.varInfo.StatusCode), protoHeaders, tokenStale, "hit; stale; detail=stale-if-error")
 				}
 				return nil
 			}
 
 			t.copyProtoHeaders(ctx.w, res.fallback.varInfo.ResponseHeaders)
 			if res.is304Origin {
-				t.metrics.RecordRequest(StatusMiss)
-				t.emitCacheStatus(ctx.w, TokenRevalidated, fmt.Sprintf("fwd=stale; fwd-status=304%s; stored; detail=304-refreshed", collapsedToken))
+				t.recordRequest(ctx, statusRevalidated)
+				t.emitCacheStatus(ctx.w, tokenRevalidated, fmt.Sprintf("fwd=stale; fwd-status=304%s; stored; detail=304-refreshed", collapsedToken))
 			} else {
 				fwdStatus := res.statusCode
 				if fwdStatus == 0 {
 					fwdStatus = 500
 				}
-				t.metrics.RecordRequest(StatusStaleHit)
-				t.emitCacheStatus(ctx.w, TokenStale, fmt.Sprintf("hit; stale; fwd=stale; fwd-status=%d; detail=stale-if-error", fwdStatus))
+				t.recordRequest(ctx, statusStaleHit)
+				t.emitCacheStatus(ctx.w, tokenStale, fmt.Sprintf("hit; stale; fwd=stale; fwd-status=%d; detail=stale-if-error", fwdStatus))
 			}
 			ctx.w.WriteHeader(int(res.fallback.varInfo.StatusCode))
 			if ctx.r.Method != http.MethodHead {
@@ -607,8 +620,8 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		if headerEligible {
 			hasESI, fragments := esi.Scan(res.body)
 			if hasESI && len(fragments) > 0 {
-				t.metrics.RecordRequest(StatusMiss)
-				t.processESI(ctx, res.body, fragments, res.statusCode, res.headers, TokenExpired, fmt.Sprintf("fwd=stale; fwd-status=%d%s; stored; detail=soft-refreshed", res.statusCode, collapsedToken))
+				t.recordRequest(ctx, statusMiss)
+				t.processESI(ctx, res.body, fragments, res.statusCode, res.headers, tokenExpired, fmt.Sprintf("fwd=stale; fwd-status=%d%s; stored; detail=soft-refreshed", res.statusCode, collapsedToken))
 				return nil
 			}
 		}
@@ -621,8 +634,8 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		}
 	}
 
-	t.metrics.RecordRequest(StatusMiss)
-	t.emitCacheStatus(ctx.w, TokenExpired, fmt.Sprintf("fwd=stale; fwd-status=%d%s; stored; detail=soft-refreshed", res.statusCode, collapsedToken))
+	t.recordRequest(ctx, statusMiss)
+	t.emitCacheStatus(ctx.w, tokenExpired, fmt.Sprintf("fwd=stale; fwd-status=%d%s; stored; detail=soft-refreshed", res.statusCode, collapsedToken))
 	ctx.w.WriteHeader(res.statusCode)
 	if ctx.r.Method != http.MethodHead {
 		_, _ = ctx.w.Write(res.body)
@@ -652,7 +665,6 @@ type fetchResult struct {
 	isFallback  bool
 	is304Origin bool
 	fallback    *staleFallback
-	panicked    bool
 	ttl         time.Duration
 }
 
@@ -663,7 +675,7 @@ func (t *Titip) saveVariantToStorage(
 	r *http.Request,
 	headers http.Header,
 	bodyBytes []byte,
-	freshness FreshnessInfo,
+	freshness freshnessInfo,
 	respTime time.Time,
 ) {
 	tags := t.extractTags(headers)
@@ -685,19 +697,19 @@ func (t *Titip) saveVariantToStorage(
 	}
 
 	// Compress body payload
-	compBuf := GetBuffer()
-	_ = CompressLZ4(bodyBytes, compBuf)
+	compBuf := getBuffer()
+	_ = compressLZ4(bodyBytes, compBuf)
 	compBytes := bytes.Clone(compBuf.Bytes())
-	PutBuffer(compBuf)
+	putBuffer(compBuf)
 
 	// Build / update metadata
 	varNames := t.extractVaryHeaderNames(headers)
 	varKey := variantKey
-	if varKey == "" || varKey == DefaultVariantKey {
-		varKey = GenerateVariantKey(r, varNames)
+	if varKey == "" || varKey == defaultVariantKey {
+		varKey = generateVariantKey(r, varNames)
 	}
 	if varKey == "" {
-		varKey = DefaultVariantKey
+		varKey = defaultVariantKey
 	}
 
 	if t.logger.Enabled(r.Context(), slog.LevelDebug) {
@@ -732,12 +744,12 @@ func (t *Titip) saveVariantToStorage(
 		VariantKey:         varKey,
 		StatusCode:         int32(statusCode),
 		ResponseHeaders:    protoHeadersFromHTTP(headers),
-		Etag:               headers.Get(HeaderETag),
+		Etag:               headers.Get(headerETag),
 		RawBodySize:        uint32(len(bodyBytes)),
 		CompressedBodySize: uint32(len(compBytes)),
 		EsiFragments:       fragments,
 	}
-	if lm, err := ParseDate(headers.Get(HeaderLastModified)); err == nil && !lm.IsZero() {
+	if lm, err := parseDate(headers.Get(headerLastModified)); err == nil && !lm.IsZero() {
 		newVariant.LastModifiedUnixNano = lm.UnixNano()
 	}
 
@@ -766,8 +778,8 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	bgCtx, cancel := context.WithTimeout(context.Background(), t.cfg.OriginTimeout)
 	defer cancel()
 
-	rec := GetResponseRecorder()
-	defer PutResponseRecorder(rec)
+	rec := getResponseRecorder()
+	defer putResponseRecorder(rec)
 
 	reqTime := time.Now()
 	next.ServeHTTP(rec, r.WithContext(bgCtx))
@@ -776,7 +788,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	headers := rec.Header().Clone()
 	bodyBytes := bytes.Clone(rec.Body.Bytes())
 
-	freshness := CalculateFreshness(rec.Code, headers, reqTime, respTime, respTime, t.cacheableStatusCodes)
+	freshness := calculateFreshness(rec.Code, headers, reqTime, respTime, respTime, t.cacheableStatusCodes)
 	if freshness.IsCacheable && !t.closed.Load() {
 		t.saveVariantToStorage(bgCtx, primaryKey, variantKey, rec.Code, r, headers, bodyBytes, freshness, respTime)
 	}
@@ -786,7 +798,7 @@ func (t *Titip) handleMutatingRequest(w http.ResponseWriter, r *http.Request, ne
 	next.ServeHTTP(w, r)
 
 	if t.cfg.AutoInvalidateMutatingMethods {
-		primaryKey := GeneratePrimaryKey(r, &t.cfg.KeyConfig)
+		primaryKey := generatePrimaryKey(r, &t.cfg.KeyConfig)
 		delCtx, delCancel := context.WithTimeout(context.Background(), t.cfg.StorageTimeout)
 		defer delCancel()
 		_ = t.storage.Delete(delCtx, primaryKey)
@@ -804,13 +816,13 @@ func isMutatingMethod(method string) bool {
 
 func (t *Titip) checkConditionalMatch(r *http.Request, varInfo *pb.VariantInfo) bool {
 	// If-None-Match (Weak ETag comparison per RFC-7232 §2.3.2)
-	if ifNoneMatch := r.Header.Get(HeaderIfNoneMatch); ifNoneMatch != "" {
+	if ifNoneMatch := r.Header.Get(headerIfNoneMatch); ifNoneMatch != "" {
 		if ifNoneMatch == "*" && varInfo != nil {
 			return true
 		}
 		if varInfo != nil && varInfo.Etag != "" {
 			for _, tag := range strings.Split(ifNoneMatch, ",") {
-				if ETagMatches(tag, varInfo.Etag) {
+				if etagMatches(tag, varInfo.Etag) {
 					return true
 				}
 			}
@@ -819,8 +831,8 @@ func (t *Titip) checkConditionalMatch(r *http.Request, varInfo *pb.VariantInfo) 
 	}
 
 	// If-Modified-Since
-	if ifModSince := r.Header.Get(HeaderIfModifiedSince); ifModSince != "" && varInfo != nil && varInfo.LastModifiedUnixNano > 0 {
-		clientTime, err := ParseDate(ifModSince)
+	if ifModSince := r.Header.Get(headerIfModifiedSince); ifModSince != "" && varInfo != nil && varInfo.LastModifiedUnixNano > 0 {
+		clientTime, err := parseDate(ifModSince)
 		if err == nil {
 			cachedTime := time.Unix(0, varInfo.LastModifiedUnixNano)
 			return !cachedTime.After(clientTime)
@@ -841,9 +853,9 @@ func (t *Titip) calcTTL(expiresAtUnixNano, nowNano int64) int64 {
 func (t *Titip) emitCacheStatus(w http.ResponseWriter, simpleToken, rfc9211Detail string) {
 	switch t.cfg.CacheStatusMode {
 	case CacheStatusRFC9211:
-		w.Header().Set(HeaderCacheStatus, fmt.Sprintf("titip; %s", rfc9211Detail))
+		w.Header().Set(headerCacheStatus, fmt.Sprintf("titip; %s", rfc9211Detail))
 	case CacheStatusSimpleToken:
-		w.Header().Set(HeaderCacheStatus, simpleToken)
+		w.Header().Set(headerCacheStatus, simpleToken)
 	case CacheStatusNone:
 		// Do not emit Cache-Status header
 	}
@@ -852,7 +864,7 @@ func (t *Titip) emitCacheStatus(w http.ResponseWriter, simpleToken, rfc9211Detai
 func (t *Titip) extractTags(headers http.Header) []string {
 	name := t.cfg.TagHeaderName
 	if name == "" {
-		name = HeaderCacheTag
+		name = headerCacheTag
 	}
 	val := headers.Get(name)
 	if val == "" {
@@ -876,7 +888,7 @@ func splitAndTrimTags(s string) []string {
 }
 
 func (t *Titip) extractVaryHeaderNames(headers http.Header) []string {
-	varyHeader := headers.Get(HeaderVary)
+	varyHeader := headers.Get(headerVary)
 	if varyHeader == "" {
 		return nil
 	}
@@ -944,4 +956,15 @@ func (t *Titip) copyProtoHeaders(w http.ResponseWriter, protoHeaders map[string]
 			w.Header().Add(k, v)
 		}
 	}
+}
+
+func (t *Titip) recordRequest(ctx *requestContext, status string) {
+	if t.metrics == nil {
+		return
+	}
+	var dur time.Duration
+	if ctx != nil && ctx.nowNano > 0 {
+		dur = time.Duration(time.Now().UnixNano() - ctx.nowNano)
+	}
+	t.metrics.recordRequest(status, dur)
 }

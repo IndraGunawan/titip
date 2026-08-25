@@ -29,29 +29,29 @@ const (
 
 // Standard Simple-Token Cache-Status values emitted when CacheStatusSimpleToken is active.
 const (
-	// TokenHit indicates the request was served fresh directly from the cache (or matched downstream client conditional 304).
-	TokenHit = "HIT"
+	// tokenHit indicates the request was served fresh directly from the cache (or matched downstream client conditional 304).
+	tokenHit = "HIT"
 
-	// TokenMiss indicates the resource was not found in the cache, was fetched from origin, and was saved to cache.
-	TokenMiss = "MISS"
+	// tokenMiss indicates the resource was not found in the cache, was fetched from origin, and was saved to cache.
+	tokenMiss = "MISS"
 
-	// TokenExpired indicates the cached entry was expired or soft-purged, was synchronously revalidated with origin, and was refreshed with a new 200 OK.
-	TokenExpired = "EXPIRED"
+	// tokenExpired indicates the cached entry was expired or soft-purged, was synchronously revalidated with origin, and was refreshed with a new 200 OK.
+	tokenExpired = "EXPIRED"
 
-	// TokenRevalidated indicates the cached entry was expired, was revalidated with origin via conditional headers, and was refreshed with a 304 Not Modified.
-	TokenRevalidated = "REVALIDATED"
+	// tokenRevalidated indicates the cached entry was expired, was revalidated with origin via conditional headers, and was refreshed with a 304 Not Modified.
+	tokenRevalidated = "REVALIDATED"
 
-	// TokenUpdating indicates a stale cached entry was served immediately to the client while an asynchronous background goroutine revalidates it with origin (stale-while-revalidate).
-	TokenUpdating = "UPDATING"
+	// tokenUpdating indicates a stale cached entry was served immediately to the client while an asynchronous background goroutine revalidates it with origin (stale-while-revalidate).
+	tokenUpdating = "UPDATING"
 
-	// TokenStale indicates a stale cached entry was served as a failover fallback because the origin returned a 5xx server error or panicked (stale-if-error).
-	TokenStale = "STALE"
+	// tokenStale indicates a stale cached entry was served as a failover fallback because the origin returned a 5xx server error or panicked (stale-if-error).
+	tokenStale = "STALE"
 
-	// TokenBypass indicates caching was explicitly bypassed due to request characteristics (mutating HTTP methods like POST/PUT/DELETE, Range requests, client Cache-Control: no-store, or WebSocket upgrades).
-	TokenBypass = "BYPASS"
+	// tokenBypass indicates caching was explicitly bypassed due to request characteristics (mutating HTTP methods like POST/PUT/DELETE, Range requests, client Cache-Control: no-store, or WebSocket upgrades).
+	tokenBypass = "BYPASS"
 
-	// TokenDynamic indicates the request was evaluated for caching, but the origin returned an uncacheable response (e.g. Set-Cookie, Cache-Control: private/no-store, or SSE event-stream).
-	TokenDynamic = "DYNAMIC"
+	// tokenDynamic indicates the request was evaluated for caching, but the origin returned an uncacheable response (e.g. Set-Cookie, Cache-Control: private/no-store, or SSE event-stream).
+	tokenDynamic = "DYNAMIC"
 )
 
 // InternalFetcherFunc defines the signature for resolving in-process ESI includes.
@@ -233,8 +233,8 @@ func ESIHandlerFetcher(router http.Handler) InternalFetcherFunc {
 		}
 		subReq = subReq.WithContext(ctx)
 
-		rec := GetResponseRecorder()
-		defer PutResponseRecorder(rec)
+		rec := getResponseRecorder()
+		defer putResponseRecorder(rec)
 
 		router.ServeHTTP(rec, subReq)
 

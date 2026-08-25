@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -167,8 +166,8 @@ func (t *Titip) processESI(
 	}
 
 	// 4. Pre-sized output buffer splicing
-	outBuf := GetBuffer()
-	defer PutBuffer(outBuf)
+	outBuf := getBuffer()
+	defer putBuffer(outBuf)
 
 	t.spliceFragments(parentBody, results, outBuf)
 	splicedBytes := outBuf.Bytes()
@@ -184,9 +183,9 @@ func (t *Titip) processESI(
 	reconciledHeaders.Del("Edge-Control")
 
 	// Weaken or recalculate ETag
-	if etag := reconciledHeaders.Get(HeaderETag); etag != "" {
+	if etag := reconciledHeaders.Get(headerETag); etag != "" {
 		if !strings.HasPrefix(etag, "W/") && !strings.HasPrefix(etag, "w/") {
-			reconciledHeaders.Set(HeaderETag, "W/"+etag)
+			reconciledHeaders.Set(headerETag, "W/"+etag)
 		}
 	}
 
@@ -266,7 +265,7 @@ func (t *Titip) executeInclude(
 					slog.String("stack", string(debug.Stack())),
 				)
 			}
-			t.metrics.RecordESIFragment("error")
+			t.metrics.recordESIFragment("error")
 			res.err = fmt.Errorf("titip: esi: panic: %v", r)
 			res.body = t.resolveFallback(target.fallback, target.onError)
 		}
@@ -279,7 +278,7 @@ func (t *Titip) executeInclude(
 	}
 
 	if state.depth >= effectiveMaxDepth {
-		t.metrics.RecordESIFragment("fallback")
+		t.metrics.recordESIFragment("fallback")
 		res.err = ErrMaxDepthExceeded
 		res.body = t.resolveFallback(target.fallback, target.onError)
 		return res
@@ -287,7 +286,7 @@ func (t *Titip) executeInclude(
 
 	// Check circular include
 	if slices.Contains(state.visitedURLs, src) {
-		t.metrics.RecordESIFragment("fallback")
+		t.metrics.recordESIFragment("fallback")
 		if t.logger.Enabled(parentCtx.r.Context(), slog.LevelWarn) {
 			t.logger.WarnContext(parentCtx.r.Context(), "titip: esi: circular include loop detected",
 				slog.String("src", src),
@@ -328,8 +327,8 @@ func (t *Titip) executeInclude(
 			}
 		}
 
-		t.metrics.RecordESIFragment("success")
-		t.metrics.RecordESIDuration(mode, time.Since(fetchStart))
+		t.metrics.recordESIFragment("success")
+		t.metrics.recordESIDuration(mode, time.Since(fetchStart))
 		if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
 			t.logger.DebugContext(parentCtx.r.Context(), "titip: esi: fragment resolved",
 				slog.String("src", src),
@@ -371,8 +370,8 @@ func (t *Titip) executeInclude(
 				}
 			}
 
-			t.metrics.RecordESIFragment("fallback")
-			t.metrics.RecordESIDuration(altMode, time.Since(altStart))
+			t.metrics.recordESIFragment("fallback")
+			t.metrics.recordESIDuration(altMode, time.Since(altStart))
 			if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
 				t.logger.DebugContext(parentCtx.r.Context(), "titip: esi: alt fragment resolved",
 					slog.String("src", src),
@@ -398,7 +397,7 @@ func (t *Titip) executeInclude(
 	}
 
 	// 3. Both primary and alt failed: Resolve fallback body or onError=continue
-	t.metrics.RecordESIFragment("fallback")
+	t.metrics.recordESIFragment("fallback")
 	res.err = err
 	res.body = t.resolveFallback(target.fallback, target.onError)
 	res.duration = time.Since(fetchStart)
@@ -493,14 +492,14 @@ func (t *Titip) processNestedESI(
 		}
 	}
 
-	outBuf := GetBuffer()
-	defer PutBuffer(outBuf)
+	outBuf := getBuffer()
+	defer putBuffer(outBuf)
 
 	t.spliceFragments(body, results, outBuf)
 	return bytes.Clone(outBuf.Bytes()), allCookies
 }
 
-// fetchFragment routes the include request to either in-process virtual subrequest or outbound HTTP client.
+// fetchFragment routes the include request to either a custom in-process fetcher or outbound HTTP client.
 func (t *Titip) fetchFragment(
 	parentCtx *requestContext,
 	targetURL string,
@@ -509,34 +508,33 @@ func (t *Titip) fetchFragment(
 ) ([]byte, []string, string, error) {
 	parsed, err := esi.ValidateURLScheme(targetURL)
 	if err != nil {
-		t.metrics.RecordESIFragment("ssrf_blocked")
+		t.metrics.recordESIFragment("ssrf_blocked")
 		return nil, nil, "", err
 	}
 
-	// 1. Relative path include or absolute URL targeting the same host as root request
+	// 1. If custom InternalFetcher is configured and target URL is relative or same host
 	isSameHost := parsed.Host == "" || strings.EqualFold(parsed.Host, parentCtx.r.Host)
-	if isSameHost {
+	if isSameHost && t.cfg.ESI.InternalFetcher != nil {
 		targetPath := parsed.RequestURI()
 		if targetPath == "" {
 			targetPath = "/"
 		}
-
-		if t.cfg.ESI.InternalFetcher != nil {
-			return t.fetchViaCustomFetcher(parentCtx, targetPath, timeout, state)
-		}
-
-		if parentCtx.next != nil {
-			// In-process virtual subrequest via downstream next handler
-			return t.fetchInProcess(parentCtx, targetPath, timeout, parentCtx.next, state)
-		}
-
-		// Fallback to loopback HTTP if no router is configured
-		loopbackURL := "http://" + parentCtx.r.Host + targetPath
-		return t.fetchOutboundHTTP(parentCtx, loopbackURL, timeout, state)
+		return t.fetchViaCustomFetcher(parentCtx, targetPath, timeout, state)
 	}
 
-	// 2. External HTTP/HTTPS include on different domain
-	return t.fetchOutboundHTTP(parentCtx, parsed.String(), timeout, state)
+	// 2. Otherwise, fetch directly via outbound HTTP
+	var fetchURL string
+	if parsed.Host == "" {
+		scheme := "http"
+		if parentCtx.r.TLS != nil || strings.EqualFold(parentCtx.r.Header.Get("X-Forwarded-Proto"), "https") {
+			scheme = "https"
+		}
+		fetchURL = scheme + "://" + parentCtx.r.Host + parsed.RequestURI()
+	} else {
+		fetchURL = parsed.String()
+	}
+
+	return t.fetchOutboundHTTP(parentCtx, fetchURL, timeout, state)
 }
 
 // fetchViaCustomFetcher executes a custom in-process fragment fetcher hook.
@@ -592,84 +590,6 @@ func (t *Titip) fetchViaCustomFetcher(
 	var cookies []string
 	if t.cfg.ESI.ForwardFragmentCookies && headers != nil {
 		cookies = headers["Set-Cookie"]
-	}
-
-	return body, cookies, "in_process", nil
-}
-
-// fetchInProcess dispatches an in-memory virtual subrequest through t.serveHTTP.
-func (t *Titip) fetchInProcess(
-	parentCtx *requestContext,
-	targetPath string,
-	timeout time.Duration,
-	router http.Handler,
-	state esiExecutionState,
-) ([]byte, []string, string, error) {
-	ctx, cancel := context.WithTimeout(parentCtx.r.Context(), timeout)
-	defer cancel()
-
-	ctx = context.WithValue(ctx, esiContextKey{}, state)
-
-	parsedURL, err := url.Parse(targetPath)
-	if err != nil {
-		return nil, nil, "in_process", err
-	}
-
-	subReq := &http.Request{
-		Method:     http.MethodGet,
-		URL:        parsedURL,
-		RequestURI: targetPath,
-		Header:     parentCtx.r.Header.Clone(),
-		Host:       parentCtx.r.Host,
-		RemoteAddr: parentCtx.r.RemoteAddr,
-		Proto:      parentCtx.r.Proto,
-		ProtoMajor: parentCtx.r.ProtoMajor,
-		ProtoMinor: parentCtx.r.ProtoMinor,
-		Body:       http.NoBody,
-	}
-	subReq.Header.Set("Accept-Encoding", "identity")
-	if parentCtx.r.Trailer != nil {
-		subReq.Trailer = parentCtx.r.Trailer.Clone()
-	}
-	subReq = subReq.WithContext(ctx)
-
-	subRec := &ResponseRecorder{
-		HeaderMap: make(http.Header),
-		Body:      new(bytes.Buffer),
-	}
-	done := make(chan struct{})
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				// panic caught cleanly
-			}
-			close(done)
-		}()
-		t.serveHTTP(subRec, subReq, router)
-	}()
-
-	select {
-	case <-done:
-		if ctx.Err() != nil {
-			return nil, nil, "in_process", ctx.Err()
-		}
-	case <-ctx.Done():
-		return nil, nil, "in_process", ctx.Err()
-	}
-
-	if subRec.Code >= 400 {
-		return nil, nil, "in_process", fmt.Errorf("subrequest returned status %d", subRec.Code)
-	}
-
-	body := bytes.Clone(subRec.Body.Bytes())
-	if t.cfg.ESI.MaxResponseSize > 0 && int64(len(body)) > t.cfg.ESI.MaxResponseSize {
-		return nil, nil, "in_process", fmt.Errorf("fragment body size %d exceeds max %d", len(body), t.cfg.ESI.MaxResponseSize)
-	}
-
-	var cookies []string
-	if t.cfg.ESI.ForwardFragmentCookies {
-		cookies = subRec.HeaderMap["Set-Cookie"]
 	}
 
 	return body, cookies, "in_process", nil

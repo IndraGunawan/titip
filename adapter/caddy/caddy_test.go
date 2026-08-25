@@ -385,12 +385,15 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 		}
 		key {
 			include_protocol false
-			include_host false
-			include_path true
-			query whitelist id category page
-			ignore_marketing_params true
-			include_headers X-App-Version Accept-Language
-			include_cookies session_currency
+			exclude_host true
+			keep_trailing_slash false
+			exclude_query_string false
+			disable_query_string_sort false
+			included_query_params id category page
+			excluded_query_params tracking
+			exclude_marketing_params true
+			included_header_names X-App-Version Accept-Language
+			included_cookie_names session_currency
 		}
 	}`, getTestRedisAddr())
 
@@ -406,26 +409,29 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 	if h.Key.IncludeProtocol == nil || *h.Key.IncludeProtocol != false {
 		t.Errorf("expected IncludeProtocol false, got %v", h.Key.IncludeProtocol)
 	}
-	if h.Key.IncludeHost == nil || *h.Key.IncludeHost != false {
-		t.Errorf("expected IncludeHost false, got %v", h.Key.IncludeHost)
+	if h.Key.ExcludeHost == nil || *h.Key.ExcludeHost != true {
+		t.Errorf("expected ExcludeHost true, got %v", h.Key.ExcludeHost)
 	}
-	if h.Key.IncludePath == nil || *h.Key.IncludePath != true {
-		t.Errorf("expected IncludePath true, got %v", h.Key.IncludePath)
+	if h.Key.KeepTrailingSlash == nil || *h.Key.KeepTrailingSlash != false {
+		t.Errorf("expected KeepTrailingSlash false, got %v", h.Key.KeepTrailingSlash)
 	}
-	if h.Key.QueryMode != "whitelist" {
-		t.Errorf("expected QueryMode whitelist, got %s", h.Key.QueryMode)
+	if h.Key.ExcludeQueryString == nil || *h.Key.ExcludeQueryString != false {
+		t.Errorf("expected ExcludeQueryString false, got %v", h.Key.ExcludeQueryString)
 	}
-	if len(h.Key.QueryWhitelist) != 3 || h.Key.QueryWhitelist[0] != "id" {
-		t.Errorf("unexpected QueryWhitelist: %v", h.Key.QueryWhitelist)
+	if len(h.Key.IncludedQueryParams) != 3 || h.Key.IncludedQueryParams[0] != "id" {
+		t.Errorf("unexpected IncludedQueryParams: %v", h.Key.IncludedQueryParams)
 	}
-	if h.Key.IgnoreMarketingParams == nil || *h.Key.IgnoreMarketingParams != true {
-		t.Errorf("expected IgnoreMarketingParams true, got %v", h.Key.IgnoreMarketingParams)
+	if len(h.Key.ExcludedQueryParams) != 1 || h.Key.ExcludedQueryParams[0] != "tracking" {
+		t.Errorf("unexpected ExcludedQueryParams: %v", h.Key.ExcludedQueryParams)
 	}
-	if len(h.Key.IncludeHeaders) != 2 || h.Key.IncludeHeaders[0] != "X-App-Version" {
-		t.Errorf("unexpected IncludeHeaders: %v", h.Key.IncludeHeaders)
+	if h.Key.ExcludeMarketingParams == nil || *h.Key.ExcludeMarketingParams != true {
+		t.Errorf("expected ExcludeMarketingParams true, got %v", h.Key.ExcludeMarketingParams)
 	}
-	if len(h.Key.IncludeCookies) != 1 || h.Key.IncludeCookies[0] != "session_currency" {
-		t.Errorf("unexpected IncludeCookies: %v", h.Key.IncludeCookies)
+	if len(h.Key.IncludedHeaderNames) != 2 || h.Key.IncludedHeaderNames[0] != "X-App-Version" {
+		t.Errorf("unexpected IncludedHeaderNames: %v", h.Key.IncludedHeaderNames)
+	}
+	if len(h.Key.IncludedCookieNames) != 1 || h.Key.IncludedCookieNames[0] != "session_currency" {
+		t.Errorf("unexpected IncludedCookieNames: %v", h.Key.IncludedCookieNames)
 	}
 }
 
@@ -438,9 +444,9 @@ func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
 		}
 		key {
 			include_protocol false
-			include_host false
-			query whitelist id
-			ignore_marketing_params true
+			exclude_host true
+			included_query_params id
+			exclude_marketing_params true
 		}
 	}`, getTestRedisAddr(), prefix)
 

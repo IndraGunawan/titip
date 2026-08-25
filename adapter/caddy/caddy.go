@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -95,15 +96,16 @@ func getEngines() []*titip.Titip {
 
 // KeyConfig defines the cache key generation parameters in Caddy.
 type KeyConfig struct {
-	IncludeProtocol       *bool    `json:"include_protocol,omitempty"`
-	IncludeHost           *bool    `json:"include_host,omitempty"`
-	IncludePath           *bool    `json:"include_path,omitempty"`
-	QueryMode             string   `json:"query_mode,omitempty"`
-	QueryWhitelist        []string `json:"query_whitelist,omitempty"`
-	QueryBlacklist        []string `json:"query_blacklist,omitempty"`
-	IgnoreMarketingParams *bool    `json:"ignore_marketing_params,omitempty"`
-	IncludeHeaders        []string `json:"include_headers,omitempty"`
-	IncludeCookies        []string `json:"include_cookies,omitempty"`
+	IncludeProtocol        *bool    `json:"include_protocol,omitempty"`
+	ExcludeHost            *bool    `json:"exclude_host,omitempty"`
+	KeepTrailingSlash      *bool    `json:"keep_trailing_slash,omitempty"`
+	ExcludeQueryString     *bool    `json:"exclude_query_string,omitempty"`
+	DisableQueryStringSort *bool    `json:"disable_query_string_sort,omitempty"`
+	IncludedQueryParams    []string `json:"included_query_params,omitempty"`
+	ExcludedQueryParams    []string `json:"excluded_query_params,omitempty"`
+	ExcludeMarketingParams *bool    `json:"exclude_marketing_params,omitempty"`
+	IncludedHeaderNames    []string `json:"included_header_names,omitempty"`
+	IncludedCookieNames    []string `json:"included_cookie_names,omitempty"`
 }
 
 // ESIConfig defines ESI parameters in Caddy.
@@ -251,7 +253,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 	// Key configuration: default -> global App defaults -> route overrides
 	if (app != nil && app.KeyConfig != nil) || h.Key != nil {
-		keyCfg := *titip.DefaultKeyConfig()
+		keyCfg := titip.KeyConfig{}
 		if app != nil && app.KeyConfig != nil {
 			if err := applyKeyConfig(&keyCfg, app.KeyConfig); err != nil {
 				return err
@@ -314,8 +316,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			}
 			virtReq = virtReq.WithContext(ctx)
 
-			rec := titip.GetResponseRecorder()
-			defer titip.PutResponseRecorder(rec)
+			rec := httptest.NewRecorder()
 
 			if srv, ok := r.Context().Value(caddyhttp.ServerCtxKey).(http.Handler); ok && srv != nil {
 				srv.ServeHTTP(rec, virtReq)
@@ -377,7 +378,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		_ = next.ServeHTTP(rw, req)
 	})
 
-	h.engine.Handler(downstream).ServeHTTP(w, r)
+	h.engine.ServeHTTP(w, r, downstream)
 	return nil
 }
 
@@ -463,7 +464,16 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("invalid boolean value for include_protocol: %v", err)
 			}
 			kc.IncludeProtocol = &val
-		case "include_host":
+		case "exclude_host":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.ParseBool(d.Val())
+			if err != nil {
+				return d.Errf("invalid boolean value for exclude_host: %v", err)
+			}
+			kc.ExcludeHost = &val
+		case "include_host": // backward compatibility
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
@@ -471,16 +481,53 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if err != nil {
 				return d.Errf("invalid boolean value for include_host: %v", err)
 			}
-			kc.IncludeHost = &val
-		case "include_path":
+			inv := !val
+			kc.ExcludeHost = &inv
+		case "keep_trailing_slash":
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
 			val, err := strconv.ParseBool(d.Val())
 			if err != nil {
-				return d.Errf("invalid boolean value for include_path: %v", err)
+				return d.Errf("invalid boolean value for keep_trailing_slash: %v", err)
 			}
-			kc.IncludePath = &val
+			kc.KeepTrailingSlash = &val
+		case "exclude_query_string":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.ParseBool(d.Val())
+			if err != nil {
+				return d.Errf("invalid boolean value for exclude_query_string: %v", err)
+			}
+			kc.ExcludeQueryString = &val
+		case "disable_query_string_sort":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			val, err := strconv.ParseBool(d.Val())
+			if err != nil {
+				return d.Errf("invalid boolean value for disable_query_string_sort: %v", err)
+			}
+			kc.DisableQueryStringSort = &val
+		case "included_query_params", "query_whitelist":
+			kc.IncludedQueryParams = append(kc.IncludedQueryParams, d.RemainingArgs()...)
+		case "excluded_query_params", "query_blacklist":
+			kc.ExcludedQueryParams = append(kc.ExcludedQueryParams, d.RemainingArgs()...)
+		case "exclude_marketing_params", "ignore_marketing_params":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for marketing params: %v", err)
+				}
+			}
+			kc.ExcludeMarketingParams = &val
+		case "included_header_names", "include_headers":
+			kc.IncludedHeaderNames = append(kc.IncludedHeaderNames, d.RemainingArgs()...)
+		case "included_cookie_names", "include_cookies":
+			kc.IncludedCookieNames = append(kc.IncludedCookieNames, d.RemainingArgs()...)
 		case "query":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -488,38 +535,18 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			mode := d.Val()
 			switch strings.ToLower(mode) {
 			case "all":
-				kc.QueryMode = "all"
+				f := false
+				kc.ExcludeQueryString = &f
 			case "none", "exclude_all":
-				kc.QueryMode = "none"
+				t := true
+				kc.ExcludeQueryString = &t
 			case "whitelist":
-				kc.QueryMode = "whitelist"
-				kc.QueryWhitelist = append(kc.QueryWhitelist, d.RemainingArgs()...)
+				kc.IncludedQueryParams = append(kc.IncludedQueryParams, d.RemainingArgs()...)
 			case "blacklist":
-				kc.QueryMode = "blacklist"
-				kc.QueryBlacklist = append(kc.QueryBlacklist, d.RemainingArgs()...)
+				kc.ExcludedQueryParams = append(kc.ExcludedQueryParams, d.RemainingArgs()...)
 			default:
 				return d.Errf("unknown query mode %q (allowed: all, none, whitelist <params...>, blacklist <params...>)", mode)
 			}
-		case "query_whitelist":
-			kc.QueryMode = "whitelist"
-			kc.QueryWhitelist = append(kc.QueryWhitelist, d.RemainingArgs()...)
-		case "query_blacklist":
-			kc.QueryMode = "blacklist"
-			kc.QueryBlacklist = append(kc.QueryBlacklist, d.RemainingArgs()...)
-		case "ignore_marketing_params":
-			val := true
-			if d.NextArg() {
-				var err error
-				val, err = strconv.ParseBool(d.Val())
-				if err != nil {
-					return d.Errf("invalid boolean value for ignore_marketing_params: %v", err)
-				}
-			}
-			kc.IgnoreMarketingParams = &val
-		case "include_headers":
-			kc.IncludeHeaders = append(kc.IncludeHeaders, d.RemainingArgs()...)
-		case "include_cookies":
-			kc.IncludeCookies = append(kc.IncludeCookies, d.RemainingArgs()...)
 		default:
 			return d.Errf("unknown key subdirective %q", d.Val())
 		}
@@ -662,46 +689,32 @@ func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
 	if src.IncludeProtocol != nil {
 		target.IncludeProtocol = *src.IncludeProtocol
 	}
-	if src.IncludeHost != nil {
-		target.IncludeHost = *src.IncludeHost
+	if src.ExcludeHost != nil {
+		target.ExcludeHost = *src.ExcludeHost
 	}
-	if src.IncludePath != nil {
-		target.IncludePath = *src.IncludePath
+	if src.KeepTrailingSlash != nil {
+		target.KeepTrailingSlash = *src.KeepTrailingSlash
 	}
-	if src.QueryMode != "" {
-		switch strings.ToLower(src.QueryMode) {
-		case "all":
-			target.QueryMode = titip.QueryParamsAll
-		case "none", "exclude_all":
-			target.QueryMode = titip.QueryParamsNone
-		case "whitelist":
-			target.QueryMode = titip.QueryParamsWhitelist
-			target.QueryWhitelist = src.QueryWhitelist
-		case "blacklist":
-			target.QueryMode = titip.QueryParamsBlacklist
-			target.QueryBlacklist = src.QueryBlacklist
-		default:
-			return fmt.Errorf("titip: unknown query_mode %q (allowed: all, none, whitelist, blacklist)", src.QueryMode)
-		}
+	if src.ExcludeQueryString != nil {
+		target.ExcludeQueryString = *src.ExcludeQueryString
 	}
-	if len(src.QueryWhitelist) > 0 {
-		target.QueryMode = titip.QueryParamsWhitelist
-		target.QueryWhitelist = src.QueryWhitelist
+	if src.DisableQueryStringSort != nil {
+		target.DisableQueryStringSort = *src.DisableQueryStringSort
 	}
-	if len(src.QueryBlacklist) > 0 {
-		if target.QueryMode != titip.QueryParamsWhitelist && target.QueryMode != titip.QueryParamsNone {
-			target.QueryMode = titip.QueryParamsBlacklist
-		}
-		target.QueryBlacklist = src.QueryBlacklist
+	if len(src.IncludedQueryParams) > 0 {
+		target.IncludedQueryParams = src.IncludedQueryParams
 	}
-	if src.IgnoreMarketingParams != nil && *src.IgnoreMarketingParams {
-		target.WithIgnoredMarketingParams()
+	if len(src.ExcludedQueryParams) > 0 {
+		target.ExcludedQueryParams = src.ExcludedQueryParams
 	}
-	if len(src.IncludeHeaders) > 0 {
-		target.IncludeHeaders = src.IncludeHeaders
+	if src.ExcludeMarketingParams != nil {
+		target.ExcludeMarketingParams = *src.ExcludeMarketingParams
 	}
-	if len(src.IncludeCookies) > 0 {
-		target.IncludeCookies = src.IncludeCookies
+	if len(src.IncludedHeaderNames) > 0 {
+		target.IncludedHeaderNames = src.IncludedHeaderNames
+	}
+	if len(src.IncludedCookieNames) > 0 {
+		target.IncludedCookieNames = src.IncludedCookieNames
 	}
 	return nil
 }

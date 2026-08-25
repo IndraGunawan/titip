@@ -9,11 +9,11 @@ import (
 	"github.com/pquerna/cachecontrol/cacheobject"
 )
 
-// MaxCacheTTL is the maximum allowed cache TTL (1 year) per RFC 9111 / RFC 7234 and Titip architecture constraints.
-const MaxCacheTTL = 365 * 24 * time.Hour
+// maxCacheTTL is the maximum allowed cache TTL (1 year) per RFC 9111 / RFC 7234 and Titip architecture constraints.
+const maxCacheTTL = 365 * 24 * time.Hour
 
-// DefaultCacheableStatusCodes contains the standard standard set of cacheable HTTP status codes.
-var DefaultCacheableStatusCodes = map[int]struct{}{
+// defaultCacheableStatusCodes contains the standard standard set of cacheable HTTP status codes.
+var defaultCacheableStatusCodes = map[int]struct{}{
 	http.StatusOK:                   {}, // 200
 	http.StatusNonAuthoritativeInfo: {}, // 203
 	http.StatusNoContent:            {}, // 204
@@ -36,8 +36,8 @@ var DefaultCacheableStatusCodes = map[int]struct{}{
 	http.StatusGatewayTimeout:             {}, // 504
 }
 
-// FreshnessInfo encapsulates the calculated RFC 9111 (and RFC 7234 Section 4.2.3) freshness metrics.
-type FreshnessInfo struct {
+// freshnessInfo encapsulates the calculated RFC 9111 (and RFC 7234 Section 4.2.3) freshness metrics.
+type freshnessInfo struct {
 	ApparentAge             time.Duration
 	CorrectedInitialAge     time.Duration
 	CurrentAge              time.Duration
@@ -49,8 +49,8 @@ type FreshnessInfo struct {
 	Directives              *cacheobject.ResponseCacheDirectives
 }
 
-// ParseAge parses the HTTP Age response header (delta-seconds).
-func ParseAge(ageHeader string) time.Duration {
+// parseAge parses the HTTP Age response header (delta-seconds).
+func parseAge(ageHeader string) time.Duration {
 	trimmed := strings.TrimSpace(ageHeader)
 	if trimmed == "" {
 		return 0
@@ -70,8 +70,8 @@ var httpDateFormats = []string{
 	time.ANSIC,                   // "Mon Jan _2 15:04:05 2006"
 }
 
-// ParseDate parses an HTTP date string into time.Time.
-func ParseDate(dateHeader string) (time.Time, error) {
+// parseDate parses an HTTP date string into time.Time.
+func parseDate(dateHeader string) (time.Time, error) {
 	trimmed := strings.TrimSpace(dateHeader)
 	if trimmed == "" {
 		return time.Time{}, nil
@@ -84,20 +84,20 @@ func ParseDate(dateHeader string) (time.Time, error) {
 	return time.Time{}, http.ErrServerClosed
 }
 
-// CalculateFreshness computes RFC 9111 (and RFC 7234 Section 4.2.3) age and freshness values.
-func CalculateFreshness(
+// calculateFreshness computes RFC 9111 (and RFC 7234 Section 4.2.3) age and freshness values.
+func calculateFreshness(
 	statusCode int,
 	respHeaders http.Header,
 	reqTime, respTime, now time.Time,
 	customCacheableStatuses map[int]struct{},
-) FreshnessInfo {
+) freshnessInfo {
 	if customCacheableStatuses == nil {
-		customCacheableStatuses = DefaultCacheableStatusCodes
+		customCacheableStatuses = defaultCacheableStatusCodes
 	}
 
-	info := FreshnessInfo{}
+	info := freshnessInfo{}
 
-	ccHeader := respHeaders.Get(HeaderCacheControl)
+	ccHeader := respHeaders.Get(headerCacheControl)
 	if ccHeader != "" {
 		if d, err := cacheobject.ParseResponseCacheControl(ccHeader); err == nil {
 			info.Directives = d
@@ -105,8 +105,8 @@ func CalculateFreshness(
 	}
 
 	// RFC-7234 §4.2.3 Age Calculations
-	dateVal, _ := ParseDate(respHeaders.Get(HeaderDate))
-	ageVal := ParseAge(respHeaders.Get(HeaderAge))
+	dateVal, _ := parseDate(respHeaders.Get(headerDate))
+	ageVal := parseAge(respHeaders.Get(headerAge))
 
 	// 1. apparent_age = max(0, response_time - date_value)
 	if !dateVal.IsZero() && respTime.After(dateVal) {
@@ -143,8 +143,8 @@ func CalculateFreshness(
 			info.FreshnessLifetime = time.Duration(info.Directives.SMaxAge) * time.Second
 		} else if info.Directives.MaxAge >= 0 {
 			info.FreshnessLifetime = time.Duration(info.Directives.MaxAge) * time.Second
-		} else if expHeader := respHeaders.Get(HeaderExpires); expHeader != "" {
-			expDate, err := ParseDate(expHeader)
+		} else if expHeader := respHeaders.Get(headerExpires); expHeader != "" {
+			expDate, err := parseDate(expHeader)
 			if err == nil && !expDate.IsZero() && !dateVal.IsZero() && expDate.After(dateVal) {
 				info.FreshnessLifetime = expDate.Sub(dateVal)
 			}
@@ -166,25 +166,25 @@ func CalculateFreshness(
 	}
 
 	// Clamp to 1 year max TTL
-	if info.EffectiveTTL > MaxCacheTTL {
-		info.EffectiveTTL = MaxCacheTTL
+	if info.EffectiveTTL > maxCacheTTL {
+		info.EffectiveTTL = maxCacheTTL
 	}
 
 	// Determine cacheability
-	info.IsCacheable = IsResponseCacheable(statusCode, info.Directives, respHeaders, customCacheableStatuses)
+	info.IsCacheable = isResponseCacheable(statusCode, info.Directives, respHeaders, customCacheableStatuses)
 
 	return info
 }
 
-// IsResponseCacheable determines if a response is strictly cacheable under RFC-7234 & Titip policies.
-func IsResponseCacheable(
+// isResponseCacheable determines if a response is strictly cacheable under RFC-7234 & Titip policies.
+func isResponseCacheable(
 	statusCode int,
 	directives *cacheobject.ResponseCacheDirectives,
 	respHeaders http.Header,
 	allowedStatuses map[int]struct{},
 ) bool {
 	if allowedStatuses == nil {
-		allowedStatuses = DefaultCacheableStatusCodes
+		allowedStatuses = defaultCacheableStatusCodes
 	}
 
 	// Must be in cacheable status code set
@@ -193,7 +193,7 @@ func IsResponseCacheable(
 	}
 
 	// Prohibit caching if Set-Cookie header is present (NEVER leak user sessions)
-	if respHeaders.Get(HeaderSetCookie) != "" {
+	if respHeaders.Get(headerSetCookie) != "" {
 		return false
 	}
 

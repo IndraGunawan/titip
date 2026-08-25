@@ -60,7 +60,7 @@ func TestESI_InProcessVirtualSubrequests(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	// 1. First Request: Cold Miss on Dashboard, invokes in-process fragments
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/dashboard", nil)
@@ -147,7 +147,7 @@ func TestESI_SamePageDeduplication(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -185,7 +185,7 @@ func TestESI_SSRFProtection(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/ssrf-test", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -233,7 +233,7 @@ func TestESI_FailOpenFallbackAndAlt(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/fail-test", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -279,7 +279,7 @@ func TestESI_MaxDepthAndCircularLoop(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/page-a", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -314,7 +314,7 @@ func TestESI_WorkerPanicRecovery(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/panic-page", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -393,7 +393,7 @@ func TestESI_FullDocument_ColdMissAndCacheHitIdentical(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	// 1. Cold Request (Miss): Scans HTML once, stores pre-compiled metadata in Redis
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/full-page", nil)
@@ -483,7 +483,7 @@ func TestESI_ConcurrentFetchDuration_MaxOfFragments(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	start := time.Now()
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/slow-page", nil)
@@ -572,7 +572,7 @@ func TestESI_LargePayloadSplicing_PositionOffsetsExact(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	// 1. Cold Request (Miss)
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/large-page", nil)
@@ -651,7 +651,7 @@ func TestESI_ContentLengthHeaderPreservation(t *testing.T) {
 			InternalFetcher: ESIHandlerFetcher(mux),
 		}),
 	)
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	// 1. Test with explicit Content-Length: must be updated to exact spliced body length
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/with-cl", nil)
@@ -792,7 +792,7 @@ func TestESI_RootIndex_AllAttributeCombinations(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	// 1. Cold Request (Miss)
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
@@ -878,7 +878,7 @@ func TestESI_SameHostAndExternalDomainIncludes(t *testing.T) {
 		}),
 	)
 
-	h := mw.Handler(mux)
+	h := mw.testHandler(mux)
 
 	req := httptest.NewRequest("GET", "http://example.com/same-host-test", nil)
 	rec := httptest.NewRecorder()
@@ -922,7 +922,7 @@ func BenchmarkESI_ColdMiss(b *testing.B) {
 			InternalFetcher: ESIHandlerFetcher(mux),
 		}),
 	)
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench-esi-cold", nil)
 
@@ -959,7 +959,7 @@ func BenchmarkESI_CacheHit(b *testing.B) {
 			InternalFetcher: ESIHandlerFetcher(mux),
 		}),
 	)
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	// Warm up cache once (Cold Miss compiles template & stores pre-compiled metadata in Redis)
 	warmReq := httptest.NewRequest(http.MethodGet, "http://example.com/bench-esi-hit", nil)
@@ -1000,7 +1000,7 @@ func TestESI_CustomInternalFetcher(t *testing.T) {
 		}),
 	)
 
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
 	rec := httptest.NewRecorder()
