@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/pierrec/lz4/v4"
 	googleproto "google.golang.org/protobuf/proto"
@@ -24,14 +25,14 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// GetBuffer retrieves a reusable *bytes.Buffer from the pool.
-func GetBuffer() *bytes.Buffer {
+// getBuffer retrieves a reusable *bytes.Buffer from the pool.
+func getBuffer() *bytes.Buffer {
 	return bufferPool.Get().(*bytes.Buffer)
 }
 
-// PutBuffer resets and returns a *bytes.Buffer to the pool.
+// putBuffer resets and returns a *bytes.Buffer to the pool.
 // Discards buffers exceeding 2MB to prevent heap bloat.
-func PutBuffer(buf *bytes.Buffer) {
+func putBuffer(buf *bytes.Buffer) {
 	if buf == nil {
 		return
 	}
@@ -44,8 +45,8 @@ func PutBuffer(buf *bytes.Buffer) {
 
 // --- Response Recorder Pool ---
 
-// ResponseRecorder intercepts and records HTTP responses from upstream origin handlers.
-type ResponseRecorder struct {
+// responseRecorder intercepts and records HTTP responses from upstream origin handlers.
+type responseRecorder struct {
 	Code        int
 	HeaderMap   http.Header
 	Body        *bytes.Buffer
@@ -55,22 +56,22 @@ type ResponseRecorder struct {
 
 var responseRecorderPool = sync.Pool{
 	New: func() any {
-		return &ResponseRecorder{
+		return &responseRecorder{
 			HeaderMap: make(http.Header),
 			Body:      new(bytes.Buffer),
 		}
 	},
 }
 
-// GetResponseRecorder retrieves a pooled ResponseRecorder.
-func GetResponseRecorder() *ResponseRecorder {
-	rec := responseRecorderPool.Get().(*ResponseRecorder)
+// getResponseRecorder retrieves a pooled responseRecorder.
+func getResponseRecorder() *responseRecorder {
+	rec := responseRecorderPool.Get().(*responseRecorder)
 	rec.Reset()
 	return rec
 }
 
-// PutResponseRecorder cleans and returns a ResponseRecorder to the pool.
-func PutResponseRecorder(rec *ResponseRecorder) {
+// putResponseRecorder cleans and returns a responseRecorder to the pool.
+func putResponseRecorder(rec *responseRecorder) {
 	if rec == nil {
 		return
 	}
@@ -86,7 +87,7 @@ func PutResponseRecorder(rec *ResponseRecorder) {
 }
 
 // Header returns the response headers map.
-func (rec *ResponseRecorder) Header() http.Header {
+func (rec *responseRecorder) Header() http.Header {
 	if rec.HeaderMap == nil {
 		rec.HeaderMap = make(http.Header)
 	}
@@ -94,7 +95,7 @@ func (rec *ResponseRecorder) Header() http.Header {
 }
 
 // Write writes data to the internal response buffer.
-func (rec *ResponseRecorder) Write(b []byte) (int, error) {
+func (rec *responseRecorder) Write(b []byte) (int, error) {
 	if !rec.wroteHeader {
 		rec.WriteHeader(http.StatusOK)
 	}
@@ -105,7 +106,7 @@ func (rec *ResponseRecorder) Write(b []byte) (int, error) {
 }
 
 // WriteHeader records the HTTP status code.
-func (rec *ResponseRecorder) WriteHeader(code int) {
+func (rec *responseRecorder) WriteHeader(code int) {
 	if rec.wroteHeader {
 		return
 	}
@@ -114,17 +115,17 @@ func (rec *ResponseRecorder) WriteHeader(code int) {
 }
 
 // Flush implements http.Flusher.
-func (rec *ResponseRecorder) Flush() {
+func (rec *responseRecorder) Flush() {
 	rec.flushed = true
 }
 
 // WroteHeader returns true if WriteHeader has been called.
-func (rec *ResponseRecorder) WroteHeader() bool {
+func (rec *responseRecorder) WroteHeader() bool {
 	return rec.wroteHeader
 }
 
 // Reset resets the recorder state for reuse.
-func (rec *ResponseRecorder) Reset() {
+func (rec *responseRecorder) Reset() {
 	rec.Code = http.StatusOK
 	rec.wroteHeader = false
 	rec.flushed = false
@@ -150,13 +151,13 @@ var variantInfoPool = sync.Pool{
 	},
 }
 
-// GetCacheMetadata retrieves a pooled proto.CacheMetadata instance.
-func GetCacheMetadata() *pb.CacheMetadata {
+// getCacheMetadata retrieves a pooled proto.CacheMetadata instance.
+func getCacheMetadata() *pb.CacheMetadata {
 	return cacheMetadataPool.Get().(*pb.CacheMetadata)
 }
 
-// PutCacheMetadata resets and returns a proto.CacheMetadata instance to the pool.
-func PutCacheMetadata(m *pb.CacheMetadata) {
+// putCacheMetadata resets and returns a proto.CacheMetadata instance to the pool.
+func putCacheMetadata(m *pb.CacheMetadata) {
 	if m == nil {
 		return
 	}
@@ -164,13 +165,13 @@ func PutCacheMetadata(m *pb.CacheMetadata) {
 	cacheMetadataPool.Put(m)
 }
 
-// GetVariantInfo retrieves a pooled proto.VariantInfo instance.
-func GetVariantInfo() *pb.VariantInfo {
+// getVariantInfo retrieves a pooled proto.VariantInfo instance.
+func getVariantInfo() *pb.VariantInfo {
 	return variantInfoPool.Get().(*pb.VariantInfo)
 }
 
-// PutVariantInfo resets and returns a proto.VariantInfo instance to the pool.
-func PutVariantInfo(v *pb.VariantInfo) {
+// putVariantInfo resets and returns a proto.VariantInfo instance to the pool.
+func putVariantInfo(v *pb.VariantInfo) {
 	if v == nil {
 		return
 	}
@@ -192,8 +193,8 @@ var lz4ReaderPool = sync.Pool{
 	},
 }
 
-// CompressLZ4 compresses src bytes into the provided dst buffer using pooled LZ4 writers.
-func CompressLZ4(src []byte, dst *bytes.Buffer) error {
+// compressLZ4 compresses src bytes into the provided dst buffer using pooled LZ4 writers.
+func compressLZ4(src []byte, dst *bytes.Buffer) error {
 	if dst == nil {
 		return fmt.Errorf("titip: pool: compress: destination buffer is nil")
 	}
@@ -216,8 +217,8 @@ var bytesReaderPool = sync.Pool{
 	},
 }
 
-// DecompressLZ4 decompresses LZ4 compressed src bytes into dst buffer using pooled LZ4 readers.
-func DecompressLZ4(src []byte, dst *bytes.Buffer) error {
+// decompressLZ4 decompresses LZ4 compressed src bytes into dst buffer using pooled LZ4 readers.
+func decompressLZ4(src []byte, dst *bytes.Buffer) error {
 	if dst == nil {
 		return fmt.Errorf("titip: pool: decompress: destination buffer is nil")
 	}
@@ -250,7 +251,7 @@ type requestContext struct {
 	variantKey string
 	meta       *pb.CacheMetadata
 	varInfo    *pb.VariantInfo
-	freshness  FreshnessInfo
+	freshness  freshnessInfo
 	nowNano    int64
 	isVaryMiss bool
 }
@@ -264,7 +265,7 @@ func (ctx *requestContext) Reset() {
 	ctx.variantKey = ""
 	ctx.meta = nil
 	ctx.varInfo = nil
-	ctx.freshness = FreshnessInfo{}
+	ctx.freshness = freshnessInfo{}
 	ctx.nowNano = 0
 	ctx.isVaryMiss = false
 }
@@ -280,6 +281,7 @@ func acquireRequestContext(w http.ResponseWriter, r *http.Request, next http.Han
 	ctx.w = w
 	ctx.r = r
 	ctx.next = next
+	ctx.nowNano = time.Now().UnixNano()
 	return ctx
 }
 
@@ -291,8 +293,8 @@ func releaseRequestContext(ctx *requestContext) {
 	requestContextPool.Put(ctx)
 }
 
-// ETagMatches performs weak ETag comparison per RFC-7232 Section 2.3.2.
-func ETagMatches(clientETag, cachedETag string) bool {
+// etagMatches performs weak ETag comparison per RFC-7232 Section 2.3.2.
+func etagMatches(clientETag, cachedETag string) bool {
 	if clientETag == "" || cachedETag == "" {
 		return false
 	}

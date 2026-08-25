@@ -154,7 +154,9 @@ func main() {
   w.Write([]byte(`{"message": "hello from origin", "timestamp": "` + time.Now().String() + `"}`))
  })
 
- http.ListenAndServe(":8080", cache.Handler(mux))
+ http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  cache.ServeHTTP(w, r, mux)
+ }))
 }
 ```
 

@@ -23,7 +23,7 @@ type Titip struct {
 	sf                   singleflight.Group
 	logger               *slog.Logger
 	cacheableStatusCodes map[int]struct{}
-	metrics              *Metrics
+	metrics              *metrics
 	swrWG                sync.WaitGroup
 	closed               atomic.Bool
 	esiHTTPClient        *http.Client
@@ -34,9 +34,9 @@ func New(opts ...Option) (*Titip, error) {
 	cfg := Config{
 		CacheStatusMode:          CacheStatusSimpleToken,
 		IgnoreClientCacheControl: true,
-		KeyConfig:                *DefaultKeyConfig(),
-		CacheableStatusCodes:     DefaultCacheableStatusCodes,
-		TagHeaderName:            HeaderCacheTag,
+		KeyConfig:                KeyConfig{},
+		CacheableStatusCodes:     defaultCacheableStatusCodes,
+		TagHeaderName:            headerCacheTag,
 		OriginTimeout:            30 * time.Second,
 		StorageTimeout:           1 * time.Second,
 		Logger:                   slog.Default(),
@@ -60,8 +60,12 @@ func New(opts ...Option) (*Titip, error) {
 		return nil, fmt.Errorf("titip: storage is required")
 	}
 
-	if cfg.CacheableStatusCodes == nil {
-		cfg.CacheableStatusCodes = DefaultCacheableStatusCodes
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+
+	if len(cfg.CacheableStatusCodes) == 0 {
+		cfg.CacheableStatusCodes = defaultCacheableStatusCodes
 	}
 
 	if cfg.ESI.MaxDepth == 0 {
@@ -74,7 +78,7 @@ func New(opts ...Option) (*Titip, error) {
 		cfg.ESI.MaxConcurrentRequests = 8
 	}
 	if cfg.ESI.MaxResponseSize <= 0 {
-		cfg.ESI.MaxResponseSize = 10 * 1024 * 1024
+		cfg.ESI.MaxResponseSize = 10 * 1024 * 1024 // 10MB
 	}
 
 	ssrfCfg := esi.SSRFConfig{
@@ -90,25 +94,11 @@ func New(opts ...Option) (*Titip, error) {
 		storage:              cfg.Storage,
 		logger:               cfg.Logger,
 		cacheableStatusCodes: cfg.CacheableStatusCodes,
-		metrics:              newMetrics(cfg.Metrics),
+		metrics:              newMetrics(cfg.Metrics, cfg.ESI.Enabled),
 		esiHTTPClient: &http.Client{
 			Transport: esiTransport,
 		},
 	}, nil
-}
-
-// Handler returns standard http.Handler middleware.
-func (t *Titip) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.serveHTTP(w, r, next)
-	})
-}
-
-// Wrap is a convenience helper for http.HandlerFunc.
-func (t *Titip) Wrap(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		t.serveHTTP(w, r, h)
-	}
 }
 
 // PurgeURL invalidates cache entries matching the specified URL or path.
@@ -127,7 +117,7 @@ func (t *Titip) PurgeURL(ctx context.Context, rawURL string, opts ...PurgeOption
 		Host: parsed.Host,
 		URL:  parsed,
 	}
-	primaryKey := GeneratePrimaryKey(req, &t.cfg.KeyConfig)
+	primaryKey := generatePrimaryKey(req, &t.cfg.KeyConfig)
 
 	if cfg.Soft {
 		if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {

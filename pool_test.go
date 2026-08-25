@@ -15,7 +15,7 @@ import (
 )
 
 func TestBufferPool(t *testing.T) {
-	buf := GetBuffer()
+	buf := getBuffer()
 	if buf == nil {
 		t.Fatal("expected non-nil buffer")
 	}
@@ -23,18 +23,18 @@ func TestBufferPool(t *testing.T) {
 	if buf.String() != "hello world" {
 		t.Fatalf("unexpected buffer content: %s", buf.String())
 	}
-	PutBuffer(buf)
+	putBuffer(buf)
 
 	// Get buffer again, should be reset (empty)
-	buf2 := GetBuffer()
+	buf2 := getBuffer()
 	if buf2.Len() != 0 {
 		t.Fatalf("expected reset buffer with len 0, got %d", buf2.Len())
 	}
-	PutBuffer(buf2)
+	putBuffer(buf2)
 }
 
 func TestBufferPoolGrowthProtection(t *testing.T) {
-	buf := GetBuffer()
+	buf := getBuffer()
 	// Grow buffer beyond 2MB
 	largeData := make([]byte, 3*1024*1024)
 	buf.Write(largeData)
@@ -43,19 +43,19 @@ func TestBufferPoolGrowthProtection(t *testing.T) {
 	}
 
 	// Putting large buffer should discard it without panic
-	PutBuffer(buf)
+	putBuffer(buf)
 
 	// Getting a buffer should work cleanly
-	buf2 := GetBuffer()
+	buf2 := getBuffer()
 	if buf2.Cap() > maxBufferSize {
 		t.Fatalf("expected fresh pooled buffer, got cap %d", buf2.Cap())
 	}
-	PutBuffer(buf2)
+	putBuffer(buf2)
 }
 
 func TestResponseRecorder(t *testing.T) {
-	rec := GetResponseRecorder()
-	defer PutResponseRecorder(rec)
+	rec := getResponseRecorder()
+	defer putResponseRecorder(rec)
 
 	rec.Header().Set("Content-Type", "application/json")
 	rec.Header().Add("X-Custom", "value1")
@@ -91,8 +91,8 @@ func TestResponseRecorder(t *testing.T) {
 }
 
 func TestResponseRecorderImplicitStatus200(t *testing.T) {
-	rec := GetResponseRecorder()
-	defer PutResponseRecorder(rec)
+	rec := getResponseRecorder()
+	defer putResponseRecorder(rec)
 
 	_, err := rec.Write([]byte("default 200 ok"))
 	if err != nil {
@@ -104,17 +104,20 @@ func TestResponseRecorderImplicitStatus200(t *testing.T) {
 	if !rec.WroteHeader() {
 		t.Fatal("expected wroteHeader true")
 	}
-}
+	rec.Flush()
+	if !rec.flushed {
+		t.Fatal("expected flushed to be true")
+	}
 
-func TestResponseRecorderResetAndReuse(t *testing.T) {
-	rec := GetResponseRecorder()
+	// Test ResponseRecorder resetting in pool
+	rec = getResponseRecorder()
 	rec.Header().Set("X-Test", "123")
-	rec.WriteHeader(http.StatusNotFound)
-	rec.Write([]byte("not found"))
-	PutResponseRecorder(rec)
+	rec.WriteHeader(http.StatusAccepted)
+	rec.Write([]byte("temp"))
+	putResponseRecorder(rec)
 
-	rec2 := GetResponseRecorder()
-	defer PutResponseRecorder(rec2)
+	rec2 := getResponseRecorder()
+	defer putResponseRecorder(rec2)
 
 	if len(rec2.Header()) != 0 {
 		t.Fatalf("expected empty headers, got %v", rec2.Header())
@@ -131,7 +134,7 @@ func TestResponseRecorderResetAndReuse(t *testing.T) {
 }
 
 func TestProtobufPools(t *testing.T) {
-	meta := GetCacheMetadata()
+	meta := getCacheMetadata()
 	meta.PrimaryKey = "https://example.com/api/users"
 	meta.VaryHeaderNames = []string{"Accept-Encoding", "Accept-Language"}
 	meta.CreatedAtUnixNano = 1700000000000
@@ -139,7 +142,7 @@ func TestProtobufPools(t *testing.T) {
 	meta.Tags = []string{"users", "api"}
 	meta.Variants = make(map[string]*pb.VariantInfo)
 
-	v := GetVariantInfo()
+	v := getVariantInfo()
 	v.VariantKey = "gzip_en"
 	v.StatusCode = 200
 	v.Etag = `"etag-123"`
@@ -153,8 +156,8 @@ func TestProtobufPools(t *testing.T) {
 		t.Fatalf("marshal error: %v", err)
 	}
 
-	decodedMeta := GetCacheMetadata()
-	defer PutCacheMetadata(decodedMeta)
+	decodedMeta := getCacheMetadata()
+	defer putCacheMetadata(decodedMeta)
 	if err := googleproto.Unmarshal(data, decodedMeta); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
@@ -167,11 +170,11 @@ func TestProtobufPools(t *testing.T) {
 	}
 
 	// Return to pool and verify reset
-	PutVariantInfo(v)
-	PutCacheMetadata(meta)
+	putVariantInfo(v)
+	putCacheMetadata(meta)
 
-	metaFresh := GetCacheMetadata()
-	defer PutCacheMetadata(metaFresh)
+	metaFresh := getCacheMetadata()
+	defer putCacheMetadata(metaFresh)
 	if metaFresh.PrimaryKey != "" || len(metaFresh.VaryHeaderNames) != 0 || len(metaFresh.Tags) != 0 {
 		t.Fatalf("expected reset metadata, got %+v", metaFresh)
 	}
@@ -190,17 +193,17 @@ func TestLZ4CompressionRoundtrip(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			compBuf := GetBuffer()
-			defer PutBuffer(compBuf)
+			compBuf := getBuffer()
+			defer putBuffer(compBuf)
 
-			if err := CompressLZ4(tt.data, compBuf); err != nil {
+			if err := compressLZ4(tt.data, compBuf); err != nil {
 				t.Fatalf("compression failed: %v", err)
 			}
 
-			decompBuf := GetBuffer()
-			defer PutBuffer(decompBuf)
+			decompBuf := getBuffer()
+			defer putBuffer(decompBuf)
 
-			if err := DecompressLZ4(compBuf.Bytes(), decompBuf); err != nil {
+			if err := decompressLZ4(compBuf.Bytes(), decompBuf); err != nil {
 				t.Fatalf("decompression failed: %v", err)
 			}
 
@@ -225,10 +228,10 @@ func TestLZ4CompressionRatio(t *testing.T) {
 `, 50)
 
 	rawBytes := []byte(htmlDoc)
-	compBuf := GetBuffer()
-	defer PutBuffer(compBuf)
+	compBuf := getBuffer()
+	defer putBuffer(compBuf)
 
-	if err := CompressLZ4(rawBytes, compBuf); err != nil {
+	if err := compressLZ4(rawBytes, compBuf); err != nil {
 		t.Fatalf("compression failed: %v", err)
 	}
 
@@ -245,10 +248,10 @@ func TestLZ4CompressionRatio(t *testing.T) {
 
 func TestLZ4CorruptData(t *testing.T) {
 	corruptBytes := []byte("this is not valid lz4 compressed data frame")
-	dst := GetBuffer()
-	defer PutBuffer(dst)
+	dst := getBuffer()
+	defer putBuffer(dst)
 
-	err := DecompressLZ4(corruptBytes, dst)
+	err := decompressLZ4(corruptBytes, dst)
 	if err == nil {
 		t.Fatal("expected error decompressing corrupt data, got nil")
 	}
@@ -267,41 +270,41 @@ func TestPoolConcurrencyAndRaces(t *testing.T) {
 
 			for j := 0; j < iterations; j++ {
 				// Buffer pool test
-				buf := GetBuffer()
+				buf := getBuffer()
 				buf.WriteString("concurrency test string")
-				PutBuffer(buf)
+				putBuffer(buf)
 
 				// ResponseRecorder pool test
-				rec := GetResponseRecorder()
+				rec := getResponseRecorder()
 				rec.Header().Set("X-Goroutine", "test")
 				rec.WriteHeader(http.StatusOK)
 				rec.Write([]byte("response body test"))
-				PutResponseRecorder(rec)
+				putResponseRecorder(rec)
 
 				// Protobuf pool test
-				meta := GetCacheMetadata()
+				meta := getCacheMetadata()
 				meta.PrimaryKey = "https://test.local"
-				PutCacheMetadata(meta)
+				putCacheMetadata(meta)
 
-				v := GetVariantInfo()
+				v := getVariantInfo()
 				v.VariantKey = "v1"
-				PutVariantInfo(v)
+				putVariantInfo(v)
 
 				// LZ4 compress/decompress test
 				payload := []byte(strings.Repeat("concurrent lz4 test payload ", 10))
-				cBuf := GetBuffer()
-				if err := CompressLZ4(payload, cBuf); err != nil {
+				cBuf := getBuffer()
+				if err := compressLZ4(payload, cBuf); err != nil {
 					t.Errorf("concurrent compression failed: %v", err)
 				}
-				dBuf := GetBuffer()
-				if err := DecompressLZ4(cBuf.Bytes(), dBuf); err != nil {
+				dBuf := getBuffer()
+				if err := decompressLZ4(cBuf.Bytes(), dBuf); err != nil {
 					t.Errorf("concurrent decompression failed: %v", err)
 				}
 				if !bytes.Equal(dBuf.Bytes(), payload) {
 					t.Errorf("concurrent payload mismatch")
 				}
-				PutBuffer(cBuf)
-				PutBuffer(dBuf)
+				putBuffer(cBuf)
+				putBuffer(dBuf)
 			}
 		}(i)
 	}
@@ -313,9 +316,9 @@ func TestPoolConcurrencyAndRaces(t *testing.T) {
 
 func BenchmarkBufferPool(b *testing.B) {
 	for b.Loop() {
-		buf := GetBuffer()
+		buf := getBuffer()
 		buf.WriteString("benchmark buffer data payload")
-		PutBuffer(buf)
+		putBuffer(buf)
 	}
 }
 
@@ -323,22 +326,22 @@ func BenchmarkResponseRecorderPool(b *testing.B) {
 	payload := []byte(`{"status":"cached"}`)
 
 	for b.Loop() {
-		rec := GetResponseRecorder()
+		rec := getResponseRecorder()
 		rec.WriteHeader(http.StatusOK)
 		rec.Write(payload)
-		PutResponseRecorder(rec)
+		putResponseRecorder(rec)
 	}
 }
 
 func BenchmarkProtobufPool(b *testing.B) {
 	for b.Loop() {
-		m := GetCacheMetadata()
+		m := getCacheMetadata()
 		m.PrimaryKey = "https://example.com/api/v1"
-		PutCacheMetadata(m)
+		putCacheMetadata(m)
 
-		v := GetVariantInfo()
+		v := getVariantInfo()
 		v.VariantKey = "gzip"
-		PutVariantInfo(v)
+		putVariantInfo(v)
 	}
 }
 
@@ -346,15 +349,15 @@ func BenchmarkLZ4CompressDecompress(b *testing.B) {
 	payload := make([]byte, 4096)
 	_, _ = rand.Read(payload)
 
-	compBuf := GetBuffer()
-	_ = CompressLZ4(payload, compBuf)
+	compBuf := getBuffer()
+	_ = compressLZ4(payload, compBuf)
 	compBytes := bytes.Clone(compBuf.Bytes())
-	PutBuffer(compBuf)
+	putBuffer(compBuf)
 
 	for b.Loop() {
-		dst := GetBuffer()
-		_ = DecompressLZ4(compBytes, dst)
-		PutBuffer(dst)
+		dst := getBuffer()
+		_ = decompressLZ4(compBytes, dst)
+		putBuffer(dst)
 	}
 }
 
@@ -387,15 +390,15 @@ func TestESIMemoryPoolRecycling(t *testing.T) {
 			InternalFetcher: ESIHandlerFetcher(mux),
 		}),
 	)
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	// Execute 100 concurrent requests, ensuring zero pool corruption or buffer retention
 	var wg sync.WaitGroup
 	for range 100 {
 		wg.Go(func() {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/pool-esi-page", nil)
-			rec := GetResponseRecorder()
-			defer PutResponseRecorder(rec)
+			rec := getResponseRecorder()
+			defer putResponseRecorder(rec)
 
 			handler.ServeHTTP(rec, req)
 
@@ -439,7 +442,7 @@ func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
 			InternalFetcher: ESIHandlerFetcher(mux),
 		}),
 	)
-	handler := mw.Handler(mux)
+	handler := mw.testHandler(mux)
 
 	// Warm up cache once
 	warmReq := httptest.NewRequest(http.MethodGet, "http://example.com/bench-pool-esi", nil)
@@ -449,8 +452,8 @@ func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench-pool-esi", nil)
 
 	for b.Loop() {
-		rec := GetResponseRecorder()
+		rec := getResponseRecorder()
 		handler.ServeHTTP(rec, req)
-		PutResponseRecorder(rec)
+		putResponseRecorder(rec)
 	}
 }

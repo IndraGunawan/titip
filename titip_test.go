@@ -78,6 +78,12 @@ func setupTestTitip(t testing.TB, opts ...Option) (rueidis.Client, storage.Stora
 	return client, store, mw
 }
 
+func (t *Titip) testHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.ServeHTTP(w, r, next)
+	})
+}
+
 // AC-1: Singleflight Stampede & Initiator Cancellation Resilience on Stale Revalidations
 func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 	_, _, mw := setupTestTitip(t)
@@ -93,7 +99,7 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"fresh origin data"}`))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Prime cache entry
 	reqPrime := httptest.NewRequest(http.MethodGet, "http://example.com/api/stampede", nil)
@@ -187,7 +193,7 @@ func TestSoftPurge_SynchronousFreshnessAndFallback(t *testing.T) {
 		_, _ = w.Write([]byte("initial cached payload"))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Initial request populates cache
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/api/soft-test", nil)
@@ -241,7 +247,7 @@ func TestFailOpen_OnRedisOutage(t *testing.T) {
 		_, _ = w.Write([]byte("live origin response"))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// Close Redis / miniredis to simulate outage
 	mr.Close()
@@ -269,7 +275,7 @@ func TestPanicRecovery_ColdMiss_NoCrash(t *testing.T) {
 		panic("critical origin failure")
 	})
 
-	handler := mw.Handler(panickingHandler)
+	handler := mw.testHandler(panickingHandler)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/cold-panic", nil)
 	rec := httptest.NewRecorder()
@@ -296,7 +302,7 @@ func TestPanicRecovery_WithStaleFallback(t *testing.T) {
 		_, _ = w.Write([]byte("panic fallback data"))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Initial request caches data
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/api/panic-test", nil)
@@ -336,7 +342,7 @@ func TestConditionalAndHeadRequests(t *testing.T) {
 		_, _ = w.Write([]byte("full payload content"))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Prime cache
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/api/conditional", nil)
@@ -385,7 +391,7 @@ func TestUnsafeMethodAutoInvalidation_DefaultDisabled(t *testing.T) {
 		_, _ = fmt.Fprintf(w, "state=%d", state.Load())
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Prime cache
 	reqGet := httptest.NewRequest(http.MethodGet, "http://example.com/api/state-default", nil)
@@ -426,7 +432,7 @@ func TestUnsafeMethodAutoInvalidation_OptInEnabled(t *testing.T) {
 		_, _ = fmt.Fprintf(w, "state=%d", state.Load())
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Prime cache
 	reqGet := httptest.NewRequest(http.MethodGet, "http://example.com/api/state-enabled", nil)
@@ -465,7 +471,7 @@ func TestGracefulShutdown(t *testing.T) {
 		_, _ = w.Write([]byte("swr response"))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Prime cache
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/swr-shutdown", nil)
@@ -498,13 +504,13 @@ func BenchmarkCacheHit(b *testing.B) {
 	_, _, mw := setupTestTitip(b)
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(HeaderContentType, "application/json")
-		w.Header().Set(HeaderCacheControl, "public, max-age=300")
+		w.Header().Set(headerContentType, "application/json")
+		w.Header().Set(headerCacheControl, "public, max-age=300")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench/hit", nil)
 
 	// Prime cache
@@ -512,9 +518,9 @@ func BenchmarkCacheHit(b *testing.B) {
 	handler.ServeHTTP(recPrime, req)
 
 	for b.Loop() {
-		rec := GetResponseRecorder()
+		rec := getResponseRecorder()
 		handler.ServeHTTP(rec, req)
-		PutResponseRecorder(rec)
+		putResponseRecorder(rec)
 	}
 }
 
@@ -522,12 +528,12 @@ func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
 	_, _, mw := setupTestTitip(b)
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(HeaderCacheControl, "public, max-age=300")
+		w.Header().Set(headerCacheControl, "public, max-age=300")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"data":"parallel"}`))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench/par", nil)
 
 	// Prime
@@ -539,9 +545,9 @@ func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			rec := GetResponseRecorder()
+			rec := getResponseRecorder()
 			handler.ServeHTTP(rec, req)
-			PutResponseRecorder(rec)
+			putResponseRecorder(rec)
 		}
 	})
 }
@@ -557,7 +563,7 @@ func TestPrometheusMetrics(t *testing.T) {
 		_, _ = w.Write([]byte("metric test data"))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 20 misses (different URLs)
 	for i := 0; i < 20; i++ {
@@ -579,6 +585,7 @@ func TestPrometheusMetrics(t *testing.T) {
 	}
 
 	var hitCount, missCount float64
+	var hitHistSampleCount, missHistSampleCount uint64
 	for _, mf := range mfs {
 		if mf.GetName() == "titip_requests_total" {
 			for _, m := range mf.GetMetric() {
@@ -593,6 +600,19 @@ func TestPrometheusMetrics(t *testing.T) {
 				}
 			}
 		}
+		if mf.GetName() == "titip_request_duration_seconds" {
+			for _, m := range mf.GetMetric() {
+				for _, label := range m.GetLabel() {
+					if label.GetName() == "status" {
+						if label.GetValue() == "hit" {
+							hitHistSampleCount += m.GetHistogram().GetSampleCount()
+						} else if label.GetValue() == "miss" {
+							missHistSampleCount += m.GetHistogram().GetSampleCount()
+						}
+					}
+				}
+			}
+		}
 	}
 
 	if hitCount != 80 {
@@ -600,6 +620,12 @@ func TestPrometheusMetrics(t *testing.T) {
 	}
 	if missCount != 20 {
 		t.Errorf("expected 20 misses in metrics, got %v", missCount)
+	}
+	if hitHistSampleCount != 80 {
+		t.Errorf("expected 80 hit histogram observations, got %v", hitHistSampleCount)
+	}
+	if missHistSampleCount != 20 {
+		t.Errorf("expected 20 miss histogram observations, got %v", missHistSampleCount)
 	}
 }
 
@@ -621,7 +647,7 @@ func TestCacheStatusModes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/status-test", nil)
 
 	// Prime mw1
-	h1 := mw1.Handler(originHandler)
+	h1 := mw1.testHandler(originHandler)
 	rec1Prime := httptest.NewRecorder()
 	h1.ServeHTTP(rec1Prime, req)
 
@@ -632,7 +658,7 @@ func TestCacheStatusModes(t *testing.T) {
 	}
 
 	// Prime mw2
-	h2 := mw2.Handler(originHandler)
+	h2 := mw2.testHandler(originHandler)
 	rec2Prime := httptest.NewRecorder()
 	h2.ServeHTTP(rec2Prime, req)
 
@@ -643,7 +669,7 @@ func TestCacheStatusModes(t *testing.T) {
 	}
 
 	// Prime mw3
-	h3 := mw3.Handler(originHandler)
+	h3 := mw3.testHandler(originHandler)
 	rec3Prime := httptest.NewRecorder()
 	h3.ServeHTTP(rec3Prime, req)
 
@@ -681,7 +707,7 @@ func TestMultiVariant_VaryHeaderLifecycle(t *testing.T) {
 		}
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 	baseURL := "http://example.com/api/greeting"
 
 	// 1. First Request: English variant (Cold URL Miss -> call #1)
@@ -808,7 +834,7 @@ func TestBypassGuards_WebSocket_SSE_Range(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. WebSocket Upgrade Bypass
 	reqWS := httptest.NewRequest(http.MethodGet, "http://example.com/ws", nil)
@@ -871,7 +897,7 @@ func TestColdMiss_ConcurrentSafety_ZeroSessionLeak(t *testing.T) {
 		_, _ = w.Write([]byte(fmt.Sprintf(`{"user_id":%d}`, reqID)))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 	const concurrentUsers = 30
 
 	var wg sync.WaitGroup
@@ -924,7 +950,7 @@ func TestDownstream304_ZeroBodyIO(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":"payload-version-1"}`))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Prime Cache
 	reqPrime := httptest.NewRequest(http.MethodGet, "http://example.com/api/item", nil)
@@ -993,7 +1019,7 @@ func TestUpstream304_TTLRefresh(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":"upstream-payload"}`))
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Prime Cache (Origin Call #1)
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/api/refresh", nil)
@@ -1047,7 +1073,7 @@ func TestUpstream304_TTLRefresh(t *testing.T) {
 func TestCustomTagHeaderName(t *testing.T) {
 	_, store, engine := setupTestTitip(t, WithTagHeaderName("X-Custom-Tags"))
 
-	handler := engine.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := engine.testHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=60")
 		w.Header().Set("X-Custom-Tags", "catalog products,electronics")
 		w.WriteHeader(http.StatusOK)
@@ -1085,7 +1111,7 @@ func TestRFC_MandatoryCachedResponseHeaders(t *testing.T) {
 	_, _, engine := setupTestTitip(t)
 
 	originDate := "Sun, 06 Nov 1994 08:49:37 GMT"
-	handler := engine.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := engine.testHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=10, stale-while-revalidate=60")
 		w.Header().Set("Date", originDate)
 		w.Header().Set("ETag", `"v1"`)
@@ -1166,7 +1192,7 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"version":%d,"message":"origin data"}`, count)
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	targetURL := "http://example.com/api/microsecond-glitch"
 
@@ -1183,14 +1209,14 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 	}
 
 	// 2. Simulate microsecond glitch: Metadata hash is present in Redis, but Body key was evicted/expired
-	primaryKey := GeneratePrimaryKey(req1, DefaultKeyConfig())
+	primaryKey := generatePrimaryKey(req1, &KeyConfig{})
 	meta, err := store.GetMeta(context.Background(), primaryKey)
 	if err != nil || meta == nil {
 		t.Fatalf("expected metadata in Redis, got err=%v meta=%v", err, meta)
 	}
 
 	// Find the exact Redis body key and delete it from Redis
-	varInfo, body, err := store.GetVariant(context.Background(), primaryKey, DefaultVariantKey)
+	varInfo, body, err := store.GetVariant(context.Background(), primaryKey, defaultVariantKey)
 	if err != nil || varInfo == nil || len(body) == 0 {
 		t.Fatalf("expected body in Redis before eviction simulation")
 	}
@@ -1208,7 +1234,7 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 	}
 
 	// Verify body is gone but metadata is still present in Redis
-	_, missingBody, _ := store.GetVariant(context.Background(), primaryKey, DefaultVariantKey)
+	_, missingBody, _ := store.GetVariant(context.Background(), primaryKey, defaultVariantKey)
 	if len(missingBody) != 0 {
 		t.Fatalf("expected body to be deleted from Redis")
 	}
@@ -1257,7 +1283,7 @@ func TestRFC9211_ForwardReasonsAndParameters(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
 	// 1. Test fwd=method on mutating POST request
 	reqPost := httptest.NewRequest(http.MethodPost, "http://example.com/api/rfc9211", strings.NewReader(`{}`))
@@ -1366,93 +1392,265 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 		}
 	})
 
-	handler := mw.Handler(originHandler)
+	handler := mw.testHandler(originHandler)
 
-	// 1. TokenMiss ("MISS"): First request to cacheable URL
+	// 1. tokenMiss ("MISS"): First request to cacheable URL
 	reqMiss := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/cacheable", nil)
 	recMiss := httptest.NewRecorder()
 	handler.ServeHTTP(recMiss, reqMiss)
-	if cs := recMiss.Header().Get("Cache-Status"); cs != TokenMiss {
-		t.Errorf("expected TokenMiss (%q), got %q", TokenMiss, cs)
+	if cs := recMiss.Header().Get("Cache-Status"); cs != tokenMiss {
+		t.Errorf("expected tokenMiss (%q), got %q", tokenMiss, cs)
 	}
 
-	// 2. TokenHit ("HIT"): Second request to cached URL
+	// 2. tokenHit ("HIT"): Second request to cached URL
 	reqHit := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/cacheable", nil)
 	recHit := httptest.NewRecorder()
 	handler.ServeHTTP(recHit, reqHit)
-	if cs := recHit.Header().Get("Cache-Status"); cs != TokenHit {
-		t.Errorf("expected TokenHit (%q), got %q", TokenHit, cs)
+	if cs := recHit.Header().Get("Cache-Status"); cs != tokenHit {
+		t.Errorf("expected tokenHit (%q), got %q", tokenHit, cs)
 	}
 
-	// 3. TokenBypass ("BYPASS"): Mutating POST or client no-store
+	// 3. tokenBypass ("BYPASS"): Mutating POST or client no-store
 	reqBypassPost := httptest.NewRequest(http.MethodPost, "http://example.com/api/simple/cacheable", strings.NewReader(`{}`))
 	recBypassPost := httptest.NewRecorder()
 	handler.ServeHTTP(recBypassPost, reqBypassPost)
-	if cs := recBypassPost.Header().Get("Cache-Status"); cs != TokenBypass {
-		t.Errorf("expected TokenBypass on POST (%q), got %q", TokenBypass, cs)
+	if cs := recBypassPost.Header().Get("Cache-Status"); cs != tokenBypass {
+		t.Errorf("expected tokenBypass on POST (%q), got %q", tokenBypass, cs)
 	}
 
 	reqBypassNoStore := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/cacheable", nil)
 	reqBypassNoStore.Header.Set("Cache-Control", "no-store")
 	recBypassNoStore := httptest.NewRecorder()
 	handler.ServeHTTP(recBypassNoStore, reqBypassNoStore)
-	if cs := recBypassNoStore.Header().Get("Cache-Status"); cs != TokenBypass {
-		t.Errorf("expected TokenBypass on no-store (%q), got %q", TokenBypass, cs)
+	if cs := recBypassNoStore.Header().Get("Cache-Status"); cs != tokenBypass {
+		t.Errorf("expected tokenBypass on no-store (%q), got %q", tokenBypass, cs)
 	}
 
-	// 4. TokenDynamic ("DYNAMIC"): Response is uncacheable due to origin Set-Cookie
+	// 4. tokenDynamic ("DYNAMIC"): Response is uncacheable due to origin Set-Cookie
 	reqDynamic := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/dynamic", nil)
 	recDynamic := httptest.NewRecorder()
 	handler.ServeHTTP(recDynamic, reqDynamic)
-	if cs := recDynamic.Header().Get("Cache-Status"); cs != TokenDynamic {
-		t.Errorf("expected TokenDynamic (%q), got %q", TokenDynamic, cs)
+	if cs := recDynamic.Header().Get("Cache-Status"); cs != tokenDynamic {
+		t.Errorf("expected tokenDynamic (%q), got %q", tokenDynamic, cs)
 	}
 
-	// 5. TokenUpdating ("UPDATING"): Stale-while-revalidate background update window
+	// 5. tokenUpdating ("UPDATING"): Stale-while-revalidate background update window
 	reqSWR := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/swr", nil)
 	recSWR1 := httptest.NewRecorder()
 	handler.ServeHTTP(recSWR1, reqSWR) // prime (MISS)
 	time.Sleep(1100 * time.Millisecond) // expire max-age=1, enter SWR=10 window
 	recSWR2 := httptest.NewRecorder()
 	handler.ServeHTTP(recSWR2, reqSWR)
-	if cs := recSWR2.Header().Get("Cache-Status"); cs != TokenUpdating {
-		t.Errorf("expected TokenUpdating (%q), got %q", TokenUpdating, cs)
+	if cs := recSWR2.Header().Get("Cache-Status"); cs != tokenUpdating {
+		t.Errorf("expected tokenUpdating (%q), got %q", tokenUpdating, cs)
 	}
 
-	// 6. TokenRevalidated ("REVALIDATED"): Origin returns 304 Not Modified
+	// 6. tokenRevalidated ("REVALIDATED"): Origin returns 304 Not Modified
 	reqReval := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/reval", nil)
 	recReval1 := httptest.NewRecorder()
 	handler.ServeHTTP(recReval1, reqReval) // prime (MISS)
 	time.Sleep(1100 * time.Millisecond)   // expire max-age=1
 	recReval2 := httptest.NewRecorder()
 	handler.ServeHTTP(recReval2, reqReval) // revalidates with origin -> 304
-	if cs := recReval2.Header().Get("Cache-Status"); cs != TokenRevalidated {
-		t.Errorf("expected TokenRevalidated (%q), got %q", TokenRevalidated, cs)
+	if cs := recReval2.Header().Get("Cache-Status"); cs != tokenRevalidated {
+		t.Errorf("expected tokenRevalidated (%q), got %q", tokenRevalidated, cs)
 	}
 
-	// 7. TokenExpired ("EXPIRED"): Origin returns fresh 200 OK on revalidation
+	// 7. tokenExpired ("EXPIRED"): Origin returns fresh 200 OK on revalidation
 	reqExp := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/expired", nil)
 	recExp1 := httptest.NewRecorder()
 	handler.ServeHTTP(recExp1, reqExp) // prime (MISS)
 	time.Sleep(1100 * time.Millisecond) // expire max-age=1
 	recExp2 := httptest.NewRecorder()
 	handler.ServeHTTP(recExp2, reqExp) // revalidates with origin -> 200 OK
-	if cs := recExp2.Header().Get("Cache-Status"); cs != TokenExpired {
-		t.Errorf("expected TokenExpired (%q), got %q", TokenExpired, cs)
+	if cs := recExp2.Header().Get("Cache-Status"); cs != tokenExpired {
+		t.Errorf("expected tokenExpired (%q), got %q", tokenExpired, cs)
 	}
 
-	// 8. TokenStale ("STALE"): Origin 500 error triggers stale-if-error fallback
+	// 8. tokenStale ("STALE"): Origin 500 error triggers stale-if-error fallback
 	reqFailover := httptest.NewRequest(http.MethodGet, "http://example.com/api/simple/failover", nil)
 	recFailover1 := httptest.NewRecorder()
 	handler.ServeHTTP(recFailover1, reqFailover) // prime (MISS)
 	time.Sleep(1100 * time.Millisecond)          // expire max-age=1
 	recFailover2 := httptest.NewRecorder()
 	handler.ServeHTTP(recFailover2, reqFailover) // origin fails -> serves stale
-	if cs := recFailover2.Header().Get("Cache-Status"); cs != TokenStale {
-		t.Errorf("expected TokenStale (%q), got %q", TokenStale, cs)
+	if cs := recFailover2.Header().Get("Cache-Status"); cs != tokenStale {
+		t.Errorf("expected tokenStale (%q), got %q", tokenStale, cs)
 	}
 	if recFailover2.Code != http.StatusOK {
 		t.Errorf("expected 200 OK from stale-if-error fallback, got %d", recFailover2.Code)
+	}
+}
+
+func TestNew_MissingStorage(t *testing.T) {
+	_, err := New()
+	if err == nil {
+		t.Fatal("expected error when creating Titip without storage, got nil")
+	}
+	expectedMsg := "titip: storage is required"
+	if err.Error() != expectedMsg {
+		t.Fatalf("expected error message %q, got %q", expectedMsg, err.Error())
+	}
+}
+
+func TestNew_MinimalOptions(t *testing.T) {
+	addr := getTestRedisAddr()
+	client, err := rueidis.NewClient(rueidis.ClientOption{
+		InitAddress:  []string{addr},
+		DisableCache: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to connect to test Redis: %v", err)
+	}
+	defer client.Close()
+
+	prefix := fmt.Sprintf("test_min:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix(prefix))
+	if err != nil {
+		t.Fatalf("failed to create RedisStorage: %v", err)
+	}
+	defer store.Close()
+
+	// Initialize with ONLY the single required option
+	mw, err := New(WithStorage(store))
+	if err != nil {
+		t.Fatalf("failed to initialize Titip with minimal options: %v", err)
+	}
+
+	// 1. Verify default configuration values
+	if mw.cfg.CacheStatusMode != CacheStatusSimpleToken {
+		t.Errorf("expected CacheStatusSimpleToken (%v), got %v", CacheStatusSimpleToken, mw.cfg.CacheStatusMode)
+	}
+	if !mw.cfg.IgnoreClientCacheControl {
+		t.Errorf("expected IgnoreClientCacheControl to be true by default")
+	}
+	if mw.cfg.TagHeaderName != headerCacheTag {
+		t.Errorf("expected TagHeaderName %q, got %q", headerCacheTag, mw.cfg.TagHeaderName)
+	}
+	if mw.cfg.OriginTimeout != 30*time.Second {
+		t.Errorf("expected OriginTimeout 30s, got %v", mw.cfg.OriginTimeout)
+	}
+	if mw.cfg.StorageTimeout != 1*time.Second {
+		t.Errorf("expected StorageTimeout 1s, got %v", mw.cfg.StorageTimeout)
+	}
+	if mw.logger == nil {
+		t.Errorf("expected non-nil default logger")
+	}
+	if len(mw.cacheableStatusCodes) == 0 {
+		t.Errorf("expected non-empty default cacheable status codes")
+	}
+	if mw.cfg.ESI.MaxDepth != 3 {
+		t.Errorf("expected ESI MaxDepth 3, got %d", mw.cfg.ESI.MaxDepth)
+	}
+	if mw.cfg.ESI.MaxTimeout != 30*time.Second {
+		t.Errorf("expected ESI MaxTimeout 30s, got %v", mw.cfg.ESI.MaxTimeout)
+	}
+	if mw.cfg.ESI.MaxConcurrentRequests != 8 {
+		t.Errorf("expected ESI MaxConcurrentRequests 8, got %d", mw.cfg.ESI.MaxConcurrentRequests)
+	}
+	if mw.cfg.ESI.MaxResponseSize != 10*1024*1024 {
+		t.Errorf("expected ESI MaxResponseSize 10MB, got %d", mw.cfg.ESI.MaxResponseSize)
+	}
+
+	// 2. Execute live HTTP request lifecycle
+	var originCalls atomic.Int32
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("minimal option payload"))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/minimal", nil)
+
+	// 1st request: Cold Miss
+	rec1 := httptest.NewRecorder()
+	mw.ServeHTTP(rec1, req, originHandler)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on cold miss, got %d", rec1.Code)
+	}
+	if cs := rec1.Header().Get("Cache-Status"); cs != tokenMiss {
+		t.Errorf("expected Cache-Status %q on cold miss, got %q", tokenMiss, cs)
+	}
+	if originCalls.Load() != 1 {
+		t.Errorf("expected 1 origin call, got %d", originCalls.Load())
+	}
+
+	// 2nd request: Cache Hit
+	rec2 := httptest.NewRecorder()
+	mw.ServeHTTP(rec2, req, originHandler)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on cache hit, got %d", rec2.Code)
+	}
+	if cs := rec2.Header().Get("Cache-Status"); cs != tokenHit {
+		t.Errorf("expected Cache-Status %q on cache hit, got %q", tokenHit, cs)
+	}
+	if originCalls.Load() != 1 {
+		t.Errorf("expected still 1 origin call on hit, got %d", originCalls.Load())
+	}
+
+	// 3. Verify Purge and Close
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := mw.PurgeURL(ctx, "http://example.com/api/minimal"); err != nil {
+		t.Errorf("expected PurgeURL to succeed on minimal instance, got %v", err)
+	}
+	if err := mw.Close(ctx); err != nil {
+		t.Errorf("expected Close to succeed on minimal instance, got %v", err)
+	}
+}
+
+func TestNew_NilOptionGuards(t *testing.T) {
+	addr := getTestRedisAddr()
+	client, err := rueidis.NewClient(rueidis.ClientOption{
+		InitAddress:  []string{addr},
+		DisableCache: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to connect to test Redis: %v", err)
+	}
+	defer client.Close()
+
+	prefix := fmt.Sprintf("test_nil_opts:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix(prefix))
+	if err != nil {
+		t.Fatalf("failed to create RedisStorage: %v", err)
+	}
+	defer store.Close()
+
+	// Initialize with explicit nil pointers
+	mw, err := New(
+		WithStorage(store),
+		WithLogger(nil),
+		WithMetrics(nil),
+		WithCacheableStatusCodes(nil...),
+	)
+	if err != nil {
+		t.Fatalf("expected New with nil option guards to succeed, got %v", err)
+	}
+	if mw.logger == nil {
+		t.Fatal("expected mw.logger to fallback to slog.Default() when passed nil")
+	}
+	if len(mw.cacheableStatusCodes) == 0 {
+		t.Fatal("expected mw.cacheableStatusCodes to fallback to default codes when passed nil")
+	}
+	if mw.metrics != nil {
+		t.Fatal("expected mw.metrics to be nil when passed nil Registerer")
+	}
+
+	// Verify executing request with nil logger/metrics does not panic
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("nil-safe payload"))
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/nil-safe", nil)
+	mw.ServeHTTP(rec, req, origin)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", rec.Code)
 	}
 }
 

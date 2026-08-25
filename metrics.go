@@ -8,29 +8,29 @@ import (
 
 // Metric status label values for titip_requests_total
 const (
-	StatusHit         = "hit"
-	StatusMiss        = "miss"
-	StatusStaleHit    = "stale_hit"
-	StatusRevalidated = "revalidated"
-	StatusBypass      = "bypass"
-	StatusError       = "error"
+	statusHit         = "hit"
+	statusMiss        = "miss"
+	statusStaleHit    = "stale_hit"
+	statusRevalidated = "revalidated"
+	statusBypass      = "bypass"
+	statusError       = "error"
 )
 
-// Metrics encapsulates Prometheus telemetry collectors for Titip.
-type Metrics struct {
+// metrics encapsulates Prometheus telemetry collectors for Titip.
+type metrics struct {
 	requestsTotal   *prometheus.CounterVec
-	storageDuration *prometheus.HistogramVec
+	requestDuration *prometheus.HistogramVec
 	esiFragments    *prometheus.CounterVec
 	esiDuration     *prometheus.HistogramVec
 }
 
 // newMetrics initializes and registers Prometheus collectors with the provided Registerer.
-func newMetrics(reg prometheus.Registerer) *Metrics {
+func newMetrics(reg prometheus.Registerer, enableESI bool) *metrics {
 	if reg == nil {
 		return nil
 	}
 
-	m := &Metrics{
+	m := &metrics{
 		requestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "titip_requests_total",
@@ -38,66 +38,66 @@ func newMetrics(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"status"},
 		),
-		storageDuration: prometheus.NewHistogramVec(
+		requestDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
-				Name:    "titip_storage_duration_seconds",
-				Help:    "Latency of cache storage operations in seconds.",
-				Buckets: prometheus.DefBuckets,
+				Name:    "titip_request_duration_seconds",
+				Help:    "Latency distribution of HTTP requests processed by Titip caching middleware in seconds.",
+				Buckets: []float64{.00025, .0005, .001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
 			},
-			[]string{"operation", "backend"},
+			[]string{"status"},
 		),
-		esiFragments: prometheus.NewCounterVec(
+	}
+
+	_ = reg.Register(m.requestsTotal)
+	_ = reg.Register(m.requestDuration)
+
+	if enableESI {
+		m.esiFragments = prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "titip_esi_fragments_total",
 				Help: "Total number of ESI fragments processed partitioned by status.",
 			},
 			[]string{"status"},
-		),
-		esiDuration: prometheus.NewHistogramVec(
+		)
+		m.esiDuration = prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "titip_esi_duration_seconds",
 				Help:    "Latency distribution of ESI fragment fetching and splicing in seconds.",
 				Buckets: prometheus.DefBuckets,
 			},
 			[]string{"mode"},
-		),
-	}
+		)
 
-	// Register collectors (ignoring already-registered errors for testing flexibility)
-	_ = reg.Register(m.requestsTotal)
-	_ = reg.Register(m.storageDuration)
-	_ = reg.Register(m.esiFragments)
-	_ = reg.Register(m.esiDuration)
+		_ = reg.Register(m.esiFragments)
+		_ = reg.Register(m.esiDuration)
+	}
 
 	return m
 }
 
-// RecordRequest safely increments the request counter for the given status.
-func (m *Metrics) RecordRequest(status string) {
-	if m == nil || m.requestsTotal == nil {
+// recordRequest safely increments the request counter and observes duration for the given status.
+func (m *metrics) recordRequest(status string, dur time.Duration) {
+	if m == nil {
 		return
 	}
-	m.requestsTotal.WithLabelValues(status).Inc()
-}
-
-// RecordStorage safely observes the latency of a storage operation.
-func (m *Metrics) RecordStorage(operation, backend string, dur time.Duration) {
-	if m == nil || m.storageDuration == nil {
-		return
+	if m.requestsTotal != nil {
+		m.requestsTotal.WithLabelValues(status).Inc()
 	}
-	m.storageDuration.WithLabelValues(operation, backend).Observe(dur.Seconds())
+	if m.requestDuration != nil {
+		m.requestDuration.WithLabelValues(status).Observe(dur.Seconds())
+	}
 }
 
-// RecordESIFragment safely increments the ESI fragment counter for the given status.
-func (m *Metrics) RecordESIFragment(status string) {
+// recordESIFragment safely increments the ESI fragment counter for the given status.
+func (m *metrics) recordESIFragment(status string) {
 	if m == nil || m.esiFragments == nil {
 		return
 	}
 	m.esiFragments.WithLabelValues(status).Inc()
 }
 
-// RecordESIDuration safely observes the latency of an ESI operation.
-func (m *Metrics) RecordESIDuration(mode string, dur time.Duration) {
+// recordESIDuration safely observes the latency of an ESI operation.
+func (m *metrics) recordESIDuration(mode string, dur time.Duration) {
 	if m == nil || m.esiDuration == nil {
 		return
 	}

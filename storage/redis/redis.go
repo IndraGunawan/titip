@@ -48,6 +48,8 @@ type RedisStorage struct {
 	logger *slog.Logger
 }
 
+var _ storage.Storage = (*RedisStorage)(nil)
+
 // New creates a new RedisStorage instance backed by the provided rueidis.Client.
 func New(client rueidis.Client, opts ...Option) (*RedisStorage, error) {
 	if client == nil {

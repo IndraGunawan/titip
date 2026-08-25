@@ -222,7 +222,7 @@ To add an adapter for another web framework (e.g. **Gin**, **Echo**, **Fiber**, 
                c.Next()
            })
 
-           t.Handler(downstream).ServeHTTP(c.Writer, c.Request)
+           t.ServeHTTP(c.Writer, c.Request, downstream)
        }
    }
    ```
