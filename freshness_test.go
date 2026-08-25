@@ -8,6 +8,7 @@ import (
 )
 
 func TestParseAge(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected time.Duration
@@ -29,6 +30,7 @@ func TestParseAge(t *testing.T) {
 }
 
 func TestParseDate(t *testing.T) {
+	t.Parallel()
 	// RFC 1123 format
 	d1, err := parseDate("Sun, 06 Nov 1994 08:49:37 GMT")
 	if err != nil || d1.Year() != 1994 || d1.Hour() != 8 {
@@ -61,6 +63,7 @@ func TestParseDate(t *testing.T) {
 }
 
 func TestCalculateFreshness_RFC7234_Scenarios(t *testing.T) {
+	t.Parallel()
 	baseTime := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 	reqTime := baseTime
 	respTime := baseTime.Add(100 * time.Millisecond)
@@ -121,6 +124,7 @@ func TestCalculateFreshness_RFC7234_Scenarios(t *testing.T) {
 }
 
 func TestIsResponseCacheable_StrictRules(t *testing.T) {
+	t.Parallel()
 	// Rule 1: Set-Cookie presence prevents caching unconditionally
 	hWithCookie := http.Header{
 		"Cache-Control": []string{"public, max-age=300"},
@@ -170,6 +174,7 @@ func TestIsResponseCacheable_StrictRules(t *testing.T) {
 }
 
 func TestFreshnessAndKeyGenConcurrency(t *testing.T) {
+	t.Parallel()
 	const goroutines = 100
 	const iterations = 50
 

@@ -57,6 +57,7 @@ func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, fu
 }
 
 func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
+	t.Parallel()
 	config := fmt.Sprintf(`titip {
 		cache_status RFC9211
 		origin_timeout 20s
@@ -79,7 +80,28 @@ func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
 	}
 }
 
+func TestCaddyHandler_ConvertHeadToGet_Unmarshal(t *testing.T) {
+	t.Parallel()
+	config := fmt.Sprintf(`titip {
+		convert_head_to_get false
+		storage redis {
+			address %q
+		}
+	}`, getTestRedisAddr())
+
+	d := caddyfile.NewTestDispenser(config)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if h.ConvertHeadToGet == nil || *h.ConvertHeadToGet != false {
+		t.Fatalf("expected ConvertHeadToGet false, got %v", h.ConvertHeadToGet)
+	}
+}
+
 func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
+	t.Parallel()
 	prefix := fmt.Sprintf("test_caddy_mw:%d:%d:", time.Now().UnixNano(), rand.Int63())
 	caddyfileInput := fmt.Sprintf(`titip {
 		cache_status rfc9211
@@ -132,6 +154,7 @@ func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
 }
 
 func TestCaddyHandler_ProvisionMissingStorage(t *testing.T) {
+	t.Parallel()
 	config := `titip {
 		cache_status rfc9211
 	}`
@@ -156,6 +179,7 @@ func TestCaddyHandler_ProvisionMissingStorage(t *testing.T) {
 
 // AC-3: Admin Purge API Single-Target Validation & Execution
 func TestAdminPurge_ValidationAndMutualExclusivity(t *testing.T) {
+	t.Parallel()
 	// 1. Mutual exclusivity violation (both urls and tags)
 	body1 := `{"urls": ["http://example.com/api/item"], "tags": ["tag1"], "soft": true}`
 	req1 := httptest.NewRequest(http.MethodPost, "/titip/purge", bytes.NewBufferString(body1))
@@ -222,6 +246,7 @@ func TestAdminPurge_ValidationAndMutualExclusivity(t *testing.T) {
 
 // AC-1 Edge Case: Undefined Storage in Caddyfile
 func TestCaddyHandler_UndefinedStorage_FailsProvisioning(t *testing.T) {
+	t.Parallel()
 	config := `titip {
 		cache_status rfc9211
 		origin_timeout 10s
@@ -247,6 +272,7 @@ func TestCaddyHandler_UndefinedStorage_FailsProvisioning(t *testing.T) {
 
 // AC-1 Edge Case: Unknown Storage Module in Caddyfile
 func TestCaddyHandler_UnknownStorageModule_Fails(t *testing.T) {
+	t.Parallel()
 	config := `titip {
 		storage memcached {
 			servers 127.0.0.1:11211
@@ -269,6 +295,7 @@ func TestCaddyHandler_UnknownStorageModule_Fails(t *testing.T) {
 
 // AC-3 / AC-4: End-to-End Live Admin Purge Invalidation
 func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
+	t.Parallel()
 	prefix := fmt.Sprintf("test_caddy_purge:%d:%d:", time.Now().UnixNano(), rand.Int63())
 	caddyfileInput := fmt.Sprintf(`titip {
 		storage redis {
@@ -363,6 +390,7 @@ func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
 
 // TestCaddy_StandaloneStorageDirective_Fails verifies that storage modules cannot be configured standalone
 func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
+	t.Parallel()
 	config := `:8080 {
 		storage redis {
 			address localhost:6379
@@ -379,6 +407,7 @@ func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
 }
 
 func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
+	t.Parallel()
 	config := fmt.Sprintf(`titip {
 		storage redis {
 			address %q
@@ -436,6 +465,7 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 }
 
 func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
+	t.Parallel()
 	prefix := fmt.Sprintf("test:caddy:key:%d:", rand.Int63())
 	caddyfileInput := fmt.Sprintf(`titip {
 		storage redis {
@@ -490,6 +520,7 @@ func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
 }
 
 func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
+	t.Parallel()
 	config := fmt.Sprintf(`titip {
 		cache_status simple
 		storage redis {
@@ -542,6 +573,7 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 }
 
 func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
+	t.Parallel()
 	prefix := fmt.Sprintf("test:caddy:esi:%d:", rand.Int63())
 	caddyfileInput := fmt.Sprintf(`titip {
 		storage redis {
@@ -606,6 +638,7 @@ func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 }
 
 func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
+	t.Parallel()
 	prefix := fmt.Sprintf("test:caddy:replacer:%d:", rand.Int63())
 	caddyfileInput := fmt.Sprintf(`titip {
 		storage redis {
@@ -683,6 +716,7 @@ func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
 // TestCaddyGlobalOption_Adapt verifies that { titip { ... } } in global options
 // compiles properly to apps.titip in Caddy JSON.
 func TestCaddyGlobalOption_Adapt(t *testing.T) {
+	t.Parallel()
 	prefix := fmt.Sprintf("test:caddy:global:inherit:%d:", rand.Int63())
 
 	caddyfileInput := fmt.Sprintf(`{

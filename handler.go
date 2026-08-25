@@ -304,7 +304,9 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	ctx.w.Header().Set(headerAge, ageStr)
 	t.emitCacheStatus(ctx.w, tokenUpdating, "hit; stale; detail=swr")
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
-	_, _ = ctx.w.Write(dstBuf.Bytes())
+	if ctx.r.Method != http.MethodHead {
+		_, _ = ctx.w.Write(dstBuf.Bytes())
+	}
 
 	// Async Background Revalidation
 	if !t.closed.Load() {
@@ -332,6 +334,12 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	rec := getResponseRecorder()
 	defer putResponseRecorder(rec)
 
+	originReq := ctx.r.WithContext(originCtx)
+	if ctx.r.Method == http.MethodHead && t.cfg.ConvertHeadToGet {
+		originReq = ctx.r.Clone(originCtx)
+		originReq.Method = http.MethodGet
+	}
+
 	reqTime := time.Now()
 	var panicked bool
 	func() {
@@ -343,7 +351,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 				}
 			}
 		}()
-		ctx.next.ServeHTTP(rec, ctx.r.WithContext(originCtx))
+		ctx.next.ServeHTTP(rec, originReq)
 	}()
 
 	if panicked {
@@ -374,8 +382,12 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		return nil
 	}
 
-	// Cache if eligible and not closed
-	if freshness.IsCacheable && !t.closed.Load() {
+	// Cache if eligible and not closed (skip saving 0-byte variant if HEAD and ConvertHeadToGet is disabled)
+	shouldCache := freshness.IsCacheable && !t.closed.Load()
+	if ctx.r.Method == http.MethodHead && !t.cfg.ConvertHeadToGet {
+		shouldCache = false
+	}
+	if shouldCache {
 		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
 	}
 
@@ -398,7 +410,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 				if ctx.isVaryMiss {
 					missReason = "fwd=vary-miss"
 				}
-				if freshness.EffectiveTTL > 0 && freshness.IsCacheable {
+				if shouldCache && freshness.EffectiveTTL > 0 {
 					t.recordRequest(ctx, statusMiss)
 					statusToken = tokenMiss
 					rfc9211Detail = fmt.Sprintf("%s; fwd-status=%d; stored; ttl=%d", missReason, rec.Code, int(freshness.EffectiveTTL.Seconds()))
@@ -424,7 +436,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	if ctx.isVaryMiss {
 		missReason = "fwd=vary-miss"
 	}
-	if freshness.EffectiveTTL > 0 && freshness.IsCacheable {
+	if shouldCache && freshness.EffectiveTTL > 0 {
 		t.recordRequest(ctx, statusMiss)
 		t.emitCacheStatus(ctx.w, tokenMiss, fmt.Sprintf("%s; fwd-status=%d; stored; ttl=%d", missReason, rec.Code, int(freshness.EffectiveTTL.Seconds())))
 	} else {
@@ -462,8 +474,30 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		rec := getResponseRecorder()
 		defer putResponseRecorder(rec)
 
+		// Double-checked freshness check:
+		// If another concurrent singleflight already refreshed this entry in storage while we were delayed,
+		// load the freshly saved entry from storage directly rather than querying the origin again.
+		metaCtx, metaCancel := context.WithTimeout(originCtx, t.cfg.StorageTimeout)
+		latestMeta, errMeta := t.storage.GetMeta(metaCtx, ctx.primaryKey)
+		metaCancel()
+		if errMeta == nil && latestMeta != nil && !latestMeta.IsSoftPurged && latestMeta.ExpiresAtUnixNano > time.Now().UnixNano() {
+			varCtx, varCancel := context.WithTimeout(originCtx, t.cfg.StorageTimeout)
+			latestVar, compBody, errVar := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
+			varCancel()
+			if errVar == nil && latestVar != nil && len(compBody) > 0 {
+				return &fetchResult{
+					statusCode: int(latestVar.StatusCode),
+					isFallback: true,
+					fallback:   &staleFallback{varInfo: latestVar, body: compBody, meta: latestMeta},
+				}, nil
+			}
+		}
+
 		// Attach conditional headers for Upstream 304 Revalidation
 		revalReq := ctx.r.Clone(originCtx)
+		if ctx.r.Method == http.MethodHead && t.cfg.ConvertHeadToGet {
+			revalReq.Method = http.MethodGet
+		}
 		if staleVar != nil {
 			if staleVar.Etag != "" {
 				revalReq.Header.Set(headerIfNoneMatch, staleVar.Etag)
@@ -533,7 +567,11 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		}
 
 		freshness := calculateFreshness(rec.Code, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
-		if freshness.IsCacheable && !t.closed.Load() {
+		shouldCache := freshness.IsCacheable && !t.closed.Load()
+		if ctx.r.Method == http.MethodHead && !t.cfg.ConvertHeadToGet {
+			shouldCache = false
+		}
+		if shouldCache {
 			t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
 		}
 
@@ -781,15 +819,25 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	rec := getResponseRecorder()
 	defer putResponseRecorder(rec)
 
+	originReq := r.WithContext(bgCtx)
+	if r.Method == http.MethodHead && t.cfg.ConvertHeadToGet {
+		originReq = r.Clone(bgCtx)
+		originReq.Method = http.MethodGet
+	}
+
 	reqTime := time.Now()
-	next.ServeHTTP(rec, r.WithContext(bgCtx))
+	next.ServeHTTP(rec, originReq)
 	respTime := time.Now()
 
 	headers := rec.Header().Clone()
 	bodyBytes := bytes.Clone(rec.Body.Bytes())
 
 	freshness := calculateFreshness(rec.Code, headers, reqTime, respTime, respTime, t.cacheableStatusCodes)
-	if freshness.IsCacheable && !t.closed.Load() {
+	shouldCache := freshness.IsCacheable && !t.closed.Load()
+	if r.Method == http.MethodHead && !t.cfg.ConvertHeadToGet {
+		shouldCache = false
+	}
+	if shouldCache {
 		t.saveVariantToStorage(bgCtx, primaryKey, variantKey, rec.Code, r, headers, bodyBytes, freshness, respTime)
 	}
 }

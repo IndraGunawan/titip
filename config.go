@@ -103,6 +103,7 @@ type Config struct {
 	Metrics                       prometheus.Registerer
 	CacheStatusMode               CacheStatusMode
 	IgnoreClientCacheControl      bool
+	ConvertHeadToGet              bool
 	AutoInvalidateMutatingMethods bool
 	KeyConfig                     KeyConfig
 	CacheableStatusCodes          map[int]struct{}
@@ -114,6 +115,15 @@ type Config struct {
 
 // Option configures Titip middleware options.
 type Option func(*Config)
+
+// WithConvertHeadToGet configures whether HEAD cache misses and revalidations are converted to GET
+// when fetching from the upstream origin to prime the cache (defaults to true).
+// When false, HEAD misses query the origin as HEAD and are not saved to cache.
+func WithConvertHeadToGet(enable bool) Option {
+	return func(c *Config) {
+		c.ConvertHeadToGet = enable
+	}
+}
 
 // WithAutoInvalidateMutatingMethods configures whether successful mutating requests (POST, PUT, DELETE, PATCH)
 // automatically invalidate the cached entry for the request URI and response Location/Content-Location headers (defaults to false).

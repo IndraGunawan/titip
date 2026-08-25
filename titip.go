@@ -34,6 +34,7 @@ func New(opts ...Option) (*Titip, error) {
 	cfg := Config{
 		CacheStatusMode:          CacheStatusSimpleToken,
 		IgnoreClientCacheControl: true,
+		ConvertHeadToGet:         true,
 		KeyConfig:                KeyConfig{},
 		CacheableStatusCodes:     defaultCacheableStatusCodes,
 		TagHeaderName:            headerCacheTag,

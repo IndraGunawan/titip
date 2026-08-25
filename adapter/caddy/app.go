@@ -33,6 +33,9 @@ type App struct {
 	// AutoInvalidateMutatingMethods purges cached GET entries when receiving POST/PUT/DELETE.
 	AutoInvalidateMutatingMethods *bool `json:"auto_invalidate_mutating_methods,omitempty"`
 
+	// ConvertHeadToGet converts cold HEAD requests to GET when querying origin.
+	ConvertHeadToGet *bool `json:"convert_head_to_get,omitempty"`
+
 	// OriginTimeout specifies the default timeout for fetching from upstream.
 	OriginTimeout string `json:"origin_timeout,omitempty"`
 
@@ -130,6 +133,16 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 					return nil, d.Errf("invalid boolean for auto_invalidate_mutating_methods: %v", err)
 				}
 				app.AutoInvalidateMutatingMethods = &b
+
+			case "convert_head_to_get":
+				if !d.NextArg() {
+					return nil, d.ArgErr()
+				}
+				b, err := strconv.ParseBool(d.Val())
+				if err != nil {
+					return nil, d.Errf("invalid boolean for convert_head_to_get: %v", err)
+				}
+				app.ConvertHeadToGet = &b
 
 			case "origin_timeout":
 				if !d.NextArg() {

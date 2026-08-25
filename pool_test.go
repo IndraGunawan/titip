@@ -15,6 +15,7 @@ import (
 )
 
 func TestBufferPool(t *testing.T) {
+	t.Parallel()
 	buf := getBuffer()
 	if buf == nil {
 		t.Fatal("expected non-nil buffer")
@@ -34,6 +35,7 @@ func TestBufferPool(t *testing.T) {
 }
 
 func TestBufferPoolGrowthProtection(t *testing.T) {
+	t.Parallel()
 	buf := getBuffer()
 	// Grow buffer beyond 2MB
 	largeData := make([]byte, 3*1024*1024)
@@ -54,6 +56,7 @@ func TestBufferPoolGrowthProtection(t *testing.T) {
 }
 
 func TestResponseRecorder(t *testing.T) {
+	t.Parallel()
 	rec := getResponseRecorder()
 	defer putResponseRecorder(rec)
 
@@ -91,6 +94,7 @@ func TestResponseRecorder(t *testing.T) {
 }
 
 func TestResponseRecorderImplicitStatus200(t *testing.T) {
+	t.Parallel()
 	rec := getResponseRecorder()
 	defer putResponseRecorder(rec)
 
@@ -134,6 +138,7 @@ func TestResponseRecorderImplicitStatus200(t *testing.T) {
 }
 
 func TestProtobufPools(t *testing.T) {
+	t.Parallel()
 	meta := getCacheMetadata()
 	meta.PrimaryKey = "https://example.com/api/users"
 	meta.VaryHeaderNames = []string{"Accept-Encoding", "Accept-Language"}
@@ -181,6 +186,7 @@ func TestProtobufPools(t *testing.T) {
 }
 
 func TestLZ4CompressionRoundtrip(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		data []byte
@@ -215,6 +221,7 @@ func TestLZ4CompressionRoundtrip(t *testing.T) {
 }
 
 func TestLZ4CompressionRatio(t *testing.T) {
+	t.Parallel()
 	// Sample JSON dataset
 	htmlDoc := strings.Repeat(`
 <!DOCTYPE html>
@@ -247,6 +254,7 @@ func TestLZ4CompressionRatio(t *testing.T) {
 }
 
 func TestLZ4CorruptData(t *testing.T) {
+	t.Parallel()
 	corruptBytes := []byte("this is not valid lz4 compressed data frame")
 	dst := getBuffer()
 	defer putBuffer(dst)
@@ -258,6 +266,7 @@ func TestLZ4CorruptData(t *testing.T) {
 }
 
 func TestPoolConcurrencyAndRaces(t *testing.T) {
+	t.Parallel()
 	const goroutines = 100
 	const iterations = 50
 
@@ -364,6 +373,7 @@ func BenchmarkLZ4CompressDecompress(b *testing.B) {
 // TestESIMemoryPoolRecycling verifies that all response recorders and splicing byte buffers
 // utilized during ESI execution are safely recycled back to their respective sync.Pools.
 func TestESIMemoryPoolRecycling(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/pool-esi-page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")

@@ -129,6 +129,7 @@ type Handler struct {
 	CacheStatus                   string          `json:"cache_status,omitempty"`
 	IgnoreClientCacheControl      *bool           `json:"ignore_client_cache_control,omitempty"`
 	AutoInvalidateMutatingMethods *bool           `json:"auto_invalidate_mutating_methods,omitempty"`
+	ConvertHeadToGet              *bool           `json:"convert_head_to_get,omitempty"`
 	OriginTimeout                 string          `json:"origin_timeout,omitempty"`
 	TagHeader                     string          `json:"tag_header,omitempty"`
 	Key                           *KeyConfig      `json:"key,omitempty"`
@@ -232,6 +233,15 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 	if autoInvalidate != nil {
 		opts = append(opts, titip.WithAutoInvalidateMutatingMethods(*autoInvalidate))
+	}
+
+	// ConvertHeadToGet (inherit from app if not set)
+	convertHead := h.ConvertHeadToGet
+	if convertHead == nil && app != nil {
+		convertHead = app.ConvertHeadToGet
+	}
+	if convertHead != nil {
+		opts = append(opts, titip.WithConvertHeadToGet(*convertHead))
 	}
 
 	// OriginTimeout (inherit from app if not set)
@@ -420,6 +430,15 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid boolean value %q: %v", d.Val(), err)
 				}
 				h.AutoInvalidateMutatingMethods = &val
+			case "convert_head_to_get":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				val, err := strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value %q: %v", d.Val(), err)
+				}
+				h.ConvertHeadToGet = &val
 			case "origin_timeout":
 				if !d.NextArg() {
 					return d.ArgErr()
