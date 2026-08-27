@@ -98,7 +98,6 @@ func getEngines() []*titip.Titip {
 type KeyConfig struct {
 	IncludeProtocol        *bool    `json:"include_protocol,omitempty"`
 	ExcludeHost            *bool    `json:"exclude_host,omitempty"`
-	KeepTrailingSlash      *bool    `json:"keep_trailing_slash,omitempty"`
 	ExcludeQueryString     *bool    `json:"exclude_query_string,omitempty"`
 	DisableQueryStringSort *bool    `json:"disable_query_string_sort,omitempty"`
 	IncludedQueryParams    []string `json:"included_query_params,omitempty"`
@@ -127,7 +126,7 @@ type ESIConfig struct {
 type Handler struct {
 	StorageRaw                    json.RawMessage `json:"storage,omitempty" caddy:"namespace=titip.storage inline_key=name"`
 	CacheStatus                   string          `json:"cache_status,omitempty"`
-	IgnoreClientCacheControl      *bool           `json:"ignore_client_cache_control,omitempty"`
+	RespectClientCacheControl     *bool           `json:"respect_client_cache_control,omitempty"`
 	AutoInvalidateMutatingMethods *bool           `json:"auto_invalidate_mutating_methods,omitempty"`
 	ConvertHeadToGet              *bool           `json:"convert_head_to_get,omitempty"`
 	OriginTimeout                 string          `json:"origin_timeout,omitempty"`
@@ -217,13 +216,13 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
 	}
 
-	// IgnoreClientCacheControl (inherit from app if not set)
-	ignoreClient := h.IgnoreClientCacheControl
-	if ignoreClient == nil && app != nil {
-		ignoreClient = app.IgnoreClientCacheControl
+	// RespectClientCacheControl (inherit from app if not set)
+	respectClient := h.RespectClientCacheControl
+	if respectClient == nil && app != nil {
+		respectClient = app.RespectClientCacheControl
 	}
-	if ignoreClient != nil {
-		opts = append(opts, titip.WithIgnoreClientCacheControl(*ignoreClient))
+	if respectClient != nil && *respectClient {
+		opts = append(opts, titip.WithRespectClientCacheControl())
 	}
 
 	// AutoInvalidateMutatingMethods (inherit from app if not set)
@@ -231,8 +230,8 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if autoInvalidate == nil && app != nil {
 		autoInvalidate = app.AutoInvalidateMutatingMethods
 	}
-	if autoInvalidate != nil {
-		opts = append(opts, titip.WithAutoInvalidateMutatingMethods(*autoInvalidate))
+	if autoInvalidate != nil && *autoInvalidate {
+		opts = append(opts, titip.WithAutoInvalidateMutatingMethods())
 	}
 
 	// ConvertHeadToGet (inherit from app if not set)
@@ -412,7 +411,7 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				h.CacheStatus = d.Val()
-			case "ignore_client_cache_control":
+			case "respect_client_cache_control":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
@@ -420,7 +419,7 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return d.Errf("invalid boolean value %q: %v", d.Val(), err)
 				}
-				h.IgnoreClientCacheControl = &val
+				h.RespectClientCacheControl = &val
 			case "auto_invalidate_mutating_methods":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -502,15 +501,6 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			inv := !val
 			kc.ExcludeHost = &inv
-		case "keep_trailing_slash":
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			val, err := strconv.ParseBool(d.Val())
-			if err != nil {
-				return d.Errf("invalid boolean value for keep_trailing_slash: %v", err)
-			}
-			kc.KeepTrailingSlash = &val
 		case "exclude_query_string":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -710,9 +700,6 @@ func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
 	}
 	if src.ExcludeHost != nil {
 		target.ExcludeHost = *src.ExcludeHost
-	}
-	if src.KeepTrailingSlash != nil {
-		target.KeepTrailingSlash = *src.KeepTrailingSlash
 	}
 	if src.ExcludeQueryString != nil {
 		target.ExcludeQueryString = *src.ExcludeQueryString

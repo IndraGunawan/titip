@@ -612,7 +612,8 @@ func (t *Titip) fetchOutboundHTTP(
 		return nil, nil, "http", err
 	}
 
-	// Copy forwardable headers
+	// Copy forwardable headers and enforce uncompressed fragments
+	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("User-Agent", parentCtx.r.Header.Get("User-Agent"))
 	req.Header.Set("Accept-Language", parentCtx.r.Header.Get("Accept-Language"))
 	if auth := parentCtx.r.Header.Get("Authorization"); auth != "" {

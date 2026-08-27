@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,9 +31,9 @@ type Titip struct {
 // New creates a new Titip caching middleware instance.
 func New(opts ...Option) (*Titip, error) {
 	cfg := Config{
-		CacheStatusMode:          CacheStatusSimpleToken,
-		IgnoreClientCacheControl: true,
-		ConvertHeadToGet:         true,
+		CacheStatusMode:           CacheStatusSimpleToken,
+		RespectClientCacheControl: false,
+		ConvertHeadToGet:          true,
 		KeyConfig:                KeyConfig{},
 		CacheableStatusCodes:     defaultCacheableStatusCodes,
 		TagHeaderName:            headerCacheTag,
@@ -102,50 +101,110 @@ func New(opts ...Option) (*Titip, error) {
 	}, nil
 }
 
-// PurgeURL invalidates cache entries matching the specified URL or path.
-func (t *Titip) PurgeURL(ctx context.Context, rawURL string, opts ...PurgeOption) error {
+// Purge invalidates cache entries matching the specified path, URL, exact query variant, or wildcard.
+//
+// The target supports four formats:
+//   - "/api/products"           — sweeps the path and ALL query string variations
+//   - "/api/products?id=42"     — purges only this exact query variant
+//   - "/assets/*"               — wipes all cached paths under /assets/ (wildcard)
+//   - "https://example.com/api" — host-scoped sweep
+//
+// By default, purge is a hard-delete (immediate physical eviction). Use WithSoftPurge()
+// to mark entries as stale instead for safe thundering-herd protection.
+//
+// Use WithPurgeHost(host) to scope a path-only target to a specific domain.
+func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) error {
 	cfg := &PurgeConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	parsed, err := url.Parse(rawURL)
+	// Override host from option if provided (takes precedence over parsed host).
+	pt, err := parsePurgeTarget(target, &t.cfg.KeyConfig)
 	if err != nil {
-		return fmt.Errorf("titip: purge url parse error: %w", err)
+		return fmt.Errorf("titip: purge parse error: %w", err)
 	}
-
-	req := &http.Request{
-		Host: parsed.Host,
-		URL:  parsed,
-	}
-	primaryKey := generatePrimaryKey(req, &t.cfg.KeyConfig)
-
-	if cfg.Soft {
-		if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
-			t.logger.DebugContext(ctx, "titip: purge url (soft)",
-				slog.String("url", rawURL),
-				slog.String("primary_key", primaryKey),
-			)
-		}
-		if err := t.storage.SoftPurge(ctx, primaryKey); err != nil {
-			return fmt.Errorf("titip: soft purge url: %w", err)
-		}
+	if pt == nil {
 		return nil
 	}
+	if cfg.Host != "" {
+		pt.host = cfg.Host
+	}
+
+	patterns := buildPurgePatterns(pt, &t.cfg.KeyConfig)
 
 	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
-		t.logger.DebugContext(ctx, "titip: purge url (hard)",
-			slog.String("url", rawURL),
-			slog.String("primary_key", primaryKey),
+		t.logger.DebugContext(ctx, "titip: purge path",
+			slog.String("target", target),
+			slog.Bool("soft", cfg.Soft),
+			slog.Any("patterns", patterns),
 		)
 	}
-	if err := t.storage.Delete(ctx, primaryKey); err != nil {
-		return fmt.Errorf("titip: purge url delete: %w", err)
+
+	for _, pattern := range patterns {
+		if err := t.executePurge(ctx, pt, pattern, cfg.Soft); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// executePurge dispatches a single pattern to the appropriate storage operation.
+func (t *Titip) executePurge(ctx context.Context, pt *purgeTarget, pattern string, soft bool) error {
+	switch pt.mode {
+	case purgeModeExact:
+		// pattern is a full primary key — use direct Delete or SoftPurge.
+		if soft {
+			if err := t.storage.SoftPurge(ctx, pattern); err != nil {
+				return fmt.Errorf("titip: purge path soft: %w", err)
+			}
+		} else {
+			if err := t.storage.Delete(ctx, pattern); err != nil {
+				return fmt.Errorf("titip: purge path delete: %w", err)
+			}
+		}
+
+	default:
+		if soft {
+			// Soft-purge pattern: scan matching keys and mark each stale individually.
+			if err := t.softPurgeByPattern(ctx, pattern); err != nil {
+				return fmt.Errorf("titip: purge path soft pattern: %w", err)
+			}
+		} else {
+			// Hard-purge pattern — requires PatternDeleter.
+			pd, ok := t.storage.(storage.PatternDeleter)
+			if !ok {
+				return fmt.Errorf("titip: purge path: storage does not implement PatternDeleter for pattern-based purges")
+			}
+			if err := pd.DeletePattern(ctx, pattern); err != nil {
+				return fmt.Errorf("titip: purge path pattern delete: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// softPurgeByPattern scans keys matching the given pattern and calls SoftPurge on each match.
+// Requires the storage to implement storage.PatternScanner (an internal capability).
+func (t *Titip) softPurgeByPattern(ctx context.Context, pattern string) error {
+	// Use the SoftPurgeScanner interface if available (e.g. RedisStorage).
+	type softPurgeScanner interface {
+		SoftPurgePattern(ctx context.Context, pattern string) error
+	}
+	if sps, ok := t.storage.(softPurgeScanner); ok {
+		return sps.SoftPurgePattern(ctx, pattern)
+	}
+	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelWarn) {
+		t.logger.WarnContext(ctx, "titip: soft purge pattern: storage does not implement SoftPurgePattern; skipping",
+			slog.String("pattern", pattern),
+		)
 	}
 	return nil
 }
 
 // PurgeTag invalidates all cache entries tagged with the specified tag.
+//
+// The tag is treated as a literal string. To wipe the entire cache namespace, use PurgeAll.
 func (t *Titip) PurgeTag(ctx context.Context, tag string, opts ...PurgeOption) error {
 	cfg := &PurgeConfig{}
 	for _, opt := range opts {
@@ -163,6 +222,34 @@ func (t *Titip) PurgeTag(ctx context.Context, tag string, opts ...PurgeOption) e
 		return fmt.Errorf("titip: purge tag: %w", err)
 	}
 	return nil
+}
+
+// PurgeAll deletes every cache entry in the configured storage namespace.
+// Only entries belonging to Titip's key prefix are affected — other Redis keys are preserved.
+//
+// Requires the storage backend to implement storage.AllPurger or storage.PatternDeleter.
+func (t *Titip) PurgeAll(ctx context.Context) error {
+	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
+		t.logger.DebugContext(ctx, "titip: purge all")
+	}
+
+	// Prefer AllPurger (most efficient — single SCAN * loop).
+	if ap, ok := t.storage.(storage.AllPurger); ok {
+		if err := ap.PurgeAll(ctx); err != nil {
+			return fmt.Errorf("titip: purge all: %w", err)
+		}
+		return nil
+	}
+
+	// Fallback: use PatternDeleter with wildcard.
+	if pd, ok := t.storage.(storage.PatternDeleter); ok {
+		if err := pd.DeletePattern(ctx, "*"); err != nil {
+			return fmt.Errorf("titip: purge all via pattern: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("titip: purge all: storage does not implement AllPurger or PatternDeleter")
 }
 
 // Close cleanly shuts down the middleware, awaiting background SWR revalidations.

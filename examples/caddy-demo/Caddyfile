@@ -14,7 +14,7 @@
 			key_prefix caddy_demo:
 		}
 		cache_status rfc9211
-		ignore_client_cache_control true
+		respect_client_cache_control false
 		auto_invalidate_mutating_methods true
 		origin_timeout 15s
 		esi {

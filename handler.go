@@ -79,9 +79,9 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 		return stateBypassOrigin
 	}
 
-	// F. Client Cache-Control: no-store
-	if !t.cfg.IgnoreClientCacheControl {
-		if cc := ctx.r.Header.Get(headerCacheControl); strings.Contains(cc, "no-store") {
+	// F. Client Cache-Control: no-store / no-cache
+	if t.cfg.RespectClientCacheControl {
+		if cc := ctx.r.Header.Get(headerCacheControl); strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
 			t.recordRequest(ctx, statusBypass)
 			t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=no-store")
 			return stateBypassOrigin
@@ -846,10 +846,16 @@ func (t *Titip) handleMutatingRequest(w http.ResponseWriter, r *http.Request, ne
 	next.ServeHTTP(w, r)
 
 	if t.cfg.AutoInvalidateMutatingMethods {
-		primaryKey := generatePrimaryKey(r, &t.cfg.KeyConfig)
+		// Use Purge (path sweep) rather than an exact key delete so that
+		// the method-agnostic invalidation rule applies: a POST request must
+		// invalidate the GET-cached entries for the same URL.
+		purgeTarget := r.URL.String()
+		if purgeTarget == "" && r.Host != "" {
+			purgeTarget = "http://" + r.Host + r.URL.Path
+		}
 		delCtx, delCancel := context.WithTimeout(context.Background(), t.cfg.StorageTimeout)
 		defer delCancel()
-		_ = t.storage.Delete(delCtx, primaryKey)
+		_ = t.Purge(delCtx, purgeTarget)
 	}
 }
 

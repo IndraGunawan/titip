@@ -27,8 +27,8 @@ type App struct {
 	// CacheStatus specifies the default Cache-Status header format ("rfc9211", "simple", or "none").
 	CacheStatus string `json:"cache_status,omitempty"`
 
-	// IgnoreClientCacheControl ignores client no-cache/max-age requests by default.
-	IgnoreClientCacheControl *bool `json:"ignore_client_cache_control,omitempty"`
+	// RespectClientCacheControl obeys client no-cache/no-store requests when true (defaults to false).
+	RespectClientCacheControl *bool `json:"respect_client_cache_control,omitempty"`
 
 	// AutoInvalidateMutatingMethods purges cached GET entries when receiving POST/PUT/DELETE.
 	AutoInvalidateMutatingMethods *bool `json:"auto_invalidate_mutating_methods,omitempty"`
@@ -114,15 +114,15 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 				}
 				app.CacheStatus = d.Val()
 
-			case "ignore_client_cache_control":
+			case "respect_client_cache_control":
 				if !d.NextArg() {
 					return nil, d.ArgErr()
 				}
 				b, err := strconv.ParseBool(d.Val())
 				if err != nil {
-					return nil, d.Errf("invalid boolean for ignore_client_cache_control: %v", err)
+					return nil, d.Errf("invalid boolean for respect_client_cache_control: %v", err)
 				}
-				app.IgnoreClientCacheControl = &b
+				app.RespectClientCacheControl = &b
 
 			case "auto_invalidate_mutating_methods":
 				if !d.NextArg() {

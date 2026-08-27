@@ -164,19 +164,25 @@ func main() {
 
 ## 🧹 Cache Invalidation & Purge API
 
-Titip supports **URL Purging**, **Tag Purging**, and **Purge All** with safe soft-purging by default.
+Titip supports **Hierarchical Path Purging**, **Tag Purging**, and **Purge All** with safe soft-purging options.
 
 ### Programmatic Go API
 
 ```go
-// 1. Soft-Purge URL (serves stale while revalidating fresh in background)
-err := cache.PurgeURL(ctx, "http://example.com/api/products?id=10", titip.WithSoftPurge())
+// 1. Path Sweep (purges /api/products and all its query string variants)
+err := cache.Purge(ctx, "/api/products")
 
-// 2. Hard-Purge Tag (instantly evicts metadata + all variant bodies in Redis)
+// 2. Exact Query Invalidation (purges only ?id=10, leaves other queries intact)
+err := cache.Purge(ctx, "http://example.com/api/products?id=10", titip.WithSoftPurge())
+
+// 3. Directory Wildcard (purges all cached paths under /assets/)
+err := cache.Purge(ctx, "/assets/*")
+
+// 4. Surrogate Tag Invalidation (instantly evicts metadata + all variant bodies in Redis)
 err := cache.PurgeTag(ctx, "catalog")
 
-// 3. Purge All (O(1) instant global invalidation via epoch timestamp)
-err := cache.PurgeAll(ctx, titip.WithSoftPurge())
+// 5. Total Namespace Wipeout (safely removes all keys matching Titip's configured prefix)
+err := cache.PurgeAll(ctx)
 ```
 
 ---

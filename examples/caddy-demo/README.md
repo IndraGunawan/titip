@@ -66,7 +66,9 @@ curl -i http://localhost:8080/esi-demo
 
 ---
 
-### B. Inspect Cache Hits
+### B. Inspect Cache Hits & Multi-Variant `Vary` Header
+
+#### 1. Basic Single-Variant Freshness
 
 ```bash
 # 1st Request (Cold Miss -> Origin Execution #1)
@@ -76,6 +78,24 @@ curl -i http://localhost:8080/api/time
 # 2nd Request (Cache Hit -> 0 origin calls)
 curl -i http://localhost:8080/api/time
 # Header: Cache-Status: titip; hit; ttl=13
+```
+
+#### 2. Multi-Variant Secondary Keys (`Vary: Accept-Language`)
+
+Titip supports RFC 9111 Section 4.1 content negotiation without cache pollution:
+
+```bash
+# 1. Fetch English variant (MISS -> stored as accept-language=en-us)
+curl -i -H "Accept-Language: en-US" http://localhost:8080/api/vary
+# Header: Cache-Status: titip; fwd=uri-miss; stored
+
+# 2. Fetch French variant (MISS -> stored as accept-language=fr-fr under SAME primary key)
+curl -i -H "Accept-Language: fr-FR" http://localhost:8080/api/vary
+# Header: Cache-Status: titip; fwd=uri-miss; stored
+
+# 3. Fetch English variant again (HIT -> serves English without origin call)
+curl -i -H "Accept-Language: en-US" http://localhost:8080/api/vary
+# Header: Cache-Status: titip; hit
 ```
 
 ---

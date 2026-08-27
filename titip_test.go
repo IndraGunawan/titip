@@ -47,22 +47,6 @@ func setupTestTitip(t testing.TB, opts ...Option) (rueidis.Client, storage.Stora
 		t.Fatalf("failed to create RedisStorage: %v", err)
 	}
 
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		resp := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build())
-		if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
-			delCmds := make([]rueidis.Completed, len(keys))
-			for i, k := range keys {
-				delCmds[i] = client.B().Del().Key(k).Build()
-			}
-			client.DoMulti(ctx, delCmds...)
-		}
-		_ = store.Close()
-		client.Close()
-	})
-
 	defaultOpts := []Option{
 		WithStorage(store),
 		WithOriginTimeout(5 * time.Second),
@@ -75,6 +59,29 @@ func setupTestTitip(t testing.TB, opts ...Option) (rueidis.Client, storage.Stora
 	if err != nil {
 		t.Fatalf("failed to create Titip middleware: %v", err)
 	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_ = mw.Close(ctx)
+
+		cleanupClient, err := rueidis.NewClient(rueidis.ClientOption{
+			InitAddress:  []string{addr},
+			DisableCache: true,
+		})
+		if err == nil {
+			resp := cleanupClient.Do(ctx, cleanupClient.B().Keys().Pattern(prefix+"*").Build())
+			if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
+				delCmds := make([]rueidis.Completed, len(keys))
+				for i, k := range keys {
+					delCmds[i] = cleanupClient.B().Del().Key(k).Build()
+				}
+				cleanupClient.DoMulti(ctx, delCmds...)
+			}
+			cleanupClient.Close()
+		}
+	})
 
 	return client, store, mw
 }
@@ -115,7 +122,7 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 	}
 
 	// 2. Soft-purge entry to trigger synchronous singleflight revalidation
-	if err := mw.PurgeURL(context.Background(), "http://example.com/api/stampede", WithSoftPurge()); err != nil {
+	if err := mw.Purge(context.Background(), "http://example.com/api/stampede", WithSoftPurge()); err != nil {
 		t.Fatalf("failed to soft purge: %v", err)
 	}
 
@@ -232,7 +239,7 @@ func TestSoftPurge_SynchronousFreshnessAndFallback(t *testing.T) {
 	}
 
 	// 2. Soft purge URL
-	if err := mw.PurgeURL(context.Background(), "http://example.com/api/soft-test", WithSoftPurge()); err != nil {
+	if err := mw.Purge(context.Background(), "http://example.com/api/soft-test", WithSoftPurge()); err != nil {
 		t.Fatalf("soft purge failed: %v", err)
 	}
 
@@ -344,7 +351,7 @@ func TestPanicRecovery_WithStaleFallback(t *testing.T) {
 	}
 
 	// 2. Soft purge
-	_ = mw.PurgeURL(context.Background(), "http://example.com/api/panic-test", WithSoftPurge())
+	_ = mw.Purge(context.Background(), "http://example.com/api/panic-test", WithSoftPurge())
 
 	// 3. Trigger panic on origin
 	shouldPanic.Store(true)
@@ -681,7 +688,7 @@ func TestUnsafeMethodAutoInvalidation_DefaultDisabled(t *testing.T) {
 
 func TestUnsafeMethodAutoInvalidation_OptInEnabled(t *testing.T) {
 	t.Parallel()
-	_, _, mw := setupTestTitip(t, WithAutoInvalidateMutatingMethods(true))
+	_, _, mw := setupTestTitip(t, WithAutoInvalidateMutatingMethods())
 
 	var state atomic.Int32
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -820,7 +827,7 @@ func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
 func TestPrometheusMetrics(t *testing.T) {
 	t.Parallel()
 	reg := prometheus.NewRegistry()
-	_, _, mw := setupTestTitip(t, WithMetrics(reg))
+	_, _, mw := setupTestTitip(t, WithMetrics(reg), WithStorageTimeout(5*time.Second))
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=60")
@@ -1305,7 +1312,7 @@ func TestUpstream304_TTLRefresh(t *testing.T) {
 	}
 
 	// 2. Soft-purge to trigger synchronous revalidation
-	if err := mw.PurgeURL(context.Background(), "http://example.com/api/refresh", WithSoftPurge()); err != nil {
+	if err := mw.Purge(context.Background(), "http://example.com/api/refresh", WithSoftPurge()); err != nil {
 		t.Fatalf("failed to soft purge: %v", err)
 	}
 
@@ -1495,8 +1502,10 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 		t.Fatalf("expected body in Redis before eviction simulation")
 	}
 
-	// Delete ONLY the body key directly from Redis (leaving metadata hash intact)
-	resp := client.Do(context.Background(), client.B().Keys().Pattern("*body*"+primaryKey+"*").Build())
+	// Delete ONLY the body key directly from Redis (leaving metadata hash intact).
+	// bodyKey format: titip:body:<primaryKey-without-meta:>:default
+	bodyKeyFragment := strings.TrimPrefix(primaryKey, "meta:")
+	resp := client.Do(context.Background(), client.B().Keys().Pattern("*body*"+bodyKeyFragment+"*").Build())
 	keys, err := resp.AsStrSlice()
 	if err != nil || len(keys) == 0 {
 		t.Fatalf("expected to find body key in Redis")
@@ -1548,7 +1557,7 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 
 func TestRFC9211_ForwardReasonsAndParameters(t *testing.T) {
 	t.Parallel()
-	_, _, mw := setupTestTitip(t, WithIgnoreClientCacheControl(false))
+	_, _, mw := setupTestTitip(t, WithRespectClientCacheControl())
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1689,7 +1698,7 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("Bypass", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken), WithIgnoreClientCacheControl(false))
+		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken), WithRespectClientCacheControl())
 		handler := mw.testHandler(originHandler)
 
 		reqBypassPost := httptest.NewRequest(http.MethodPost, "http://example.com/api/simple/cacheable", strings.NewReader(`{}`))
@@ -1818,7 +1827,6 @@ func TestNew_MinimalOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create RedisStorage: %v", err)
 	}
-	defer store.Close()
 
 	// Initialize with ONLY the single required option
 	mw, err := New(WithStorage(store))
@@ -1826,12 +1834,34 @@ func TestNew_MinimalOptions(t *testing.T) {
 		t.Fatalf("failed to initialize Titip with minimal options: %v", err)
 	}
 
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = mw.Close(ctx)
+
+		cleanupClient, err := rueidis.NewClient(rueidis.ClientOption{
+			InitAddress:  []string{getTestRedisAddr()},
+			DisableCache: true,
+		})
+		if err == nil {
+			resp := cleanupClient.Do(ctx, cleanupClient.B().Keys().Pattern(prefix+"*").Build())
+			if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
+				delCmds := make([]rueidis.Completed, len(keys))
+				for i, k := range keys {
+					delCmds[i] = cleanupClient.B().Del().Key(k).Build()
+				}
+				cleanupClient.DoMulti(ctx, delCmds...)
+			}
+			cleanupClient.Close()
+		}
+	})
+
 	// 1. Verify default configuration values
 	if mw.cfg.CacheStatusMode != CacheStatusSimpleToken {
 		t.Errorf("expected CacheStatusSimpleToken (%v), got %v", CacheStatusSimpleToken, mw.cfg.CacheStatusMode)
 	}
-	if !mw.cfg.IgnoreClientCacheControl {
-		t.Errorf("expected IgnoreClientCacheControl to be true by default")
+	if mw.cfg.RespectClientCacheControl {
+		t.Errorf("expected RespectClientCacheControl to be false by default")
 	}
 	if mw.cfg.TagHeaderName != headerCacheTag {
 		t.Errorf("expected TagHeaderName %q, got %q", headerCacheTag, mw.cfg.TagHeaderName)
@@ -1902,8 +1932,8 @@ func TestNew_MinimalOptions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if err := mw.PurgeURL(ctx, "http://example.com/api/minimal"); err != nil {
-		t.Errorf("expected PurgeURL to succeed on minimal instance, got %v", err)
+	if err := mw.Purge(ctx, "http://example.com/api/minimal"); err != nil {
+		t.Errorf("expected Purge to succeed on minimal instance, got %v", err)
 	}
 	if err := mw.Close(ctx); err != nil {
 		t.Errorf("expected Close to succeed on minimal instance, got %v", err)
@@ -1927,7 +1957,6 @@ func TestNew_NilOptionGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create RedisStorage: %v", err)
 	}
-	defer store.Close()
 
 	// Initialize with explicit nil pointers
 	mw, err := New(
@@ -1939,6 +1968,28 @@ func TestNew_NilOptionGuards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected New with nil option guards to succeed, got %v", err)
 	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = mw.Close(ctx)
+
+		cleanupClient, err := rueidis.NewClient(rueidis.ClientOption{
+			InitAddress:  []string{getTestRedisAddr()},
+			DisableCache: true,
+		})
+		if err == nil {
+			resp := cleanupClient.Do(ctx, cleanupClient.B().Keys().Pattern(prefix+"*").Build())
+			if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
+				delCmds := make([]rueidis.Completed, len(keys))
+				for i, k := range keys {
+					delCmds[i] = cleanupClient.B().Del().Key(k).Build()
+				}
+				cleanupClient.DoMulti(ctx, delCmds...)
+			}
+			cleanupClient.Close()
+		}
+	})
 	if mw.logger == nil {
 		t.Fatal("expected mw.logger to fallback to slog.Default() when passed nil")
 	}

@@ -389,6 +389,46 @@ func TestConcurrencyAndRaces(t *testing.T) {
 	wg.Wait()
 }
 
+func TestTagSetDynamicTTLExtension(t *testing.T) {
+	ctx := context.Background()
+	client, store, prefix := setupTestRedis(t)
+
+	tag := "electronics"
+	pk1 := "https://example.com/item/1"
+	meta1 := &pb.CacheMetadata{
+		PrimaryKey: pk1,
+		Tags:       []string{tag},
+	}
+	v1 := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+
+	// 1. Store item 1 with 30s TTL
+	if err := store.SetVariant(ctx, pk1, meta1, v1, []byte("item1"), 30*time.Second); err != nil {
+		t.Fatalf("failed to set item1: %v", err)
+	}
+
+	tagKey := prefix + "tag:" + tag
+	ttl1 := getKeyTTL(ctx, client, tagKey)
+	if ttl1 < 25 || ttl1 > 30 {
+		t.Fatalf("expected tag TTL ~30s, got %v", ttl1)
+	}
+
+	// 2. Store item 2 under same tag with 120s TTL -> extends tag set TTL
+	pk2 := "https://example.com/item/2"
+	meta2 := &pb.CacheMetadata{
+		PrimaryKey: pk2,
+		Tags:       []string{tag},
+	}
+	v2 := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+	if err := store.SetVariant(ctx, pk2, meta2, v2, []byte("item2"), 120*time.Second); err != nil {
+		t.Fatalf("failed to set item2: %v", err)
+	}
+
+	ttl2 := getKeyTTL(ctx, client, tagKey)
+	if ttl2 < 115 || ttl2 > 120 {
+		t.Fatalf("expected tag TTL to extend to ~120s, got %v", ttl2)
+	}
+}
+
 func BenchmarkStorage_SetAndGetVariant(b *testing.B) {
 	_, store, _ := setupTestRedis(b)
 

@@ -113,7 +113,7 @@ func handleAdminPurge(w http.ResponseWriter, r *http.Request) error {
 	case "urls":
 		for _, u := range req.URLs {
 			for _, engine := range activeEngines {
-				_ = engine.PurgeURL(r.Context(), u, purgeOpts...)
+				_ = engine.Purge(r.Context(), u, purgeOpts...)
 			}
 			count++
 		}
@@ -125,9 +125,8 @@ func handleAdminPurge(w http.ResponseWriter, r *http.Request) error {
 			count++
 		}
 	case "purge_everything":
-		// Mark everything purged across all engines
 		for _, engine := range activeEngines {
-			_ = engine.PurgeTag(r.Context(), "*", purgeOpts...)
+			_ = engine.PurgeAll(r.Context())
 		}
 		count = 1
 	}

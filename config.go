@@ -102,7 +102,7 @@ type Config struct {
 	Logger                        *slog.Logger
 	Metrics                       prometheus.Registerer
 	CacheStatusMode               CacheStatusMode
-	IgnoreClientCacheControl      bool
+	RespectClientCacheControl     bool
 	ConvertHeadToGet              bool
 	AutoInvalidateMutatingMethods bool
 	KeyConfig                     KeyConfig
@@ -125,11 +125,11 @@ func WithConvertHeadToGet(enable bool) Option {
 	}
 }
 
-// WithAutoInvalidateMutatingMethods configures whether successful mutating requests (POST, PUT, DELETE, PATCH)
-// automatically invalidate the cached entry for the request URI and response Location/Content-Location headers (defaults to false).
-func WithAutoInvalidateMutatingMethods(enable bool) Option {
+// WithAutoInvalidateMutatingMethods enables automatic invalidation of cached GET entries
+// when successful mutating requests (POST, PUT, DELETE, PATCH) are received for the URI.
+func WithAutoInvalidateMutatingMethods() Option {
 	return func(c *Config) {
-		c.AutoInvalidateMutatingMethods = enable
+		c.AutoInvalidateMutatingMethods = true
 	}
 }
 
@@ -168,10 +168,11 @@ func WithCacheStatusMode(mode CacheStatusMode) Option {
 	}
 }
 
-// WithIgnoreClientCacheControl configures whether to ignore client Cache-Control directives (defaults to true).
-func WithIgnoreClientCacheControl(ignore bool) Option {
+// WithRespectClientCacheControl enables respecting client request Cache-Control directives (e.g. no-cache, no-store).
+// By default, client cache directives are ignored to protect origin servers.
+func WithRespectClientCacheControl() Option {
 	return func(c *Config) {
-		c.IgnoreClientCacheControl = ignore
+		c.RespectClientCacheControl = true
 	}
 }
 
@@ -256,10 +257,10 @@ func ESIHandlerFetcher(router http.Handler) InternalFetcherFunc {
 	}
 }
 
-// WithESIEnabled enables or disables ESI processing.
-func WithESIEnabled(enabled bool) Option {
+// WithESIEnabled enables ESI processing.
+func WithESIEnabled() Option {
 	return func(c *Config) {
-		c.ESI.Enabled = enabled
+		c.ESI.Enabled = true
 	}
 }
 
@@ -299,10 +300,10 @@ func WithESISSRFProtection(blockPrivateIPs bool, allowedHosts ...string) Option 
 	}
 }
 
-// WithESIForwardFragmentCookies configures whether Set-Cookie headers from subrequests are forwarded to client.
-func WithESIForwardFragmentCookies(forward bool) Option {
+// WithESIForwardFragmentCookies enables forwarding Set-Cookie headers from subrequests to the client.
+func WithESIForwardFragmentCookies() Option {
 	return func(c *Config) {
-		c.ESI.ForwardFragmentCookies = forward
+		c.ESI.ForwardFragmentCookies = true
 	}
 }
 
@@ -322,15 +323,26 @@ func WithESIErrorMarker(marker string) Option {
 
 // PurgeConfig defines options for cache invalidations.
 type PurgeConfig struct {
-	Soft bool
+	Soft bool   // Soft marks entries as stale rather than evicting immediately (default: false = hard delete).
+	Host string // Host scopes the purge to a specific domain (lowercased, default ports stripped).
 }
 
-// PurgeOption configures PurgeURL or PurgeTag operations.
+// PurgeOption configures Purge, PurgeTag, or PurgeAll operations.
 type PurgeOption func(*PurgeConfig)
 
-// WithSoftPurge marks entries as stale rather than evicting immediately.
+// WithSoftPurge marks entries as stale rather than evicting immediately (safe thundering-herd mode).
+// The stale copy is preserved for stale-if-error fallback if the origin subsequently fails.
 func WithSoftPurge() PurgeOption {
 	return func(c *PurgeConfig) {
 		c.Soft = true
+	}
+}
+
+// WithPurgeHost scopes a Purge operation to a specific domain.
+// The host is normalized (lowercased, default ports stripped) automatically.
+// Takes precedence over any host parsed from the target URL.
+func WithPurgeHost(host string) PurgeOption {
+	return func(c *PurgeConfig) {
+		c.Host = normalizeHost(host, "")
 	}
 }

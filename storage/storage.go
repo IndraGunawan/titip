@@ -32,3 +32,31 @@ type Storage interface {
 	// Close cleanly terminates storage connections.
 	Close() error
 }
+
+// PatternDeleter is an optional capability interface implemented by storage engines that
+// support glob/pattern-based key deletion (e.g. Redis SCAN + UNLINK).
+//
+// The pattern syntax follows the backend's native glob syntax:
+//   - Redis: https://redis.io/docs/manual/patterns/
+//   - "*" matches any sequence of characters
+//   - "?" matches any single character
+//
+// Implementations must guarantee that only keys belonging to the engine's configured
+// namespace prefix are matched — never keys outside the prefix.
+type PatternDeleter interface {
+	// DeletePattern deletes all keys matching the given glob pattern within the storage namespace.
+	// The pattern is automatically scoped to the storage engine's configured key prefix.
+	// Returns nil if no keys matched.
+	DeletePattern(ctx context.Context, pattern string) error
+}
+
+// AllPurger is an optional capability interface implemented by storage engines that
+// support a total namespace wipeout (e.g. Redis SCAN prefix* + UNLINK).
+//
+// Only keys within the engine's configured namespace prefix are affected.
+// All other keys in the same backend instance are preserved.
+type AllPurger interface {
+	// PurgeAll deletes every key in the storage engine's configured namespace prefix.
+	// Returns nil if the namespace was already empty.
+	PurgeAll(ctx context.Context) error
+}

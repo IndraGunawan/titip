@@ -3,6 +3,7 @@ package titip
 import (
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
 )
@@ -24,19 +25,21 @@ var defaultMarketingQueryParams = []string{
 	"utm_term",
 }
 
+// defaultPorts maps scheme to its default port string for stripping from host.
+var defaultPorts = map[string]string{
+	"http":  ":80",
+	"https": ":443",
+}
+
 // KeyConfig defines the configuration for assembling zero-hash canonical cache keys.
 type KeyConfig struct {
-	// IncludeProtocol includes the request scheme ("http://" or "https://") in the cache key.
+	// IncludeProtocol includes the request scheme ("http" or "https") in the cache key as s=<scheme>.
 	// When true, HTTP and HTTPS requests reference distinct cache entries.
 	IncludeProtocol bool
 
 	// ExcludeHost excludes the HTTP Host / domain from the cache key.
 	// When true, Host is omitted so multiple domains serving identical content share cache entries.
 	ExcludeHost bool
-
-	// KeepTrailingSlash preserves trailing slashes in the URL path.
-	// When true, exact trailing slashes are preserved as distinct paths.
-	KeepTrailingSlash bool
 
 	// ExcludeQueryString removes all query parameters from the cache key.
 	// When true, all query parameters are stripped so requests with different query strings share cache.
@@ -81,6 +84,11 @@ type KeyConfig struct {
 }
 
 // generatePrimaryKey constructs a canonical, zero-hash primary cache key for a request.
+//
+// Format: meta:p=<path>:h=<host>:m=<method>[:s=<scheme>][:qs=<query>][:he=<headers>][:ck=<cookies>]
+//
+// Component ordering is fixed: path → host → method → scheme → query → headers → cookies.
+// All component values are percent-encoded where they contain delimiter characters (:, =).
 func generatePrimaryKey(r *http.Request, cfg *KeyConfig) string {
 	if cfg == nil {
 		cfg = &KeyConfig{}
@@ -89,154 +97,230 @@ func generatePrimaryKey(r *http.Request, cfg *KeyConfig) string {
 	buf := getBuffer()
 	defer putBuffer(buf)
 
-	if cfg.IncludeProtocol {
-		if r.TLS != nil || r.Header.Get(headerXForwardedProto) == "https" || (r.URL != nil && r.URL.Scheme == "https") {
-			buf.WriteString("https://")
-		} else {
-			buf.WriteString("http://")
+	// --- p=<path> (always first) ---
+	rawPath := "/"
+	if r.URL != nil && r.URL.Path != "" {
+		rawPath = r.URL.EscapedPath()
+		if rawPath == "" {
+			rawPath = r.URL.Path
 		}
 	}
+	// Clean the path (resolves ../, ./, double-slashes and normalizes trailing slashes).
+	cleanedPath := path.Clean(rawPath)
+	if cleanedPath == "." {
+		cleanedPath = "/"
+	}
 
+	buf.WriteString("p=")
+	buf.WriteString(cleanedPath)
+
+	// --- h=<host> (always second, unless excluded) ---
 	if !cfg.ExcludeHost {
 		host := r.Host
 		if host == "" && r.URL != nil {
 			host = r.URL.Host
 		}
-		buf.WriteString(strings.ToLower(host))
-	}
+		host = strings.ToLower(host)
 
-	path := "/"
-	if r.URL != nil && r.URL.Path != "" {
-		path = r.URL.Path
-	}
-	if !cfg.KeepTrailingSlash && len(path) > 1 && strings.HasSuffix(path, "/") {
-		path = strings.TrimRight(path, "/")
-	}
-	buf.WriteString(path)
+		// Strip default ports (:80 for http, :443 for https).
+		scheme := resolveScheme(r)
+		if port, ok := defaultPorts[scheme]; ok {
+			host = strings.TrimSuffix(host, port)
+		}
 
-	// Query parameter handling
-	if !cfg.ExcludeQueryString && r.URL != nil && r.URL.RawQuery != "" {
-		if cfg.DisableQueryStringSort {
-			firstParam := true
-			for _, part := range strings.Split(r.URL.RawQuery, "&") {
-				if part == "" {
-					continue
-				}
-				rawKey, rawVal, hasVal := strings.Cut(part, "=")
-				k, err := url.QueryUnescape(rawKey)
-				if err != nil {
-					k = rawKey
-				}
-				if len(cfg.IncludedQueryParams) > 0 {
-					if !slices.Contains(cfg.IncludedQueryParams, k) {
-						continue
-					}
-				} else {
-					if slices.Contains(cfg.ExcludedQueryParams, k) {
-						continue
-					}
-					if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, k) {
-						continue
-					}
-				}
-				v := ""
-				if hasVal {
-					var err error
-					v, err = url.QueryUnescape(rawVal)
-					if err != nil {
-						v = rawVal
-					}
-				}
-
-				if firstParam {
-					buf.WriteByte('?')
-					firstParam = false
-				} else {
-					buf.WriteByte('&')
-				}
-				buf.WriteString(url.QueryEscape(k))
-				buf.WriteByte('=')
-				buf.WriteString(url.QueryEscape(v))
-			}
-		} else {
-			if values, err := url.ParseQuery(r.URL.RawQuery); err == nil && len(values) > 0 {
-				keys := make([]string, 0, len(values))
-				if len(cfg.IncludedQueryParams) > 0 {
-					for k := range values {
-						if slices.Contains(cfg.IncludedQueryParams, k) {
-							keys = append(keys, k)
-						}
-					}
-				} else {
-					for k := range values {
-						if slices.Contains(cfg.ExcludedQueryParams, k) {
-							continue
-						}
-						if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, k) {
-							continue
-						}
-						keys = append(keys, k)
-					}
-				}
-
-				if len(keys) > 0 {
-					slices.Sort(keys)
-					buf.WriteByte('?')
-					firstParam := true
-					for _, k := range keys {
-						vals := values[k]
-						slices.Sort(vals)
-						for _, v := range vals {
-							if !firstParam {
-								buf.WriteByte('&')
-							}
-							buf.WriteString(url.QueryEscape(k))
-							buf.WriteByte('=')
-							buf.WriteString(url.QueryEscape(v))
-							firstParam = false
-						}
-					}
-				}
-			}
+		if host != "" {
+			buf.WriteString(":h=")
+			buf.WriteString(host)
 		}
 	}
 
-	// Request header values inclusion
+	// --- m=<method> (always present; HEAD normalises to GET) ---
+	method := r.Method
+	if method == http.MethodHead || method == "" {
+		method = http.MethodGet
+	}
+	buf.WriteString(":m=")
+	buf.WriteString(method)
+
+	// --- s=<scheme> (optional, only when IncludeProtocol == true) ---
+	if cfg.IncludeProtocol {
+		buf.WriteString(":s=")
+		buf.WriteString(resolveScheme(r))
+	}
+
+	// --- qs=<query> (optional, filtered and sorted) ---
+	if !cfg.ExcludeQueryString && r.URL != nil && r.URL.RawQuery != "" {
+		qs := buildQueryString(r, cfg)
+		if qs != "" {
+			buf.WriteString(":qs=")
+			buf.WriteString(qs)
+		}
+	}
+
+	// --- he=<headers> (optional, percent-encoded values to prevent delimiter injection) ---
 	if len(cfg.IncludedHeaderNames) > 0 {
 		headers := slices.Clone(cfg.IncludedHeaderNames)
 		slices.Sort(headers)
 		for _, h := range headers {
 			hLower := strings.ToLower(h)
 			vals := r.Header.Values(h)
-			if len(vals) > 0 {
-				buf.WriteString("|h:")
-				buf.WriteString(hLower)
-				buf.WriteByte('=')
-				for i, v := range vals {
-					if i > 0 {
-						buf.WriteByte(',')
-					}
-					buf.WriteString(strings.TrimSpace(v))
+			if len(vals) == 0 {
+				continue
+			}
+			buf.WriteString(":he=")
+			buf.WriteString(hLower)
+			buf.WriteByte('~')
+			for i, v := range vals {
+				if i > 0 {
+					buf.WriteByte(',')
 				}
+				// Percent-encode values to prevent : and = from colliding with key delimiters.
+				buf.WriteString(url.QueryEscape(strings.TrimSpace(v)))
 			}
 		}
 	}
 
-	// Cookie values inclusion
+	// --- ck=<cookies> (optional, percent-encoded values) ---
 	if len(cfg.IncludedCookieNames) > 0 {
 		cookieNames := slices.Clone(cfg.IncludedCookieNames)
 		slices.Sort(cookieNames)
 		for _, name := range cookieNames {
-			if cookie, err := r.Cookie(name); err == nil && cookie != nil && cookie.Value != "" {
-				buf.WriteString("|c:")
-				buf.WriteString(name)
-				buf.WriteByte('=')
-				buf.WriteString(cookie.Value)
+			cookie, err := r.Cookie(name)
+			if err != nil || cookie == nil || cookie.Value == "" {
+				continue
 			}
+			buf.WriteString(":ck=")
+			buf.WriteString(name)
+			buf.WriteByte('~')
+			buf.WriteString(url.QueryEscape(cookie.Value))
 		}
 	}
 
 	return buf.String()
+}
+
+// resolveScheme determines the effective request scheme from TLS state and forwarded headers.
+func resolveScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if r.Header != nil && r.Header.Get(headerXForwardedProto) == "https" {
+		return "https"
+	}
+	if r.URL != nil && r.URL.Scheme == "https" {
+		return "https"
+	}
+	return "http"
+}
+
+// buildQueryString assembles a filtered and sorted query string for inclusion in the cache key.
+// The result is a raw query string that is safe to embed in the qs= label value.
+func buildQueryString(r *http.Request, cfg *KeyConfig) string {
+	if cfg.DisableQueryStringSort {
+		return buildUnsortedQueryString(r, cfg)
+	}
+	return buildSortedQueryString(r, cfg)
+}
+
+// buildSortedQueryString parses, filters, sorts, and reassembles the query string.
+func buildSortedQueryString(r *http.Request, cfg *KeyConfig) string {
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil || len(values) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(values))
+	if len(cfg.IncludedQueryParams) > 0 {
+		for k := range values {
+			if slices.Contains(cfg.IncludedQueryParams, k) {
+				keys = append(keys, k)
+			}
+		}
+	} else {
+		for k := range values {
+			if slices.Contains(cfg.ExcludedQueryParams, k) {
+				continue
+			}
+			if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, k) {
+				continue
+			}
+			keys = append(keys, k)
+		}
+	}
+
+	if len(keys) == 0 {
+		return ""
+	}
+	slices.Sort(keys)
+
+	qsBuf := getBuffer()
+	defer putBuffer(qsBuf)
+
+	first := true
+	for _, k := range keys {
+		vals := values[k]
+		slices.Sort(vals)
+		for _, v := range vals {
+			if !first {
+				qsBuf.WriteByte('&')
+			}
+			qsBuf.WriteString(url.QueryEscape(k))
+			qsBuf.WriteByte('=')
+			qsBuf.WriteString(url.QueryEscape(v))
+			first = false
+		}
+	}
+
+	return qsBuf.String()
+}
+
+// buildUnsortedQueryString filters query params while preserving original ordering.
+func buildUnsortedQueryString(r *http.Request, cfg *KeyConfig) string {
+	qsBuf := getBuffer()
+	defer putBuffer(qsBuf)
+
+	first := true
+	for _, part := range strings.Split(r.URL.RawQuery, "&") {
+		if part == "" {
+			continue
+		}
+		rawKey, rawVal, hasVal := strings.Cut(part, "=")
+		k, err := url.QueryUnescape(rawKey)
+		if err != nil {
+			k = rawKey
+		}
+
+		if len(cfg.IncludedQueryParams) > 0 {
+			if !slices.Contains(cfg.IncludedQueryParams, k) {
+				continue
+			}
+		} else {
+			if slices.Contains(cfg.ExcludedQueryParams, k) {
+				continue
+			}
+			if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, k) {
+				continue
+			}
+		}
+
+		v := ""
+		if hasVal {
+			v, err = url.QueryUnescape(rawVal)
+			if err != nil {
+				v = rawVal
+			}
+		}
+
+		if !first {
+			qsBuf.WriteByte('&')
+		}
+		qsBuf.WriteString(url.QueryEscape(k))
+		qsBuf.WriteByte('=')
+		qsBuf.WriteString(url.QueryEscape(v))
+		first = false
+	}
+
+	return qsBuf.String()
 }
 
 // generateVariantKey generates a deterministic variant key based on matched Vary request headers.

@@ -34,6 +34,31 @@ func getTestRedisAddr() string {
 	return "127.0.0.1:6379"
 }
 
+func cleanupRedisPrefix(addr, prefix string) {
+	if prefix == "" {
+		return
+	}
+	client, err := rueidis.NewClient(rueidis.ClientOption{
+		InitAddress:  []string{addr},
+		DisableCache: true,
+	})
+	if err != nil {
+		return
+	}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build())
+	if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
+		delCmds := make([]rueidis.Completed, len(keys))
+		for i, k := range keys {
+			delCmds[i] = client.B().Del().Key(k).Build()
+		}
+		client.DoMulti(ctx, delCmds...)
+	}
+}
+
 // parseAndProvisionHandler is a helper that parses a Caddyfile snippet and provisions the Handler.
 func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, func()) {
 	t.Helper()
@@ -50,6 +75,14 @@ func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, fu
 	}
 
 	cleanup := func() {
+		if h.StorageRaw != nil {
+			var st map[string]any
+			if err := json.Unmarshal(h.StorageRaw, &st); err == nil {
+				if pref, ok := st["key_prefix"].(string); ok && pref != "" {
+					cleanupRedisPrefix(getTestRedisAddr(), pref)
+				}
+			}
+		}
 		_ = h.Cleanup()
 		cancel()
 	}
@@ -103,6 +136,7 @@ func TestCaddyHandler_ConvertHeadToGet_Unmarshal(t *testing.T) {
 func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
 	t.Parallel()
 	prefix := fmt.Sprintf("test_caddy_mw:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 	caddyfileInput := fmt.Sprintf(`titip {
 		cache_status rfc9211
 		origin_timeout 5s
@@ -297,6 +331,7 @@ func TestCaddyHandler_UnknownStorageModule_Fails(t *testing.T) {
 func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
 	t.Parallel()
 	prefix := fmt.Sprintf("test_caddy_purge:%d:%d:", time.Now().UnixNano(), rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 	caddyfileInput := fmt.Sprintf(`titip {
 		storage redis {
 			address %q
@@ -415,7 +450,6 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 		key {
 			include_protocol false
 			exclude_host true
-			keep_trailing_slash false
 			exclude_query_string false
 			disable_query_string_sort false
 			included_query_params id category page
@@ -441,9 +475,6 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 	if h.Key.ExcludeHost == nil || *h.Key.ExcludeHost != true {
 		t.Errorf("expected ExcludeHost true, got %v", h.Key.ExcludeHost)
 	}
-	if h.Key.KeepTrailingSlash == nil || *h.Key.KeepTrailingSlash != false {
-		t.Errorf("expected KeepTrailingSlash false, got %v", h.Key.KeepTrailingSlash)
-	}
 	if h.Key.ExcludeQueryString == nil || *h.Key.ExcludeQueryString != false {
 		t.Errorf("expected ExcludeQueryString false, got %v", h.Key.ExcludeQueryString)
 	}
@@ -467,6 +498,7 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
 	t.Parallel()
 	prefix := fmt.Sprintf("test:caddy:key:%d:", rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 	caddyfileInput := fmt.Sprintf(`titip {
 		storage redis {
 			address %q
@@ -575,6 +607,7 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 	t.Parallel()
 	prefix := fmt.Sprintf("test:caddy:esi:%d:", rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 	caddyfileInput := fmt.Sprintf(`titip {
 		storage redis {
 			address %q
@@ -640,6 +673,7 @@ func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
 	t.Parallel()
 	prefix := fmt.Sprintf("test:caddy:replacer:%d:", rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 	caddyfileInput := fmt.Sprintf(`titip {
 		storage redis {
 			address %q
@@ -727,7 +761,7 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 			}
 			cache_status rfc9211
 			origin_timeout 5s
-			ignore_client_cache_control true
+			respect_client_cache_control false
 			auto_invalidate_mutating_methods true
 			esi {
 				enabled true
@@ -789,6 +823,7 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 // TestCaddyGlobalOption_InheritanceAndOverride tests App provisioning and Handler inheritance via full Caddyfile.
 func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 	prefix := fmt.Sprintf("test:caddy:global:inherit:%d:", rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 
 	caddyfileInput := fmt.Sprintf(`{
 		admin off
@@ -799,7 +834,7 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 			}
 			cache_status rfc9211
 			origin_timeout 10s
-			ignore_client_cache_control true
+			respect_client_cache_control false
 			auto_invalidate_mutating_methods true
 			esi {
 				enabled true
@@ -844,6 +879,7 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 // in Caddyfile merge cleanly on top of global defaults during full Caddyfile compilation.
 func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 	prefix := fmt.Sprintf("test:caddy:deepmerge:%d:", rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 
 	caddyfileInput := fmt.Sprintf(`{
 		admin off
@@ -910,6 +946,7 @@ func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 // with global titip options and route-wrapped multi-handle routes, verifying live cache HITs.
 func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 	prefix := fmt.Sprintf("test:caddy:e2e:%d:", rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 
 	var originHitCount int64
 	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
