@@ -122,7 +122,7 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 	}
 
 	// 2. Soft-purge entry to trigger synchronous singleflight revalidation
-	if err := mw.Purge(context.Background(), "http://example.com/api/stampede", WithSoftPurge()); err != nil {
+	if _, err := mw.Purge(context.Background(), "http://example.com/api/stampede", WithSoftPurge()); err != nil {
 		t.Fatalf("failed to soft purge: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 	}
 
 	// Give adequate window for all 50 in-flight requests to complete Redis metadata lookup and enter singleflight.Do
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	// Release origin execution to broadcast response
 	close(originGate)
@@ -239,7 +239,7 @@ func TestSoftPurge_SynchronousFreshnessAndFallback(t *testing.T) {
 	}
 
 	// 2. Soft purge URL
-	if err := mw.Purge(context.Background(), "http://example.com/api/soft-test", WithSoftPurge()); err != nil {
+	if _, err := mw.Purge(context.Background(), "http://example.com/api/soft-test", WithSoftPurge()); err != nil {
 		t.Fatalf("soft purge failed: %v", err)
 	}
 
@@ -351,7 +351,7 @@ func TestPanicRecovery_WithStaleFallback(t *testing.T) {
 	}
 
 	// 2. Soft purge
-	_ = mw.Purge(context.Background(), "http://example.com/api/panic-test", WithSoftPurge())
+	_, _ = mw.Purge(context.Background(), "http://example.com/api/panic-test", WithSoftPurge())
 
 	// 3. Trigger panic on origin
 	shouldPanic.Store(true)
@@ -1312,7 +1312,7 @@ func TestUpstream304_TTLRefresh(t *testing.T) {
 	}
 
 	// 2. Soft-purge to trigger synchronous revalidation
-	if err := mw.Purge(context.Background(), "http://example.com/api/refresh", WithSoftPurge()); err != nil {
+	if _, err := mw.Purge(context.Background(), "http://example.com/api/refresh", WithSoftPurge()); err != nil {
 		t.Fatalf("failed to soft purge: %v", err)
 	}
 
@@ -1372,7 +1372,7 @@ func TestCustomTagHeaderName(t *testing.T) {
 	}
 
 	// 3. Purge by tag "electronics"
-	if err := engine.PurgeTag(context.Background(), "electronics"); err != nil {
+	if _, err := engine.PurgeTag(context.Background(), "electronics"); err != nil {
 		t.Fatalf("purge tag failed: %v", err)
 	}
 
@@ -1932,7 +1932,7 @@ func TestNew_MinimalOptions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if err := mw.Purge(ctx, "http://example.com/api/minimal"); err != nil {
+	if _, err := mw.Purge(ctx, "http://example.com/api/minimal"); err != nil {
 		t.Errorf("expected Purge to succeed on minimal instance, got %v", err)
 	}
 	if err := mw.Close(ctx); err != nil {

@@ -9,9 +9,8 @@
 
 ### What AI Agent MUST ALWAYS Do (Required Behaviors)
 
-1. **Adhere to the Master PRD and Feature PRDs**:
-   - Always refer to [PRD.md](file:///Users/indra/code/project/titip/docs/PRD.md) as the single source of truth for architecture and specifications.
-   - Follow the phase-by-phase execution roadmap in [`docs/ways-of-work/plan/titip-v1/`](file:///Users/indra/code/project/titip/docs/ways-of-work/plan/titip-v1/).
+1. **Adhere to Master Specifications & Architecture**:
+   - Always refer to [README.md](README.md) and standard RFC specifications (RFC 7234, RFC 9111, RFC 9211) as the source of truth for architecture and specifications.
 2. **Practice Test-Driven Development (TDD) & Zero-Race Concurrency**:
    - Write automated unit, concurrency, and race condition tests for every feature before declaring it complete.
    - Run tests with continuous race detection: `go test -race -count=100 ./...`.
@@ -34,7 +33,7 @@
 ### What AI Agent MUST NEVER Do (Strict Prohibitions)
 
 1. **NEVER Run Per-Request Hashing on URLs**:
-   - Do **NOT** use SHA-256, MD5, Murmur3, or xxHash for cache keys. Assemble normalized strings directly via pooled builders via pooled string builders.
+   - Do **NOT** use SHA-256, MD5, Murmur3, or xxHash for cache keys. Assemble normalized strings directly via pooled string builders.
 2. **NEVER Perform Read-Modify-Write in Redis for Variants**:
    - Do **NOT** fetch the entire metadata record, unmarshal, append a variant in Go, and re-write to Redis. Use atomic Redis Hash commands (`HSET`, `HMGET`) to eliminate race conditions.
 3. **NEVER Cache Heuristically Without `Cache-Control`**:
@@ -45,7 +44,7 @@
    - Do **NOT** coalesce concurrent requests on cold/unverified URLs with `singleflight`. Singleflight across concurrent cold requests can broadcast private headers (`Set-Cookie`) to unauthenticated callers.
    - Restrict `singleflight` exclusively to revalidating known cacheable entries (stale-while-revalidate and expired refresh).
 6. **NEVER Bleed Dependencies Across Subpackages**:
-   - Do **NOT** import `github.com/go-chi/chi/v5` into core `titip` or `storage/`.
+   - Do **NOT** import third-party framework routers into core `titip` or `storage/`.
    - Do **NOT** import `github.com/redis/rueidis` into core `titip` or `adapter/`.
    - Keep core `titip` dependency-free (except Protobuf and LZ4).
 7. **NEVER Leave Goroutine Leaks on Revalidation or Shutdown**:
@@ -62,7 +61,7 @@
 | **Cache Key** | Configurable via `KeyConfig` (All, Whitelist, Blacklist, Exclude All query parameters). Zero-hash direct assembly. |
 | **Origin Age Handling** | RFC 9111 / RFC-7234 Section 4.2.3 algorithm (apparent age, corrected initial age, resident time, effective TTL). Max TTL clamped to 1 year. |
 | **Cache Status Headers** | RFC-9211 structured field (`Cache-Status: titip; hit; ...`), Simple Token (`HIT`, `MISS`), or Disabled. |
-| **Status Codes** | Standard cacheable status codes set (`200, 203, 204, 206, 300, 301, 302, 307, 308, 400, 403, 404, 405, 410, 451, 500, 501, 502, 503, 504`) when origin has `Cache-Control`. |
+| **Status Codes** | Standard cacheable status codes (`200, 203, 204, 206, 300, 301, 302, 307, 308, 400, 403, 404, 405, 410, 451, 500, 501, 502, 503, 504`) when origin has `Cache-Control`. |
 | **Tag Headers** | Default `Cache-Tag`, customizable via `WithTagHeaderName(name)`. |
 
 ---
@@ -71,7 +70,7 @@
 
 A feature or task is **COMPLETE** if and only if all of the following conditions are met:
 
-- [ ] **100% Functional Compliance**: All acceptance criteria defined in the specific Feature PRD are satisfied.
+- [ ] **100% Functional Compliance**: All acceptance criteria and RFC specifications are satisfied.
 - [ ] **Automated Test Suite**:
   - Unit tests covering all branches, error paths, and edge cases.
   - Concurrency & stampede tests validating singleflight coalescing and soft-purge freshness.
@@ -98,14 +97,13 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 
 ## 4. Execution Workflow
 
-1. **Pick the Next Phase**: Read the target feature PRD in `docs/ways-of-work/plan/titip-v1/`.
-2. **Create Implementation Plan**: Scaffold interfaces and plan changes.
-3. **Implement Incrementally (TDD)**:
+1. **Understand Specifications**: Review targeted component specifications in `README.md` and relevant RFCs.
+2. **Implement Incrementally (TDD)**:
    - Scaffold structs and interfaces.
    - Implement logic with memory pool reuse.
-   - Write tests and run with `-race`.
-4. **Benchmark**: Run `testing.B` to verify allocation constraints.
-5. **Verify & Document**: Run race detector and verify zero regressions.
+   - Write automated unit, concurrency, and race tests.
+3. **Benchmark**: Run `testing.B` benchmarks to verify zero-allocation and performance constraints.
+4. **Verify**: Run race detection (`go test -race ./...`) and lint checks (`go vet ./...`).
 
 ---
 
@@ -154,7 +152,7 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 - **Redis Testing Environment**: Real Redis 7+ instance using `github.com/redis/rueidis` (`docker compose up -d` with `redis:8-alpine` or `redis:7-alpine`). Employs native `EXPIRE ... GT` and atomic hash operations with isolated test key prefixes.
 - **Makefile Scoping Policy**:
   - The root `Makefile` is strictly reserved for core library workflows: `test`, `race`, `bench`, `vet`, `redis-up`, and `redis-down`.
-  - **NEVER** add demo-specific or application-specific run commands to the root `Makefile`. Keep all demo and example lifecycle commands self-contained in their own subdirectories (e.g. `examples/chi-demo/Makefile`, `examples/caddy-demo/Makefile`).
+  - **NEVER** add demo-specific or application-specific run commands to the root `Makefile`. Keep all demo and example lifecycle commands self-contained in their own subdirectories (e.g. `examples/caddy-demo/Makefile`).
 
 ---
 
@@ -162,9 +160,9 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 
 - **Conventional Commits**:
   - `feat(pool)`: New feature or pool enhancement.
+  - `feat(cachekey)`: Cache key engine improvements.
   - `fix(fsm)`: Bug fix in state machine logic.
   - `test(redis)`: Concurrency, race, or unit tests.
-  - `bench(keygen)`: Performance and allocation benchmarks.
-  - `docs(prd)`: Documentation or PRD updates.
+  - `bench(cachekey)`: Performance and allocation benchmarks.
 - **No Binary / Temporary Artifacts**:
   - Never commit `.DS_Store`, generated test binaries, or scratch files.

@@ -49,7 +49,7 @@ type purgeAdminResponse struct {
 
 type adminPurgedInfo struct {
 	Type  string `json:"type"`
-	Count int    `json:"count"`
+	Count int64  `json:"count"`
 	Soft  bool   `json:"soft"`
 }
 
@@ -107,28 +107,37 @@ func handleAdminPurge(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	activeEngines := getEngines()
-	count := 0
+	var count int64
 
 	switch targetType {
 	case "urls":
+		if len(activeEngines) == 0 {
+			count = int64(len(req.URLs))
+		}
 		for _, u := range req.URLs {
 			for _, engine := range activeEngines {
-				_ = engine.Purge(r.Context(), u, purgeOpts...)
+				n, _ := engine.Purge(r.Context(), u, purgeOpts...)
+				count += n
 			}
-			count++
 		}
 	case "tags":
+		if len(activeEngines) == 0 {
+			count = int64(len(req.Tags))
+		}
 		for _, tag := range req.Tags {
 			for _, engine := range activeEngines {
-				_ = engine.PurgeTag(r.Context(), tag, purgeOpts...)
+				n, _ := engine.PurgeTag(r.Context(), tag, purgeOpts...)
+				count += n
 			}
-			count++
 		}
 	case "purge_everything":
-		for _, engine := range activeEngines {
-			_ = engine.PurgeAll(r.Context())
+		if len(activeEngines) == 0 {
+			count = 1
 		}
-		count = 1
+		for _, engine := range activeEngines {
+			n, _ := engine.PurgeAll(r.Context())
+			count += n
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

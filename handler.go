@@ -855,7 +855,7 @@ func (t *Titip) handleMutatingRequest(w http.ResponseWriter, r *http.Request, ne
 		}
 		delCtx, delCancel := context.WithTimeout(context.Background(), t.cfg.StorageTimeout)
 		defer delCancel()
-		_ = t.Purge(delCtx, purgeTarget)
+		_, _ = t.Purge(delCtx, purgeTarget)
 	}
 }
 

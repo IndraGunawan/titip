@@ -21,13 +21,16 @@ type Storage interface {
 	SetVariant(ctx context.Context, primaryKey string, meta *pb.CacheMetadata, variant *pb.VariantInfo, body []byte, ttl time.Duration) error
 
 	// Delete physically evicts the primary metadata Hash AND all associated variant body keys from storage.
-	Delete(ctx context.Context, primaryKey string) error
+	// Returns the number of primary entries deleted (1 if found and deleted, 0 if not found).
+	Delete(ctx context.Context, primaryKey string) (int64, error)
 
 	// SoftPurge marks primary metadata as stale in storage while preserving entries for fallback.
-	SoftPurge(ctx context.Context, primaryKey string) error
+	// Returns the number of primary entries marked stale (1 if found and updated, 0 if not found).
+	SoftPurge(ctx context.Context, primaryKey string) (int64, error)
 
 	// PurgeByTag invalidates all primary metadata and all associated body keys matching a given tag.
-	PurgeByTag(ctx context.Context, tag string, soft bool) error
+	// Returns the total number of primary entries invalidated.
+	PurgeByTag(ctx context.Context, tag string, soft bool) (int64, error)
 
 	// Close cleanly terminates storage connections.
 	Close() error
@@ -46,8 +49,8 @@ type Storage interface {
 type PatternDeleter interface {
 	// DeletePattern deletes all keys matching the given glob pattern within the storage namespace.
 	// The pattern is automatically scoped to the storage engine's configured key prefix.
-	// Returns nil if no keys matched.
-	DeletePattern(ctx context.Context, pattern string) error
+	// Returns the number of matching primary metadata entries deleted.
+	DeletePattern(ctx context.Context, pattern string) (int64, error)
 }
 
 // AllPurger is an optional capability interface implemented by storage engines that
@@ -57,6 +60,6 @@ type PatternDeleter interface {
 // All other keys in the same backend instance are preserved.
 type AllPurger interface {
 	// PurgeAll deletes every key in the storage engine's configured namespace prefix.
-	// Returns nil if the namespace was already empty.
-	PurgeAll(ctx context.Context) error
+	// Returns the number of primary metadata entries deleted.
+	PurgeAll(ctx context.Context) (int64, error)
 }

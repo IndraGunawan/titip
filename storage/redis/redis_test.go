@@ -173,8 +173,21 @@ func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 	}
 
 	// Delete
-	if err := store.Delete(ctx, primaryKey); err != nil {
+	n, err := store.Delete(ctx, primaryKey)
+	if err != nil {
 		t.Fatalf("failed to delete: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 entry deleted, got %d", n)
+	}
+
+	// Delete non-existent key returns 0
+	n2, err := store.Delete(ctx, primaryKey)
+	if err != nil {
+		t.Fatalf("failed to delete non-existent key: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("expected 0 entries deleted for non-existent key, got %d", n2)
 	}
 
 	// Verify zero orphaned keys
@@ -211,8 +224,12 @@ func TestSoftPurge(t *testing.T) {
 	}
 
 	// Perform Soft Purge
-	if err := store.SoftPurge(ctx, primaryKey); err != nil {
+	n, err := store.SoftPurge(ctx, primaryKey)
+	if err != nil {
 		t.Fatalf("soft purge failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 entry soft-purged, got %d", n)
 	}
 
 	// Verify IsSoftPurged is now true
@@ -250,8 +267,12 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 	}
 
 	// Hard Purge
-	if err := store.PurgeByTag(ctx, "category:tech", false); err != nil {
+	n, err := store.PurgeByTag(ctx, "category:tech", false)
+	if err != nil {
 		t.Fatalf("purge tag failed: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("expected 3 entries purged, got %d", n)
 	}
 
 	// Verify all deleted

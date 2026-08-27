@@ -18,10 +18,12 @@ const (
 
 // metrics encapsulates Prometheus telemetry collectors for Titip.
 type metrics struct {
-	requestsTotal   *prometheus.CounterVec
-	requestDuration *prometheus.HistogramVec
-	esiFragments    *prometheus.CounterVec
-	esiDuration     *prometheus.HistogramVec
+	requestsTotal      *prometheus.CounterVec
+	requestDuration    *prometheus.HistogramVec
+	esiFragments       *prometheus.CounterVec
+	esiDuration        *prometheus.HistogramVec
+	purgesTotal        *prometheus.CounterVec
+	purgedEntriesTotal *prometheus.CounterVec
 }
 
 // newMetrics initializes and registers Prometheus collectors with the provided Registerer.
@@ -46,10 +48,26 @@ func newMetrics(reg prometheus.Registerer, enableESI bool) *metrics {
 			},
 			[]string{"status"},
 		),
+		purgesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "titip_purges_total",
+				Help: "Total number of cache purge operations executed partitioned by type, mode, and status.",
+			},
+			[]string{"type", "mode", "status"},
+		),
+		purgedEntriesTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "titip_purged_entries_total",
+				Help: "Total number of logical cache entries invalidated partitioned by type and mode.",
+			},
+			[]string{"type", "mode"},
+		),
 	}
 
 	_ = reg.Register(m.requestsTotal)
 	_ = reg.Register(m.requestDuration)
+	_ = reg.Register(m.purgesTotal)
+	_ = reg.Register(m.purgedEntriesTotal)
 
 	if enableESI {
 		m.esiFragments = prometheus.NewCounterVec(
@@ -102,4 +120,17 @@ func (m *metrics) recordESIDuration(mode string, dur time.Duration) {
 		return
 	}
 	m.esiDuration.WithLabelValues(mode).Observe(dur.Seconds())
+}
+
+// recordPurge safely increments the purge invocation counter and adds to the purged entries counter.
+func (m *metrics) recordPurge(purgeType, mode, status string, count int64) {
+	if m == nil {
+		return
+	}
+	if m.purgesTotal != nil {
+		m.purgesTotal.WithLabelValues(purgeType, mode, status).Inc()
+	}
+	if count > 0 && m.purgedEntriesTotal != nil {
+		m.purgedEntriesTotal.WithLabelValues(purgeType, mode).Add(float64(count))
+	}
 }
