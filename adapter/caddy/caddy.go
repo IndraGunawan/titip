@@ -278,71 +278,60 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 	// ESI configuration: default -> global App defaults -> route overrides
 	if (app != nil && app.ESI != nil) || h.ESI != nil {
-		esiCfg := titip.ESIConfig{
-			Enabled:                true,
-			HeaderRequired:         false,
-			MaxDepth:               3,
-			MaxTimeout:             30 * time.Second,
-			MaxConcurrentRequests:  8,
-			BlockPrivateIPs:        true,
-			MaxResponseSize:        10 * 1024 * 1024,
-			ForwardFragmentCookies: true,
-		}
-		if app != nil && app.ESI != nil {
-			if err := applyESIConfig(&esiCfg, app.ESI); err != nil {
-				return err
+		opts = append(opts, titip.WithESI(func(e *titip.ESIConfig) {
+			if app != nil && app.ESI != nil {
+				_ = applyESIConfig(e, app.ESI)
 			}
-		}
-		if h.ESI != nil {
-			if err := applyESIConfig(&esiCfg, h.ESI); err != nil {
-				return err
-			}
-		}
-
-		// In-process virtual subrequest fetcher adapted from Caddy funcHTTPInclude:
-		// https://github.com/caddyserver/caddy/blob/e2eee6a/modules/caddyhttp/templates/tplcontext.go#L169-L217
-		esiCfg.InternalFetcher = func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
-			parsedURL, err := url.Parse(targetPath)
-			if err != nil {
-				return nil, nil, err
+			if h.ESI != nil {
+				_ = applyESIConfig(e, h.ESI)
 			}
 
-			virtReq := &http.Request{
-				Method:     http.MethodGet,
-				URL:        parsedURL,
-				RequestURI: targetPath,
-				Header:     r.Header.Clone(),
-				Host:       r.Host,
-				RemoteAddr: "127.0.0.1:10000", // https://github.com/caddyserver/caddy/issues/5835
-				Proto:      r.Proto,
-				ProtoMajor: r.ProtoMajor,
-				ProtoMinor: r.ProtoMinor,
-				Body:       http.NoBody,
+			// In-process virtual subrequest fetcher adapted from Caddy funcHTTPInclude:
+			// https://github.com/caddyserver/caddy/blob/e2eee6a/modules/caddyhttp/templates/tplcontext.go#L169-L217
+			e.InternalFetcher = func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
+				parsedURL, err := url.Parse(targetPath)
+				if err != nil {
+					return nil, nil, err
+				}
+
+				virtReq := &http.Request{
+					Method:     http.MethodGet,
+					URL:        parsedURL,
+					RequestURI: targetPath,
+					Header:     r.Header.Clone(),
+					Host:       r.Host,
+					RemoteAddr: "127.0.0.1:10000", // https://github.com/caddyserver/caddy/issues/5835
+					Proto:      r.Proto,
+					ProtoMajor: r.ProtoMajor,
+					ProtoMinor: r.ProtoMinor,
+					Body:       http.NoBody,
+				}
+				virtReq.Header.Set("Accept-Encoding", "identity") // https://github.com/caddyserver/caddy/issues/4352
+				if r.Trailer != nil {
+					virtReq.Trailer = r.Trailer.Clone()
+				}
+				virtReq = virtReq.WithContext(ctx)
+
+				rec := httptest.NewRecorder()
+
+				if srv, ok := r.Context().Value(caddyhttp.ServerCtxKey).(http.Handler); ok && srv != nil {
+					srv.ServeHTTP(rec, virtReq)
+				} else if srv, ok := r.Context().Value(caddyhttp.ServerCtxKey).(caddyhttp.Handler); ok && srv != nil {
+					_ = srv.ServeHTTP(rec, virtReq)
+				} else {
+					return nil, nil, errors.New("titip: caddy: server context missing")
+				}
+
+				if rec.Code == http.StatusNotFound {
+					return nil, nil, titip.ErrESIFallbackToHTTP
+				}
+				if rec.Code >= 400 {
+					return nil, rec.Header().Clone(), fmt.Errorf("subrequest returned status %d", rec.Code)
+				}
+
+				return bytes.Clone(rec.Body.Bytes()), rec.Header().Clone(), nil
 			}
-			virtReq.Header.Set("Accept-Encoding", "identity") // https://github.com/caddyserver/caddy/issues/4352
-			if r.Trailer != nil {
-				virtReq.Trailer = r.Trailer.Clone()
-			}
-			virtReq = virtReq.WithContext(ctx)
-
-			rec := httptest.NewRecorder()
-
-			if srv, ok := r.Context().Value(caddyhttp.ServerCtxKey).(http.Handler); ok && srv != nil {
-				srv.ServeHTTP(rec, virtReq)
-			} else if srv, ok := r.Context().Value(caddyhttp.ServerCtxKey).(caddyhttp.Handler); ok && srv != nil {
-				_ = srv.ServeHTTP(rec, virtReq)
-			} else {
-				return nil, nil, errors.New("titip: caddy: server context missing")
-			}
-
-			if rec.Code >= 400 {
-				return nil, rec.Header().Clone(), fmt.Errorf("subrequest returned status %d", rec.Code)
-			}
-
-			return bytes.Clone(rec.Body.Bytes()), rec.Header().Clone(), nil
-		}
-
-		opts = append(opts, titip.WithESI(esiCfg))
+		}))
 	}
 
 	engine, err := titip.New(opts...)

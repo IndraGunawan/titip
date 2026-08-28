@@ -395,9 +395,8 @@ func TestESIMemoryPoolRecycling(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:         true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 	handler := mw.testHandler(mux)
@@ -447,9 +446,8 @@ func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(ESIConfig{
-			Enabled:         true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 	handler := mw.testHandler(mux)

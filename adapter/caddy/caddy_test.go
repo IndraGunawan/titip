@@ -747,6 +747,88 @@ func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
 	wg.Wait()
 }
 
+func TestCaddyHandler_ESI_Subrequest404_FallbackToOutbound(t *testing.T) {
+	t.Parallel()
+	prefix := fmt.Sprintf("test:caddy:esi:404fb:%d:", rand.Int63())
+	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
+
+	var outboundCalls atomic.Int32
+	extServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/remote-alb-part" {
+			outboundCalls.Add(1)
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<span>From ALB Upstream</span>`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer extServer.Close()
+
+	caddyfileInput := fmt.Sprintf(`titip {
+		storage redis {
+			address %q
+			key_prefix %q
+		}
+		esi {
+			enabled true
+			block_private_ips false
+		}
+	}`, getTestRedisAddr(), prefix)
+
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
+
+	// Root server only knows /local-part, but returns 404 for /remote-alb-part
+	rootServer := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		switch r.URL.Path {
+		case "/local-part":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<span>Local In-Process</span>`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+		return nil
+	})
+
+	routeNext := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		if r.URL.Path == "/hybrid-page" {
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<div><esi:include src="/local-part" /> + <esi:include src="/remote-alb-part" /></div>`)
+			return nil
+		}
+		w.WriteHeader(http.StatusNotFound)
+		return nil
+	})
+
+	extURL := strings.TrimPrefix(extServer.URL, "http://")
+	req := httptest.NewRequest(http.MethodGet, "http://"+extURL+"/hybrid-page", nil)
+	ctx := context.WithValue(req.Context(), caddyhttp.ServerCtxKey, rootServer)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	if err := h.ServeHTTP(rec, req, routeNext); err != nil {
+		t.Fatalf("serve failed: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	expected := `<div><span>Local In-Process</span> + <span>From ALB Upstream</span></div>`
+	if rec.Body.String() != expected {
+		t.Fatalf("unexpected body.\nExpected: %s\nGot:      %s", expected, rec.Body.String())
+	}
+
+	if outboundCalls.Load() != 1 {
+		t.Errorf("expected 1 outbound call to ALB for 404 subrequest, got %d", outboundCalls.Load())
+	}
+}
+
 // TestCaddyGlobalOption_Adapt verifies that { titip { ... } } in global options
 // compiles properly to apps.titip in Caddy JSON.
 func TestCaddyGlobalOption_Adapt(t *testing.T) {

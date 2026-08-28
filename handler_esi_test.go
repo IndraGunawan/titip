@@ -49,14 +49,9 @@ func TestESI_InProcessVirtualSubrequests(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:                true,
-			InternalFetcher: ESIHandlerFetcher(mux),
-			MaxDepth:               3,
-			MaxTimeout:             5 * time.Second,
-			MaxConcurrentRequests:  8,
-			BlockPrivateIPs:        true,
-			ForwardFragmentCookies: true,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
+			e.MaxTimeout = 5 * time.Second
 		}),
 	)
 
@@ -141,9 +136,8 @@ func TestESI_SamePageDeduplication(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 
@@ -178,10 +172,8 @@ func TestESI_SSRFProtection(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:         true,
-			InternalFetcher: ESIHandlerFetcher(mux),
-			BlockPrivateIPs: true,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 
@@ -227,9 +219,8 @@ func TestESI_FailOpenFallbackAndAlt(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 
@@ -272,10 +263,9 @@ func TestESI_MaxDepthAndCircularLoop(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
-			MaxDepth:       3,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
+			e.MaxDepth = 3
 		}),
 	)
 
@@ -308,9 +298,8 @@ func TestESI_WorkerPanicRecovery(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 
@@ -387,9 +376,8 @@ func TestESI_FullDocument_ColdMissAndCacheHitIdentical(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 
@@ -476,10 +464,8 @@ func TestESI_ConcurrentFetchDuration_MaxOfFragments(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:                true,
-			InternalFetcher: ESIHandlerFetcher(mux),
-			MaxConcurrentRequests:  8,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 
@@ -566,9 +552,8 @@ func TestESI_LargePayloadSplicing_PositionOffsetsExact(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 
@@ -646,9 +631,8 @@ func TestESI_ContentLengthHeaderPreservation(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 	handler := mw.testHandler(mux)
@@ -784,11 +768,9 @@ func TestESI_RootIndex_AllAttributeCombinations(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
-			MaxDepth:       3,
-			MaxTimeout:     5 * time.Second,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
+			e.MaxTimeout = 5 * time.Second
 		}),
 	)
 
@@ -871,10 +853,9 @@ func TestESI_SameHostAndExternalDomainIncludes(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:         true,
-			InternalFetcher: ESIHandlerFetcher(mux),
-			BlockPrivateIPs: false, // allow 127.0.0.1 httptest server
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
+			e.BlockPrivateIPs = false // allow 127.0.0.1 httptest server
 		}),
 	)
 
@@ -917,9 +898,8 @@ func BenchmarkESI_ColdMiss(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 	handler := mw.testHandler(mux)
@@ -954,9 +934,8 @@ func BenchmarkESI_CacheHit(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(ESIConfig{
-			Enabled:        true,
-			InternalFetcher: ESIHandlerFetcher(mux),
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
 		}),
 	)
 	handler := mw.testHandler(mux)
@@ -993,10 +972,8 @@ func TestESI_CustomInternalFetcher(t *testing.T) {
 	}
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(ESIConfig{
-			Enabled:                true,
-			InternalFetcher:        customFetcher,
-			ForwardFragmentCookies: true,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = customFetcher
 		}),
 	)
 
@@ -1025,6 +1002,180 @@ func TestESI_CustomInternalFetcher(t *testing.T) {
 	}
 	if !foundCustom {
 		t.Errorf("expected Set-Cookie custom_cookie=val123 from custom fetcher")
+	}
+}
+
+func TestESI_InternalFetcher_FallbackToOutboundHTTP_On404(t *testing.T) {
+	var outboundHits atomic.Int32
+
+	// Outbound HTTP server simulating external service routed by ALB
+	extServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/esi-parts" {
+			outboundHits.Add(1)
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<span>From External ALB Service</span>`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer extServer.Close()
+
+	// Local in-process router (Service A)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="` + extServer.URL + `/esi-parts" /></div>`))
+	})
+
+	// Internal fetcher handles /local but returns ErrESIFallbackToHTTP on 404
+	localFetcher := func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
+		if targetPath == "/local" {
+			return []byte(`<span>Local</span>`), nil, nil
+		}
+		// 404 in-process -> delegate to outbound HTTP
+		return nil, nil, ErrESIFallbackToHTTP
+	}
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = localFetcher
+			e.BlockPrivateIPs = false // allow loopback httptest.Server
+			e.MaxTimeout = 5 * time.Second
+		}),
+	)
+
+	handler := mw.testHandler(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/dashboard", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	expected := `<div><span>From External ALB Service</span></div>`
+	if rec.Body.String() != expected {
+		t.Fatalf("expected %q, got %q", expected, rec.Body.String())
+	}
+
+	if outboundHits.Load() != 1 {
+		t.Errorf("expected 1 outbound HTTP call, got %d", outboundHits.Load())
+	}
+}
+
+func TestESI_InternalFetcher_Non404Error_DoesNotFallback(t *testing.T) {
+	var outboundHits atomic.Int32
+
+	extServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		outboundHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Outbound</span>`))
+	}))
+	defer extServer.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/error-part" onerror="continue" /></div>`))
+	})
+
+	// Internal fetcher returns a 500-type error (not ErrESIFallbackToHTTP)
+	errFetcher := func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
+		return nil, nil, errors.New("subrequest returned status 500")
+	}
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = errFetcher
+			e.BlockPrivateIPs = false
+			e.MaxTimeout = 5 * time.Second
+		}),
+	)
+
+	handler := mw.testHandler(mux)
+
+	extURL := strings.TrimPrefix(extServer.URL, "http://")
+	req := httptest.NewRequest(http.MethodGet, "http://"+extURL+"/dashboard", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	expected := `<div></div>`
+	if rec.Body.String() != expected {
+		t.Fatalf("expected %q, got %q", expected, rec.Body.String())
+	}
+
+	if outboundHits.Load() != 0 {
+		t.Errorf("expected 0 outbound HTTP calls on 500 error, got %d", outboundHits.Load())
+	}
+}
+
+func TestESI_ESIHandlerFetcher_404_FallbackToOutbound(t *testing.T) {
+	var outboundHits atomic.Int32
+
+	extServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/remote-part" {
+			outboundHits.Add(1)
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<span>Remote Via ALB</span>`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer extServer.Close()
+
+	// In-process router only knows /dashboard and /local-part
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/local-part" /> | <esi:include src="/remote-part" /></div>`))
+	})
+	mux.HandleFunc("/local-part", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Local Part</span>`))
+	})
+
+	// Wrap mux with ESIHandlerFetcher which returns ErrESIFallbackToHTTP on 404
+	_, _, mw := setupTestTitip(t,
+		WithESI(func(e *ESIConfig) {
+			e.InternalFetcher = ESIHandlerFetcher(mux)
+			e.BlockPrivateIPs = false
+			e.MaxTimeout = 5 * time.Second
+		}),
+	)
+
+	handler := mw.testHandler(mux)
+
+	// Note: Host matches extServer host so relative /remote-part resolves outbound to extServer
+	extURL := strings.TrimPrefix(extServer.URL, "http://")
+	req := httptest.NewRequest(http.MethodGet, "http://"+extURL+"/dashboard", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	expected := `<div><span>Local Part</span> | <span>Remote Via ALB</span></div>`
+	if rec.Body.String() != expected {
+		t.Fatalf("expected %q, got %q", expected, rec.Body.String())
+	}
+
+	if outboundHits.Load() != 1 {
+		t.Errorf("expected 1 outbound HTTP call for remote-part, got %d", outboundHits.Load())
 	}
 }
 

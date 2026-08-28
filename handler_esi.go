@@ -20,10 +20,12 @@ import (
 )
 
 var (
-	// ErrCircularInclude is returned when an ESI fragment causes a circular include loop.
-	ErrCircularInclude = errors.New("titip: esi: circular include loop detected")
-	// ErrMaxDepthExceeded is returned when max recursion depth is reached.
-	ErrMaxDepthExceeded = errors.New("titip: esi: max recursion depth exceeded")
+	// errESICircularInclude is returned when an ESI fragment causes a circular include loop.
+	errESICircularInclude = errors.New("titip: esi: circular include loop detected")
+	// errESIMaxDepthExceeded is returned when max recursion depth is reached.
+	errESIMaxDepthExceeded = errors.New("titip: esi: max recursion depth exceeded")
+	// ErrESIFallbackToHTTP is returned by an InternalFetcher to signal that Titip should resolve this include via outbound HTTP.
+	ErrESIFallbackToHTTP = errors.New("titip: esi: fallback to outbound http")
 )
 
 type esiContextKey struct{}
@@ -300,7 +302,7 @@ func (t *Titip) executeInclude(
 
 	if state.depth >= effectiveMaxDepth {
 		t.metrics.recordESIFragment("fallback")
-		res.err = ErrMaxDepthExceeded
+		res.err = errESIMaxDepthExceeded
 		res.body = t.resolveFallback(target.fallback, target.onError)
 		return res
 	}
@@ -314,7 +316,7 @@ func (t *Titip) executeInclude(
 				slog.Any("visited", state.visitedURLs),
 			)
 		}
-		res.err = ErrCircularInclude
+		res.err = errESICircularInclude
 		res.body = t.resolveFallback(target.fallback, target.onError)
 		return res
 	}
@@ -441,6 +443,18 @@ func (t *Titip) fetchFragment(
 		return nil, nil, "", err
 	}
 
+	// Helper to resolve the outbound fetch URL
+	getOutboundURL := func() string {
+		if parsed.Host == "" {
+			scheme := "http"
+			if parentCtx.r.TLS != nil || strings.EqualFold(parentCtx.r.Header.Get("X-Forwarded-Proto"), "https") {
+				scheme = "https"
+			}
+			return scheme + "://" + parentCtx.r.Host + parsed.RequestURI()
+		}
+		return parsed.String()
+	}
+
 	// 1. If custom InternalFetcher is configured and target URL is relative or same host
 	isSameHost := parsed.Host == "" || strings.EqualFold(parsed.Host, parentCtx.r.Host)
 	if isSameHost && t.cfg.ESI.InternalFetcher != nil {
@@ -448,21 +462,24 @@ func (t *Titip) fetchFragment(
 		if targetPath == "" {
 			targetPath = "/"
 		}
-		return t.fetchViaCustomFetcher(parentCtx, targetPath, timeout, state)
+		body, cookies, mode, err := t.fetchViaCustomFetcher(parentCtx, targetPath, timeout, state)
+		if err == nil {
+			return body, cookies, mode, nil
+		}
+		if errors.Is(err, ErrESIFallbackToHTTP) {
+			if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
+				t.logger.DebugContext(parentCtx.r.Context(), "titip: esi: internal fetcher requested outbound http fallback",
+					slog.String("target_path", targetPath),
+				)
+			}
+			fetchURL := getOutboundURL()
+			return t.fetchOutboundHTTP(parentCtx, fetchURL, timeout, state)
+		}
+		return nil, nil, mode, err
 	}
 
 	// 2. Otherwise, fetch directly via outbound HTTP
-	var fetchURL string
-	if parsed.Host == "" {
-		scheme := "http"
-		if parentCtx.r.TLS != nil || strings.EqualFold(parentCtx.r.Header.Get("X-Forwarded-Proto"), "https") {
-			scheme = "https"
-		}
-		fetchURL = scheme + "://" + parentCtx.r.Host + parsed.RequestURI()
-	} else {
-		fetchURL = parsed.String()
-	}
-
+	fetchURL := getOutboundURL()
 	return t.fetchOutboundHTTP(parentCtx, fetchURL, timeout, state)
 }
 

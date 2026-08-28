@@ -207,10 +207,16 @@ func WithOriginTimeout(d time.Duration) Option {
 	}
 }
 
-// WithESI configures full ESI options.
-func WithESI(cfg ESIConfig) Option {
+// WithESI enables ESI processing with safe production defaults (SSRF protection enabled, 30s timeout, max depth 3).
+// Optional mutator functions can be passed to adjust specific settings on the ESI configuration.
+func WithESI(mutators ...func(*ESIConfig)) Option {
 	return func(c *Config) {
-		c.ESI = cfg
+		c.ESI.Enabled = true
+		for _, m := range mutators {
+			if m != nil {
+				m(&c.ESI)
+			}
+		}
 	}
 }
 
@@ -249,75 +255,14 @@ func ESIHandlerFetcher(router http.Handler) InternalFetcherFunc {
 
 		router.ServeHTTP(rec, subReq)
 
+		if rec.Code == http.StatusNotFound {
+			return nil, nil, ErrESIFallbackToHTTP
+		}
 		if rec.Code >= 400 {
 			return nil, rec.Header().Clone(), fmt.Errorf("subrequest returned status %d", rec.Code)
 		}
 
 		return bytes.Clone(rec.Body.Bytes()), rec.Header().Clone(), nil
-	}
-}
-
-// WithESIEnabled enables ESI processing.
-func WithESIEnabled() Option {
-	return func(c *Config) {
-		c.ESI.Enabled = true
-	}
-}
-
-// WithESIInternalFetcher configures a custom hook to resolve internal/same-host ESI includes in-process.
-func WithESIInternalFetcher(fetcher InternalFetcherFunc) Option {
-	return func(c *Config) {
-		c.ESI.InternalFetcher = fetcher
-	}
-}
-
-// WithESIMaxTimeout configures the global maximum time budget for fetching an include fragment.
-func WithESIMaxTimeout(timeout time.Duration) Option {
-	return func(c *Config) {
-		c.ESI.MaxTimeout = timeout
-	}
-}
-
-// WithESIMaxDepth configures the global maximum recursion depth for nested includes.
-func WithESIMaxDepth(depth uint32) Option {
-	return func(c *Config) {
-		c.ESI.MaxDepth = depth
-	}
-}
-
-// WithESIMaxConcurrentRequests configures maximum concurrent fragment fetch goroutines per document.
-func WithESIMaxConcurrentRequests(maxConcurrent int) Option {
-	return func(c *Config) {
-		c.ESI.MaxConcurrentRequests = maxConcurrent
-	}
-}
-
-// WithESISSRFProtection configures dial-time SSRF blocking and allowed host patterns.
-func WithESISSRFProtection(blockPrivateIPs bool, allowedHosts ...string) Option {
-	return func(c *Config) {
-		c.ESI.BlockPrivateIPs = blockPrivateIPs
-		c.ESI.AllowedHosts = allowedHosts
-	}
-}
-
-// WithESIForwardFragmentCookies enables forwarding Set-Cookie headers from subrequests to the client.
-func WithESIForwardFragmentCookies() Option {
-	return func(c *Config) {
-		c.ESI.ForwardFragmentCookies = true
-	}
-}
-
-// WithESIMaxResponseSize configures maximum allowed fragment body size in bytes.
-func WithESIMaxResponseSize(maxBytes int64) Option {
-	return func(c *Config) {
-		c.ESI.MaxResponseSize = maxBytes
-	}
-}
-
-// WithESIErrorMarker configures the HTML placeholder rendered on unhandled fetch errors.
-func WithESIErrorMarker(marker string) Option {
-	return func(c *Config) {
-		c.ESI.IncludeErrorMarker = marker
 	}
 }
 
