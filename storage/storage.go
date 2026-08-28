@@ -9,9 +9,9 @@ import (
 
 // Storage defines the decoupled interface for Titip cache storage backends.
 type Storage interface {
-	// GetMeta retrieves the primary index and Vary headers for the primary URL key.
-	// Returns (nil, nil) if the entry does not exist.
-	GetMeta(ctx context.Context, primaryKey string) (*pb.CacheMetadata, error)
+	// GetMeta retrieves the primary index, Vary headers, and soft-purged operational status for the primary URL key.
+	// Returns (nil, false, nil) if the entry does not exist.
+	GetMeta(ctx context.Context, primaryKey string) (*pb.CacheMetadata, bool, error)
 
 	// GetVariant retrieves a specific variant metadata and its compressed body payload.
 	// Returns (nil, nil, nil) if the variant or body does not exist.
@@ -20,13 +20,11 @@ type Storage interface {
 	// SetVariant atomically records a new or updated variant and its body payload without rewriting the full metadata index.
 	SetVariant(ctx context.Context, primaryKey string, meta *pb.CacheMetadata, variant *pb.VariantInfo, body []byte, ttl time.Duration) error
 
-	// Delete physically evicts the primary metadata Hash AND all associated variant body keys from storage.
-	// Returns the number of primary entries deleted (1 if found and deleted, 0 if not found).
-	Delete(ctx context.Context, primaryKey string) (int64, error)
-
-	// SoftPurge marks primary metadata as stale in storage while preserving entries for fallback.
-	// Returns the number of primary entries marked stale (1 if found and updated, 0 if not found).
-	SoftPurge(ctx context.Context, primaryKey string) (int64, error)
+	// Purge invalidates the primary metadata and its associated variant body keys.
+	// If soft is true, marks the entry as stale for fallback while preserving payload data.
+	// If soft is false (hard purge), physically deletes the metadata and all variant body keys.
+	// Returns the number of primary entries purged (1 if found, 0 if not found).
+	Purge(ctx context.Context, primaryKey string, soft bool) (int64, error)
 
 	// PurgeByTag invalidates all primary metadata and all associated body keys matching a given tag.
 	// Returns the total number of primary entries invalidated.
@@ -36,8 +34,8 @@ type Storage interface {
 	Close() error
 }
 
-// PatternDeleter is an optional capability interface implemented by storage engines that
-// support glob/pattern-based key deletion (e.g. Redis SCAN + UNLINK).
+// PatternPurger is an optional capability interface implemented by storage engines that
+// support glob/pattern-based key invalidation (e.g. Redis SCAN + UNLINK / soft purge).
 //
 // The pattern syntax follows the backend's native glob syntax:
 //   - Redis: https://redis.io/docs/manual/patterns/
@@ -46,11 +44,12 @@ type Storage interface {
 //
 // Implementations must guarantee that only keys belonging to the engine's configured
 // namespace prefix are matched — never keys outside the prefix.
-type PatternDeleter interface {
-	// DeletePattern deletes all keys matching the given glob pattern within the storage namespace.
-	// The pattern is automatically scoped to the storage engine's configured key prefix.
-	// Returns the number of matching primary metadata entries deleted.
-	DeletePattern(ctx context.Context, pattern string) (int64, error)
+type PatternPurger interface {
+	// PurgeByPattern invalidates all keys matching the given glob pattern within the storage namespace.
+	// If soft is true, marks all matched entries as stale.
+	// If soft is false (hard purge), physically deletes all matched metadata and associated body keys.
+	// Returns the number of matching primary metadata entries invalidated.
+	PurgeByPattern(ctx context.Context, pattern string, soft bool) (int64, error)
 }
 
 // AllPurger is an optional capability interface implemented by storage engines that

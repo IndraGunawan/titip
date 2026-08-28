@@ -106,31 +106,29 @@ Because multiple variants for the same URL can have different expiration times (
 
 ## 5. Invalidation & Purging Mechanics
 
-### A. URL Purging (`Delete` and `SoftPurge`)
+### A. URL Purging (`Purge(ctx, primaryKey, soft)`)
 
-1. **Hard Purge (`Delete(ctx, primaryKey)`)**:
+1. **Hard Purge (`Purge(ctx, primaryKey, soft=false)`)**:
    - Fetches all variant field names using `HKEYS metaKey`.
    - Atomically executes a pipelined `DEL` deleting `metaKey` and every associated `bodyKey` (`body:<primaryKey>:<variantKey>`).
    - **Guarantees zero orphaned body keys** in Redis.
 
-2. **Soft Purge (`SoftPurge(ctx, primaryKey)`)**:
-   - Reads the current `_index` field of `metaKey`.
-   - Sets `IsSoftPurged: true` in `CacheMetadata` protobuf.
-   - Saves `_index` back to the Hash via `HSET`.
+2. **Soft Purge (`Purge(ctx, primaryKey, soft=true)`)**:
+   - Executes an atomic Lua script verifying `_index` existence and sets `_soft_purged` to `"1"` directly in the Redis hash (zero read-modify-write).
    - Preserves all variant body keys intact so concurrent requests can serve stale cached content while asynchronously revalidating in the background.
 
 ---
 
-### B. Tag Purging (`PurgeByTag`)
+### B. Tag Purging (`PurgeByTag(ctx, tag, soft)`)
 
 1. **Hard Tag Purge (`PurgeByTag(ctx, tag, soft=false)`)**:
-   - Reads all primary keys in `<prefix>tag:<tag>` via `SMEMBERS`.
-   - Pipelines `HKEYS` queries across all matched primary keys.
-   - Atomically deletes the tag Set key, all metadata Hash keys, and all variant body keys in a single pipelined `DEL` roundtrip.
+   - Streams primary keys in `<prefix>tag:<tag>` via non-blocking `SSCAN`.
+   - Pipelines `HKEYS` queries across matched primary keys.
+   - Atomically deletes the tag Set key, all metadata Hash keys, and all variant body keys.
 
 2. **Soft Tag Purge (`PurgeByTag(ctx, tag, soft=true)`)**:
-   - Reads all primary keys in `<prefix>tag:<tag>`.
-   - Flags `IsSoftPurged: true` across all matched metadata hashes while leaving body keys intact for stale fallbacks.
+   - Streams primary keys in `<prefix>tag:<tag>` via non-blocking `SSCAN`.
+   - Sets `_soft_purged 1` across all matched metadata hashes while leaving body keys intact for stale fallbacks.
 
 ---
 

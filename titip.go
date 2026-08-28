@@ -17,15 +17,14 @@ import (
 
 // Titip represents the HTTP caching middleware instance.
 type Titip struct {
-	cfg                  Config
-	storage              storage.Storage
-	sf                   singleflight.Group
-	logger               *slog.Logger
-	cacheableStatusCodes map[int]struct{}
-	metrics              *metrics
-	swrWG                sync.WaitGroup
-	closed               atomic.Bool
-	esiHTTPClient        *http.Client
+	cfg           Config
+	storage       storage.Storage
+	sf            singleflight.Group
+	logger        *slog.Logger
+	metrics       *metrics
+	swrWG         sync.WaitGroup
+	closed        atomic.Bool
+	esiHTTPClient *http.Client
 }
 
 // New creates a new Titip caching middleware instance.
@@ -35,7 +34,6 @@ func New(opts ...Option) (*Titip, error) {
 		RespectClientCacheControl: false,
 		ConvertHeadToGet:          true,
 		KeyConfig:                 KeyConfig{},
-		CacheableStatusCodes:      defaultCacheableStatusCodes,
 		TagHeaderName:             headerCacheTag,
 		OriginTimeout:             30 * time.Second,
 		StorageTimeout:            1 * time.Second,
@@ -64,10 +62,6 @@ func New(opts ...Option) (*Titip, error) {
 		cfg.Logger = slog.Default()
 	}
 
-	if len(cfg.CacheableStatusCodes) == 0 {
-		cfg.CacheableStatusCodes = defaultCacheableStatusCodes
-	}
-
 	if cfg.ESI.MaxDepth == 0 {
 		cfg.ESI.MaxDepth = 3
 	}
@@ -90,11 +84,10 @@ func New(opts ...Option) (*Titip, error) {
 	esiTransport := esi.NewSSRFSafeTransport(ssrfCfg, 10*time.Second)
 
 	return &Titip{
-		cfg:                  cfg,
-		storage:              cfg.Storage,
-		logger:               cfg.Logger,
-		cacheableStatusCodes: cfg.CacheableStatusCodes,
-		metrics:              newMetrics(cfg.Metrics, cfg.ESI.Enabled),
+		cfg:           cfg,
+		storage:       cfg.Storage,
+		logger:        cfg.Logger,
+		metrics:       newMetrics(cfg.Metrics, cfg.ESI.Enabled),
 		esiHTTPClient: &http.Client{
 			Transport: esiTransport,
 		},
@@ -158,58 +151,25 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 func (t *Titip) executePurge(ctx context.Context, pt *purgeTarget, pattern string, soft bool) (int64, error) {
 	switch pt.mode {
 	case purgeModeExact:
-		// pattern is a full primary key — use direct Delete or SoftPurge.
-		if soft {
-			n, err := t.storage.SoftPurge(ctx, pattern)
-			if err != nil {
-				return 0, fmt.Errorf("titip: purge path soft: %w", err)
-			}
-			return n, nil
-		}
-		n, err := t.storage.Delete(ctx, pattern)
+		// pattern is a full primary key — use direct Purge.
+		n, err := t.storage.Purge(ctx, pattern, soft)
 		if err != nil {
-			return 0, fmt.Errorf("titip: purge path delete: %w", err)
+			return 0, fmt.Errorf("titip: purge path: %w", err)
 		}
 		return n, nil
 
 	default:
-		if soft {
-			// Soft-purge pattern: scan matching keys and mark each stale individually.
-			n, err := t.softPurgeByPattern(ctx, pattern)
-			if err != nil {
-				return 0, fmt.Errorf("titip: purge path soft pattern: %w", err)
-			}
-			return n, nil
-		}
-		// Hard-purge pattern — requires PatternDeleter.
-		pd, ok := t.storage.(storage.PatternDeleter)
+		// Pattern-based purge requires PatternPurger capability.
+		pp, ok := t.storage.(storage.PatternPurger)
 		if !ok {
-			return 0, fmt.Errorf("titip: purge path: storage does not implement PatternDeleter for pattern-based purges")
+			return 0, fmt.Errorf("titip: purge path: storage does not implement PatternPurger for pattern-based purges")
 		}
-		n, err := pd.DeletePattern(ctx, pattern)
+		n, err := pp.PurgeByPattern(ctx, pattern, soft)
 		if err != nil {
-			return 0, fmt.Errorf("titip: purge path pattern delete: %w", err)
+			return 0, fmt.Errorf("titip: purge path pattern: %w", err)
 		}
 		return n, nil
 	}
-}
-
-// softPurgeByPattern scans keys matching the given pattern and calls SoftPurge on each match.
-// Requires the storage to implement storage.PatternScanner (an internal capability).
-func (t *Titip) softPurgeByPattern(ctx context.Context, pattern string) (int64, error) {
-	// Use the SoftPurgeScanner interface if available (e.g. RedisStorage).
-	type softPurgeScanner interface {
-		SoftPurgePattern(ctx context.Context, pattern string) (int64, error)
-	}
-	if sps, ok := t.storage.(softPurgeScanner); ok {
-		return sps.SoftPurgePattern(ctx, pattern)
-	}
-	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelWarn) {
-		t.logger.WarnContext(ctx, "titip: soft purge pattern: storage does not implement SoftPurgePattern; skipping",
-			slog.String("pattern", pattern),
-		)
-	}
-	return 0, nil
 }
 
 // PurgeTag invalidates all cache entries tagged with the specified tag.
@@ -249,9 +209,9 @@ func (t *Titip) PurgeAll(ctx context.Context) (int64, error) {
 		return n, nil
 	}
 
-	// Fallback: use PatternDeleter with wildcard.
-	if pd, ok := t.storage.(storage.PatternDeleter); ok {
-		n, err := pd.DeletePattern(ctx, "*")
+	// Fallback: use PatternPurger with wildcard.
+	if pp, ok := t.storage.(storage.PatternPurger); ok {
+		n, err := pp.PurgeByPattern(ctx, "*", false)
 		if err != nil {
 			t.metrics.recordPurge("all", "hard", "error", 0)
 			return 0, fmt.Errorf("titip: purge all via pattern: %w", err)

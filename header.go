@@ -1,5 +1,7 @@
 package titip
 
+import "strings"
+
 // Standard and RFC HTTP Header constants used throughout Titip.
 const (
 	// Request / Response Caching & Freshness (RFC-7234, RFC-9211)
@@ -23,6 +25,10 @@ const (
 	headerRange           = "Range"
 	headerSetCookie       = "Set-Cookie"
 	headerXForwardedProto = "X-Forwarded-Proto"
+	headerAuthorization   = "Authorization"
+	headerPragma          = "Pragma"
+	headerLocation        = "Location"
+	headerContentLocation = "Content-Location"
 
 	// Surrogate & Tag Invalidation
 	headerCacheTag = "Cache-Tag"
@@ -31,3 +37,16 @@ const (
 	contentTypeEventStream = "text/event-stream"
 	upgradeWebSocket       = "websocket"
 )
+
+// containsToken checks if a comma-separated header value contains target (case-insensitive).
+func containsToken(headerVal, target string) bool {
+	if headerVal == "" {
+		return false
+	}
+	for _, tok := range strings.Split(headerVal, ",") {
+		if strings.EqualFold(strings.TrimSpace(tok), target) {
+			return true
+		}
+	}
+	return false
+}

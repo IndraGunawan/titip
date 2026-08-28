@@ -101,6 +101,8 @@ func parsePurgeTarget(target string, cfg *KeyConfig) (*purgeTarget, error) {
 	cleanedPath := path.Clean(rawPath)
 	if cleanedPath == "." {
 		cleanedPath = "/"
+	} else if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(cleanedPath, "/") {
+		cleanedPath += "/"
 	}
 	pt.path = cleanedPath
 

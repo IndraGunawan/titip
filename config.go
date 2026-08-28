@@ -106,7 +106,6 @@ type Config struct {
 	ConvertHeadToGet              bool
 	AutoInvalidateMutatingMethods bool
 	KeyConfig                     KeyConfig
-	CacheableStatusCodes          map[int]struct{}
 	TagHeaderName                 string
 	OriginTimeout                 time.Duration
 	StorageTimeout                time.Duration
@@ -180,16 +179,6 @@ func WithRespectClientCacheControl() Option {
 func WithKeyConfig(cfg KeyConfig) Option {
 	return func(c *Config) {
 		c.KeyConfig = cfg
-	}
-}
-
-// WithCacheableStatusCodes configures the set of HTTP status codes eligible for caching.
-func WithCacheableStatusCodes(codes ...int) Option {
-	return func(c *Config) {
-		c.CacheableStatusCodes = make(map[int]struct{}, len(codes))
-		for _, code := range codes {
-			c.CacheableStatusCodes[code] = struct{}{}
-		}
 	}
 }
 

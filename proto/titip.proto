@@ -40,6 +40,6 @@ message CacheMetadata {
   int64 created_at_unix_nano = 4;
   int64 expires_at_unix_nano = 5;
   int64 stale_until_unix_nano = 6;
-  repeated string tags = 7;
-  bool is_soft_purged = 8;
+  int64 corrected_initial_age_seconds = 7;
+  repeated string tags = 8;
 }

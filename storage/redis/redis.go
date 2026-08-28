@@ -15,12 +15,23 @@ import (
 )
 
 const (
-	defaultPrefix = "titip:"
-	indexField    = "_index"
+	defaultPrefix   = "titip:"
+	indexField      = "_index"
+	softPurgedField = "_soft_purged"
+	variantPrefix   = "v:"
 
 	// scanBatchSize controls how many keys are requested per SCAN iteration.
 	scanBatchSize = 100
 )
+
+var softPurgeScript = rueidis.NewLuaScript(`
+if redis.call('HEXISTS', KEYS[1], '_index') == 1 then
+    redis.call('HSET', KEYS[1], '_soft_purged', '1')
+    return 1
+else
+    return 0
+end
+`)
 
 // Config holds configuration options for the Redis storage engine.
 type Config struct {
@@ -54,9 +65,9 @@ type RedisStorage struct {
 
 // Ensure RedisStorage implements the core Storage interface and optional capability interfaces.
 var (
-	_ storage.Storage        = (*RedisStorage)(nil)
-	_ storage.PatternDeleter = (*RedisStorage)(nil)
-	_ storage.AllPurger      = (*RedisStorage)(nil)
+	_ storage.Storage       = (*RedisStorage)(nil)
+	_ storage.PatternPurger = (*RedisStorage)(nil)
+	_ storage.AllPurger     = (*RedisStorage)(nil)
 )
 
 // New creates a new RedisStorage instance backed by the provided rueidis.Client.
@@ -94,44 +105,51 @@ func (s *RedisStorage) tagKey(tagName string) string {
 	return s.prefix + "tag:" + tagName
 }
 
-// GetMeta retrieves the primary index and all active variants for a primary URL key.
-func (s *RedisStorage) GetMeta(ctx context.Context, primaryKey string) (*pb.CacheMetadata, error) {
+// variantField returns the Redis Hash field name for a variant key.
+func (s *RedisStorage) variantField(variantKey string) string {
+	return variantPrefix + variantKey
+}
+
+// GetMeta retrieves the primary index, Vary headers, and soft-purged status for a primary URL key.
+func (s *RedisStorage) GetMeta(ctx context.Context, primaryKey string) (*pb.CacheMetadata, bool, error) {
 	cmd := s.client.B().Hgetall().Key(s.metaKey(primaryKey)).Build()
 	resp := s.client.Do(ctx, cmd)
 	if rueidis.IsRedisNil(resp.Error()) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err := resp.Error(); err != nil {
-		return nil, fmt.Errorf("titip: redis: get meta: %w", err)
+		return nil, false, fmt.Errorf("titip: redis: get meta: %w", err)
 	}
 
 	m, err := resp.AsStrMap()
 	if err != nil || len(m) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	indexStr, ok := m[indexField]
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	meta := &pb.CacheMetadata{}
 	if err := googleproto.Unmarshal([]byte(indexStr), meta); err != nil {
-		return nil, fmt.Errorf("titip: redis: unmarshal meta index: %w", err)
+		return nil, false, fmt.Errorf("titip: redis: unmarshal meta index: %w", err)
 	}
+
+	isSoftPurged := (m[softPurgedField] == "1")
 
 	meta.Variants = make(map[string]*pb.VariantInfo)
 	for k, v := range m {
-		if k == indexField {
-			continue
-		}
-		varInfo := &pb.VariantInfo{}
-		if err := googleproto.Unmarshal([]byte(v), varInfo); err == nil {
-			meta.Variants[k] = varInfo
+		if strings.HasPrefix(k, variantPrefix) {
+			rawVarKey := strings.TrimPrefix(k, variantPrefix)
+			varInfo := &pb.VariantInfo{}
+			if err := googleproto.Unmarshal([]byte(v), varInfo); err == nil {
+				meta.Variants[rawVarKey] = varInfo
+			}
 		}
 	}
 
-	return meta, nil
+	return meta, isSoftPurged, nil
 }
 
 // GetVariant retrieves a specific variant metadata and its compressed body payload in a single pipelined roundtrip.
@@ -139,7 +157,7 @@ func (s *RedisStorage) GetVariant(ctx context.Context, primaryKey, variantKey st
 	if variantKey == "" {
 		variantKey = "default"
 	}
-	cmd1 := s.client.B().Hget().Key(s.metaKey(primaryKey)).Field(variantKey).Build()
+	cmd1 := s.client.B().Hget().Key(s.metaKey(primaryKey)).Field(s.variantField(variantKey)).Build()
 	cmd2 := s.client.B().Get().Key(s.bodyKey(primaryKey, variantKey)).Build()
 
 	resps := s.client.DoMulti(ctx, cmd1, cmd2)
@@ -180,13 +198,13 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 	}
 	// Create lean index without copying the entire variants map into the _index field
 	leanMeta := &pb.CacheMetadata{
-		PrimaryKey:         meta.PrimaryKey,
-		VaryHeaderNames:    meta.VaryHeaderNames,
-		CreatedAtUnixNano:  meta.CreatedAtUnixNano,
-		ExpiresAtUnixNano:  meta.ExpiresAtUnixNano,
-		StaleUntilUnixNano: meta.StaleUntilUnixNano,
-		Tags:               meta.Tags,
-		IsSoftPurged:       meta.IsSoftPurged,
+		PrimaryKey:                 meta.PrimaryKey,
+		VaryHeaderNames:            meta.VaryHeaderNames,
+		CreatedAtUnixNano:          meta.CreatedAtUnixNano,
+		ExpiresAtUnixNano:          meta.ExpiresAtUnixNano,
+		StaleUntilUnixNano:         meta.StaleUntilUnixNano,
+		CorrectedInitialAgeSeconds: meta.CorrectedInitialAgeSeconds,
+		Tags:                       meta.Tags,
 	}
 
 	indexBytes, err := googleproto.Marshal(leanMeta)
@@ -199,23 +217,27 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		return fmt.Errorf("titip: redis: marshal variant: %w", err)
 	}
 
-	ttlSeconds := int64(ttl.Seconds())
-	if ttlSeconds < 1 {
-		ttlSeconds = 1
-	}
+	ttlSeconds := max(int64(ttl.Seconds()), 1)
 
-	cmds := make([]rueidis.Completed, 0, 5+len(meta.Tags))
+	cmds := make([]rueidis.Completed, 0, 6+len(meta.Tags))
 
-	// 1. HSET metaKey _index <metaBytes> <variantKey> <varBytes>
+	// 1. HSET metaKey _index <metaBytes> v:<variantKey> <varBytes>
 	hsetCmd := s.client.B().Hset().
 		Key(s.metaKey(primaryKey)).
 		FieldValue().
 		FieldValue(indexField, rueidis.BinaryString(indexBytes)).
-		FieldValue(variant.VariantKey, rueidis.BinaryString(varBytes)).
+		FieldValue(s.variantField(variant.VariantKey), rueidis.BinaryString(varBytes)).
 		Build()
 	cmds = append(cmds, hsetCmd)
 
-	// 2. SET bodyKey <body> EX <ttl>
+	// 2. HDEL metaKey _soft_purged (resets soft purge on fresh content)
+	hdelSoftPurgeCmd := s.client.B().Hdel().
+		Key(s.metaKey(primaryKey)).
+		Field(softPurgedField).
+		Build()
+	cmds = append(cmds, hdelSoftPurgeCmd)
+
+	// 3. SET bodyKey <body> EX <ttl>
 	setBodyCmd := s.client.B().Set().
 		Key(s.bodyKey(primaryKey, variant.VariantKey)).
 		Value(rueidis.BinaryString(body)).
@@ -223,7 +245,7 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		Build()
 	cmds = append(cmds, setBodyCmd)
 
-	// 3. Dynamic TTL: Set initial TTL if none exists (NX), or extend if new TTL is greater (GT)
+	// 4. Dynamic TTL: Set initial TTL if none exists (NX), or extend if new TTL is greater (GT)
 	expireNXCmd := s.client.B().Expire().Key(s.metaKey(primaryKey)).Seconds(ttlSeconds).Nx().Build()
 	expireGTCmd := s.client.B().Expire().Key(s.metaKey(primaryKey)).Seconds(ttlSeconds).Gt().Build()
 	cmds = append(cmds, expireNXCmd, expireGTCmd)
@@ -253,9 +275,18 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 	return nil
 }
 
-// Delete physically deletes the primary metadata Hash and all associated variant body keys.
-// Returns 1 if the primary entry existed and was deleted, or 0 if not found.
-func (s *RedisStorage) Delete(ctx context.Context, primaryKey string) (int64, error) {
+// Purge invalidates the primary metadata and its associated variant body keys.
+// If soft is true, marks the entry as stale for fallback while preserving payload data.
+// If soft is false (hard purge), physically deletes the metadata and all variant body keys.
+// Returns 1 if the primary entry existed and was purged, or 0 if not found.
+func (s *RedisStorage) Purge(ctx context.Context, primaryKey string, soft bool) (int64, error) {
+	if soft {
+		return s.softPurge(ctx, primaryKey)
+	}
+	return s.hardPurge(ctx, primaryKey)
+}
+
+func (s *RedisStorage) hardPurge(ctx context.Context, primaryKey string) (int64, error) {
 	metaKey := s.metaKey(primaryKey)
 
 	// Fetch all field names to know all variant body keys
@@ -273,11 +304,12 @@ func (s *RedisStorage) Delete(ctx context.Context, primaryKey string) (int64, er
 		return 0, nil
 	}
 
-	delKeys := make([]string, 0, len(keys))
+	delKeys := make([]string, 0, len(keys)+1)
 	delKeys = append(delKeys, metaKey)
 	for _, k := range keys {
-		if k != indexField {
-			delKeys = append(delKeys, s.bodyKey(primaryKey, k))
+		if strings.HasPrefix(k, variantPrefix) {
+			varKey := strings.TrimPrefix(k, variantPrefix)
+			delKeys = append(delKeys, s.bodyKey(primaryKey, varKey))
 		}
 	}
 
@@ -303,53 +335,24 @@ func (s *RedisStorage) Delete(ctx context.Context, primaryKey string) (int64, er
 	return 1, nil
 }
 
-// SoftPurge marks the primary metadata index as soft-purged while retaining body payloads.
-// Returns 1 if the entry existed and was updated, or 0 if not found.
-func (s *RedisStorage) SoftPurge(ctx context.Context, primaryKey string) (int64, error) {
+func (s *RedisStorage) softPurge(ctx context.Context, primaryKey string) (int64, error) {
 	metaKey := s.metaKey(primaryKey)
-
-	hgetCmd := s.client.B().Hget().Key(metaKey).Field(indexField).Build()
-	resp := s.client.Do(ctx, hgetCmd)
-	if rueidis.IsRedisNil(resp.Error()) {
-		return 0, nil
-	}
-	if err := resp.Error(); err != nil {
-		return 0, fmt.Errorf("titip: redis: soft purge get index: %w", err)
-	}
-
-	indexBytes, err := resp.AsBytes()
+	res, err := softPurgeScript.Exec(ctx, s.client, []string{metaKey}, nil).AsInt64()
 	if err != nil {
-		return 0, nil
+		if rueidis.IsRedisNil(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("titip: redis: soft purge: %w", err)
 	}
 
-	meta := &pb.CacheMetadata{}
-	if err := googleproto.Unmarshal(indexBytes, meta); err != nil {
-		return 0, fmt.Errorf("titip: redis: soft purge unmarshal: %w", err)
-	}
-
-	meta.IsSoftPurged = true
-	updatedBytes, err := googleproto.Marshal(meta)
-	if err != nil {
-		return 0, fmt.Errorf("titip: redis: soft purge marshal: %w", err)
-	}
-
-	hsetCmd := s.client.B().Hset().
-		Key(metaKey).
-		FieldValue().
-		FieldValue(indexField, rueidis.BinaryString(updatedBytes)).
-		Build()
-	if err := s.client.Do(ctx, hsetCmd).Error(); err != nil {
-		return 0, fmt.Errorf("titip: redis: soft purge save: %w", err)
-	}
-
-	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
+	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) && res > 0 {
 		s.logger.DebugContext(ctx, "titip: redis: soft-purged cache entry",
 			slog.String("primary_key", primaryKey),
 			slog.String("meta_key", metaKey),
 		)
 	}
 
-	return 1, nil
+	return res, nil
 }
 
 // PurgeByTag invalidates all primary metadata hashes and variant body keys matching a given tag.
@@ -359,7 +362,7 @@ func (s *RedisStorage) SoftPurge(ctx context.Context, primaryKey string) (int64,
 func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (int64, error) {
 	tagKey := s.tagKey(tag)
 	cursor := uint64(0)
-	totalProcessed := 0
+	processed := 0
 
 	for {
 		sscanCmd := s.client.B().Sscan().
@@ -379,12 +382,11 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 		if err != nil {
 			return 0, fmt.Errorf("titip: redis: purge tag scan entry: %w", err)
 		}
-
 		primaryKeys := scanEntry.Elements
 		if len(primaryKeys) > 0 {
 			if soft {
 				for _, pk := range primaryKeys {
-					if _, err := s.SoftPurge(ctx, pk); err != nil {
+					if _, err := s.softPurge(ctx, pk); err != nil {
 						return 0, err
 					}
 				}
@@ -398,25 +400,40 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 
 				delKeys := make([]string, 0, len(primaryKeys)*2)
 				for i, r := range hkeysResps {
+					if rueidis.IsRedisNil(r.Error()) {
+						continue
+					}
+					if err := r.Error(); err != nil {
+						return 0, fmt.Errorf("titip: redis: purge tag fetch keys: %w", err)
+					}
+					varKeys, err := r.AsStrSlice()
+					if err != nil {
+						return 0, fmt.Errorf("titip: redis: purge tag keys parse: %w", err)
+					}
 					pk := primaryKeys[i]
 					delKeys = append(delKeys, s.metaKey(pk))
-					if keys, err := r.AsStrSlice(); err == nil {
-						for _, k := range keys {
-							if k != indexField {
-								delKeys = append(delKeys, s.bodyKey(pk, k))
-							}
+					for _, k := range varKeys {
+						if strings.HasPrefix(k, variantPrefix) {
+							varKey := strings.TrimPrefix(k, variantPrefix)
+							delKeys = append(delKeys, s.bodyKey(pk, varKey))
 						}
 					}
 				}
 
 				if len(delKeys) > 0 {
-					unlinkCmd := s.client.B().Unlink().Key(delKeys...).Build()
-					if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
-						return 0, fmt.Errorf("titip: redis: purge tag unlink: %w", err)
+					delCmds := make([]rueidis.Completed, len(delKeys))
+					for i, k := range delKeys {
+						delCmds[i] = s.client.B().Del().Key(k).Build()
+					}
+					delResps := s.client.DoMulti(ctx, delCmds...)
+					for _, r := range delResps {
+						if err := r.Error(); err != nil && !rueidis.IsRedisNil(err) {
+							return 0, fmt.Errorf("titip: redis: purge tag execute: %w", err)
+						}
 					}
 				}
 			}
-			totalProcessed += len(primaryKeys)
+			processed += len(primaryKeys)
 		}
 
 		cursor = scanEntry.Cursor
@@ -427,46 +444,41 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 
 	// For hard purge, remove the tag set itself
 	if !soft {
-		unlinkTagCmd := s.client.B().Unlink().Key(tagKey).Build()
-		_ = s.client.Do(ctx, unlinkTagCmd)
+		_ = s.client.Do(ctx, s.client.B().Unlink().Key(tagKey).Build())
 	}
 
 	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
 		s.logger.DebugContext(ctx, "titip: redis: purge tag complete",
 			slog.String("tag", tag),
 			slog.Bool("soft", soft),
-			slog.Int("processed_count", totalProcessed),
+			slog.Int("processed_count", processed),
 		)
 	}
 
-	return int64(totalProcessed), nil
+	return int64(processed), nil
 }
 
-// scanAndUnlink deletes all keys matching pattern via UNLINK, counting primary meta keys.
-func (s *RedisStorage) scanAndUnlink(ctx context.Context, pattern string) (deleted int, primaryDeleted int, err error) {
-	isMeta := strings.HasPrefix(pattern, s.prefix+"meta:") || pattern == s.prefix+"*"
+func (s *RedisStorage) scanAndUnlink(ctx context.Context, matchPattern string) (deleted int, primaryDeleted int, err error) {
 	cursor := uint64(0)
 	for {
-		scanCmd := s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build()
+		scanCmd := s.client.B().Scan().Cursor(cursor).Match(matchPattern).Count(scanBatchSize).Build()
 		resp := s.client.Do(ctx, scanCmd)
-		if e := resp.Error(); e != nil {
-			return 0, 0, fmt.Errorf("titip: redis: scan: %w", e)
+		if err := resp.Error(); err != nil {
+			return deleted, primaryDeleted, fmt.Errorf("titip: redis: scan: %w", err)
 		}
-		entry, e := resp.AsScanEntry()
-		if e != nil {
-			return 0, 0, fmt.Errorf("titip: redis: scan entry: %w", e)
+		entry, err := resp.AsScanEntry()
+		if err != nil {
+			return deleted, primaryDeleted, fmt.Errorf("titip: redis: scan entry: %w", err)
 		}
 		if len(entry.Elements) > 0 {
-			cmd := s.client.B().Unlink().Key(entry.Elements...).Build()
-			if e := s.client.Do(ctx, cmd).Error(); e != nil && !rueidis.IsRedisNil(e) {
-				return 0, 0, fmt.Errorf("titip: redis: unlink: %w", e)
+			unlinkCmd := s.client.B().Unlink().Key(entry.Elements...).Build()
+			if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
+				return deleted, primaryDeleted, fmt.Errorf("titip: redis: unlink: %w", err)
 			}
 			deleted += len(entry.Elements)
-			if isMeta {
-				for _, k := range entry.Elements {
-					if strings.HasPrefix(k, s.prefix+"meta:") {
-						primaryDeleted++
-					}
+			for _, key := range entry.Elements {
+				if strings.Contains(key, ":meta:") {
+					primaryDeleted++
 				}
 			}
 		}
@@ -478,8 +490,15 @@ func (s *RedisStorage) scanAndUnlink(ctx context.Context, pattern string) (delet
 	return
 }
 
-// DeletePattern deletes all keys matching the given glob pattern within the storage namespace.
-func (s *RedisStorage) DeletePattern(ctx context.Context, pattern string) (int64, error) {
+// PurgeByPattern invalidates all keys matching pattern. If soft is true, marks each soft-purged. If false, physically deletes.
+func (s *RedisStorage) PurgeByPattern(ctx context.Context, pattern string, soft bool) (int64, error) {
+	if soft {
+		return s.softPurgePattern(ctx, pattern)
+	}
+	return s.hardPurgePattern(ctx, pattern)
+}
+
+func (s *RedisStorage) hardPurgePattern(ctx context.Context, pattern string) (int64, error) {
 	var patterns []string
 	isExplicitPrefix := strings.HasPrefix(pattern, "meta:") || strings.HasPrefix(pattern, "body:") || strings.HasPrefix(pattern, "tag:") || pattern == "*"
 	if isExplicitPrefix {
@@ -502,20 +521,7 @@ func (s *RedisStorage) DeletePattern(ctx context.Context, pattern string) (int64
 	return int64(primaryDeleted), nil
 }
 
-// PurgeAll deletes every key in the configured storage namespace prefix.
-func (s *RedisStorage) PurgeAll(ctx context.Context) (int64, error) {
-	deleted, primaryDeleted, err := s.scanAndUnlink(ctx, s.prefix+"*")
-	if err != nil {
-		return 0, err
-	}
-	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "titip: redis: purge all complete", slog.String("prefix", s.prefix), slog.Int("deleted_count", deleted), slog.Int("primary_deleted_count", primaryDeleted))
-	}
-	return int64(primaryDeleted), nil
-}
-
-// SoftPurgePattern scans all metadata keys matching pattern and marks each soft-purged.
-func (s *RedisStorage) SoftPurgePattern(ctx context.Context, pattern string) (int64, error) {
+func (s *RedisStorage) softPurgePattern(ctx context.Context, pattern string) (int64, error) {
 	fullPattern := s.prefix + "meta:" + strings.TrimPrefix(pattern, "meta:")
 	count := 0
 	cursor := uint64(0)
@@ -531,7 +537,7 @@ func (s *RedisStorage) SoftPurgePattern(ctx context.Context, pattern string) (in
 		}
 		for _, key := range entry.Elements {
 			primaryKey := strings.TrimPrefix(key, s.prefix+"meta:")
-			if _, e := s.SoftPurge(ctx, primaryKey); e != nil && s.logger != nil {
+			if _, e := s.softPurge(ctx, primaryKey); e != nil && s.logger != nil {
 				s.logger.ErrorContext(ctx, "titip: redis: soft purge pattern: failed to soft-purge key", slog.String("key", key), slog.Any("error", e))
 			}
 			count++
@@ -545,6 +551,18 @@ func (s *RedisStorage) SoftPurgePattern(ctx context.Context, pattern string) (in
 		s.logger.DebugContext(ctx, "titip: redis: soft purge pattern complete", slog.String("pattern", fullPattern), slog.Int("soft_purged_count", count))
 	}
 	return int64(count), nil
+}
+
+// PurgeAll deletes every key in the configured storage namespace prefix.
+func (s *RedisStorage) PurgeAll(ctx context.Context) (int64, error) {
+	deleted, primaryDeleted, err := s.scanAndUnlink(ctx, s.prefix+"*")
+	if err != nil {
+		return 0, err
+	}
+	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "titip: redis: purge all complete", slog.String("prefix", s.prefix), slog.Int("deleted_count", deleted), slog.Int("primary_deleted_count", primaryDeleted))
+	}
+	return int64(primaryDeleted), nil
 }
 
 // Close terminates Redis connections cleanly.

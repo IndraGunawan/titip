@@ -78,7 +78,6 @@ func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 		CreatedAtUnixNano: time.Now().UnixNano(),
 		ExpiresAtUnixNano: time.Now().Add(10 * time.Minute).UnixNano(),
 		Tags:              []string{"products", "api"},
-		IsSoftPurged:      false,
 	}
 
 	// 1. Variant 1: gzip
@@ -106,12 +105,15 @@ func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 	}
 
 	// 3. Stage 1: GetMeta
-	m, err := store.GetMeta(ctx, primaryKey)
+	m, isSoftPurged, err := store.GetMeta(ctx, primaryKey)
 	if err != nil {
 		t.Fatalf("GetMeta failed: %v", err)
 	}
 	if m == nil {
 		t.Fatal("expected metadata, got nil")
+	}
+	if isSoftPurged {
+		t.Fatal("expected isSoftPurged=false")
 	}
 	if m.PrimaryKey != primaryKey {
 		t.Errorf("expected primary key %s, got %s", primaryKey, m.PrimaryKey)
@@ -172,8 +174,8 @@ func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 		}
 	}
 
-	// Delete
-	n, err := store.Delete(ctx, primaryKey)
+	// Hard Purge
+	n, err := store.Purge(ctx, primaryKey, false)
 	if err != nil {
 		t.Fatalf("failed to delete: %v", err)
 	}
@@ -181,8 +183,8 @@ func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 		t.Fatalf("expected 1 entry deleted, got %d", n)
 	}
 
-	// Delete non-existent key returns 0
-	n2, err := store.Delete(ctx, primaryKey)
+	// Hard Purge non-existent key returns 0
+	n2, err := store.Purge(ctx, primaryKey, false)
 	if err != nil {
 		t.Fatalf("failed to delete non-existent key: %v", err)
 	}
@@ -203,28 +205,37 @@ func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 
 func TestSoftPurge(t *testing.T) {
 	ctx := context.Background()
-	_, store, _ := setupTestRedis(t)
+	client, store, prefix := setupTestRedis(t)
 
 	primaryKey := "https://example.com/profile"
+	metaKey := prefix + "meta:" + primaryKey
 	meta := &pb.CacheMetadata{
-		PrimaryKey:   primaryKey,
-		IsSoftPurged: false,
+		PrimaryKey: primaryKey,
 	}
 	v := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
 	body := []byte("profile_body")
 
+	// 1. Initial SetVariant: verify _soft_purged does NOT exist in Redis hash
 	if err := store.SetVariant(ctx, primaryKey, meta, v, body, 60*time.Second); err != nil {
 		t.Fatalf("set variant failed: %v", err)
 	}
 
-	// Verify initial state
-	m, err := store.GetMeta(ctx, primaryKey)
-	if err != nil || m.IsSoftPurged {
-		t.Fatalf("expected IsSoftPurged=false, got %v", m.IsSoftPurged)
+	existsResp := client.Do(ctx, client.B().Hexists().Key(metaKey).Field("_soft_purged").Build())
+	exists, err := existsResp.AsBool()
+	if err != nil || exists {
+		t.Fatalf("expected _soft_purged to NOT exist initially in Redis hash, got exists=%v (err=%v)", exists, err)
 	}
 
-	// Perform Soft Purge
-	n, err := store.SoftPurge(ctx, primaryKey)
+	m, isSoftPurged, err := store.GetMeta(ctx, primaryKey)
+	if err != nil || isSoftPurged {
+		t.Fatalf("expected isSoftPurged=false initially from GetMeta, got %v", isSoftPurged)
+	}
+	if m == nil {
+		t.Fatal("expected meta, got nil")
+	}
+
+	// 2. Perform Soft Purge: verify _soft_purged is set to "1" in Redis hash
+	n, err := store.Purge(ctx, primaryKey, true)
 	if err != nil {
 		t.Fatalf("soft purge failed: %v", err)
 	}
@@ -232,19 +243,45 @@ func TestSoftPurge(t *testing.T) {
 		t.Fatalf("expected 1 entry soft-purged, got %d", n)
 	}
 
-	// Verify IsSoftPurged is now true
-	m2, err := store.GetMeta(ctx, primaryKey)
+	getResp := client.Do(ctx, client.B().Hget().Key(metaKey).Field("_soft_purged").Build())
+	val, err := getResp.ToString()
+	if err != nil || val != "1" {
+		t.Fatalf("expected _soft_purged='1' in Redis hash after SoftPurge, got val=%q (err=%v)", val, err)
+	}
+
+	m2, isSoftPurged2, err := store.GetMeta(ctx, primaryKey)
 	if err != nil {
 		t.Fatalf("get meta after soft purge failed: %v", err)
 	}
-	if !m2.IsSoftPurged {
-		t.Fatal("expected IsSoftPurged=true after soft purge")
+	if m2 == nil || !isSoftPurged2 {
+		t.Fatal("expected isSoftPurged=true from GetMeta after soft purge")
 	}
 
 	// Body is still intact
 	_, b, err := store.GetVariant(ctx, primaryKey, "default")
 	if err != nil || string(b) != "profile_body" {
 		t.Fatalf("body should remain intact after soft purge, got %s", string(b))
+	}
+
+	// 3. Re-save/Refresh via SetVariant: verify _soft_purged is removed/deleted from Redis hash
+	vFresh := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+	bodyFresh := []byte("profile_body_fresh")
+	if err := store.SetVariant(ctx, primaryKey, meta, vFresh, bodyFresh, 60*time.Second); err != nil {
+		t.Fatalf("second set variant failed: %v", err)
+	}
+
+	existsResp2 := client.Do(ctx, client.B().Hexists().Key(metaKey).Field("_soft_purged").Build())
+	exists2, err := existsResp2.AsBool()
+	if err != nil || exists2 {
+		t.Fatalf("expected _soft_purged to be cleared from Redis hash on SetVariant, got exists=%v (err=%v)", exists2, err)
+	}
+
+	m3, isSoftPurged3, err := store.GetMeta(ctx, primaryKey)
+	if err != nil || isSoftPurged3 {
+		t.Fatalf("expected isSoftPurged=false from GetMeta after re-saving variant, got %v", isSoftPurged3)
+	}
+	if m3 == nil {
+		t.Fatal("expected meta after re-saving variant, got nil")
 	}
 }
 
@@ -283,6 +320,61 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 		}
 		if keyExists(ctx, client, prefix+"body:"+pk+":gzip") {
 			t.Fatalf("expected body key %s:gzip to be deleted", pk)
+		}
+	}
+}
+
+func TestPurgeByPattern_HardAndSoft(t *testing.T) {
+	ctx := context.Background()
+	client, store, prefix := setupTestRedis(t)
+
+	// 1. Setup 3 entries under /blog/*
+	for i := 1; i <= 3; i++ {
+		pk := fmt.Sprintf("p=/blog/post-%d:h=example.com:m=GET", i)
+		meta := &pb.CacheMetadata{PrimaryKey: pk}
+		v := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+		if err := store.SetVariant(ctx, pk, meta, v, []byte("blog_content"), 60*time.Second); err != nil {
+			t.Fatalf("set variant failed: %v", err)
+		}
+	}
+
+	// 2. Soft Purge via pattern
+	nSoft, err := store.PurgeByPattern(ctx, "p=/blog/*", true)
+	if err != nil {
+		t.Fatalf("soft purge pattern failed: %v", err)
+	}
+	if nSoft != 3 {
+		t.Fatalf("expected 3 entries soft-purged, got %d", nSoft)
+	}
+
+	for i := 1; i <= 3; i++ {
+		pk := fmt.Sprintf("p=/blog/post-%d:h=example.com:m=GET", i)
+		m, isSoftPurged, err := store.GetMeta(ctx, pk)
+		if err != nil || m == nil || !isSoftPurged {
+			t.Fatalf("expected entry %s to be soft purged (isSoftPurged=true), got %v", pk, isSoftPurged)
+		}
+		_, b, err := store.GetVariant(ctx, pk, "default")
+		if err != nil || len(b) == 0 {
+			t.Fatalf("expected body for %s to remain intact after soft purge", pk)
+		}
+	}
+
+	// 3. Hard Purge via pattern
+	nHard, err := store.PurgeByPattern(ctx, "p=/blog/*", false)
+	if err != nil {
+		t.Fatalf("hard purge pattern failed: %v", err)
+	}
+	if nHard != 3 {
+		t.Fatalf("expected 3 entries hard-purged, got %d", nHard)
+	}
+
+	for i := 1; i <= 3; i++ {
+		pk := fmt.Sprintf("p=/blog/post-%d:h=example.com:m=GET", i)
+		if keyExists(ctx, client, prefix+"meta:"+pk) {
+			t.Fatalf("expected meta key %s to be hard deleted", pk)
+		}
+		if keyExists(ctx, client, prefix+"body:"+pk+":default") {
+			t.Fatalf("expected body key %s to be hard deleted", pk)
 		}
 	}
 }
@@ -402,7 +494,7 @@ func TestConcurrencyAndRaces(t *testing.T) {
 
 				_ = store.SetVariant(ctx, pk, meta, v, body, 30*time.Second)
 				_, _, _ = store.GetVariant(ctx, pk, varKey)
-				_, _ = store.GetMeta(ctx, pk)
+				_, _, _ = store.GetMeta(ctx, pk)
 			}
 		}(i)
 	}

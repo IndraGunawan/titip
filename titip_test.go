@@ -533,7 +533,11 @@ func TestHeadRevalidation_ConvertHeadToGet(t *testing.T) {
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&originCalls, 1)
 		body := currentBody.Load().(string)
-		w.Header().Set("Cache-Control", "public, max-age=1")
+		if body == "initial payload v1" {
+			w.Header().Set("Cache-Control", "public, max-age=1")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=60")
+		}
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		if r.Method != http.MethodHead {
@@ -1491,7 +1495,7 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 
 	// 2. Simulate microsecond glitch: Metadata hash is present in Redis, but Body key was evicted/expired
 	primaryKey := generatePrimaryKey(req1, &KeyConfig{})
-	meta, err := store.GetMeta(context.Background(), primaryKey)
+	meta, _, err := store.GetMeta(context.Background(), primaryKey)
 	if err != nil || meta == nil {
 		t.Fatalf("expected metadata in Redis, got err=%v meta=%v", err, meta)
 	}
@@ -1521,7 +1525,7 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 	if len(missingBody) != 0 {
 		t.Fatalf("expected body to be deleted from Redis")
 	}
-	metaStillThere, _ := store.GetMeta(context.Background(), primaryKey)
+	metaStillThere, _, _ := store.GetMeta(context.Background(), primaryKey)
 	if metaStillThere == nil {
 		t.Fatalf("expected metadata hash to still exist in Redis")
 	}
@@ -1875,9 +1879,6 @@ func TestNew_MinimalOptions(t *testing.T) {
 	if mw.logger == nil {
 		t.Errorf("expected non-nil default logger")
 	}
-	if len(mw.cacheableStatusCodes) == 0 {
-		t.Errorf("expected non-empty default cacheable status codes")
-	}
 	if mw.cfg.ESI.MaxDepth != 3 {
 		t.Errorf("expected ESI MaxDepth 3, got %d", mw.cfg.ESI.MaxDepth)
 	}
@@ -1963,7 +1964,6 @@ func TestNew_NilOptionGuards(t *testing.T) {
 		WithStorage(store),
 		WithLogger(nil),
 		WithMetrics(nil),
-		WithCacheableStatusCodes(nil...),
 	)
 	if err != nil {
 		t.Fatalf("expected New with nil option guards to succeed, got %v", err)
@@ -1992,9 +1992,6 @@ func TestNew_NilOptionGuards(t *testing.T) {
 	})
 	if mw.logger == nil {
 		t.Fatal("expected mw.logger to fallback to slog.Default() when passed nil")
-	}
-	if len(mw.cacheableStatusCodes) == 0 {
-		t.Fatal("expected mw.cacheableStatusCodes to fallback to default codes when passed nil")
 	}
 	if mw.metrics != nil {
 		t.Fatal("expected mw.metrics to be nil when passed nil Registerer")
@@ -2049,5 +2046,334 @@ func TestSynctest_ContextDetachmentAndVirtualTimers(t *testing.T) {
 			t.Fatal("expected virtual timer to have fired instantly in synctest bubble")
 		}
 	})
+}
+
+// TestRFC_Authorization_Guards verifies RFC 9111 §3.5:
+// Shared caches MUST NOT store responses to requests with Authorization headers
+// unless the response contains explicit public, s-maxage, or must-revalidate directives.
+func TestRFC_Authorization_Guards(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		switch r.URL.Path {
+		case "/auth-private":
+			w.Header().Set("Cache-Control", "max-age=60")
+			w.Write([]byte("auth-secret-payload"))
+		case "/auth-public":
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.Write([]byte("auth-public-payload"))
+		case "/auth-s-maxage":
+			w.Header().Set("Cache-Control", "s-maxage=60")
+			w.Write([]byte("auth-s-maxage-payload"))
+		}
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. Request with Authorization and origin returning only max-age=60 MUST NOT be cached
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/auth-private", nil)
+	req1.Header.Set("Authorization", "Bearer user-token")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec1.Code)
+	}
+
+	// Subsequent unauthenticated request MUST NOT receive cached response
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/auth-private", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if cs := rec2.Header().Get("Cache-Status"); strings.Contains(cs, "hit") {
+		t.Fatalf("security violation: unauthenticated request served cached private auth response: %s", cs)
+	}
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected 2 origin calls for unshared auth, got %d", originCalls.Load())
+	}
+
+	// 2. Request with Authorization and origin returning public MUST be cached
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/auth-public", nil)
+	req3.Header.Set("Authorization", "Bearer user-token")
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+
+	req4 := httptest.NewRequest(http.MethodGet, "http://example.com/auth-public", nil)
+	rec4 := httptest.NewRecorder()
+	handler.ServeHTTP(rec4, req4)
+	if cs := rec4.Header().Get("Cache-Status"); !strings.Contains(cs, "hit") {
+		t.Fatalf("expected cache hit for public auth response, got: %s", cs)
+	}
+}
+
+// TestRFC_MustRevalidate_DisallowsSWR verifies RFC 5861 §3 & §4 / RFC 9111 §5.2.2.1:
+// must-revalidate and proxy-revalidate forbid serving stale content under stale-while-revalidate.
+func TestRFC_MustRevalidate_DisallowsSWR(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=1, must-revalidate, stale-while-revalidate=60")
+		w.Write([]byte("revalidate-data"))
+	})
+	handler := mw.testHandler(origin)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/must-reval", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req)
+
+	// Wait for entry to become stale
+	time.Sleep(1100 * time.Millisecond)
+
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req)
+
+	// Must NOT serve SWR
+	if cs := rec2.Header().Get("Cache-Status"); strings.Contains(cs, "detail=swr") {
+		t.Fatalf("expected must-revalidate to forbid SWR, got status: %s", cs)
+	}
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected synchronous revalidation (2 origin calls), got %d", originCalls.Load())
+	}
+}
+
+// TestRFC_VaryStar_NoSubsequentMatch verifies RFC 9111 §4.1 / RFC 7231 §7.1.4:
+// A response containing Vary: * MUST NOT be stored or served for subsequent requests.
+func TestRFC_VaryStar_NoSubsequentMatch(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Vary", "*")
+		w.Write([]byte("vary-star-data"))
+	})
+	handler := mw.testHandler(origin)
+
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/vary-star", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/vary-star", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if cs := rec2.Header().Get("Cache-Status"); strings.Contains(cs, "hit") {
+		t.Fatalf("expected Vary: * response to never be served as hit, got: %s", cs)
+	}
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected 2 origin calls for Vary: *, got %d", originCalls.Load())
+	}
+}
+
+// TestRFC_ServedAge_PreservesUpstreamAge verifies RFC 9111 §5.1 / §4.2.3:
+// Age header served from cache must equal corrected_initial_age + resident_time.
+func TestRFC_ServedAge_PreservesUpstreamAge(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("Age", "45")
+		w.Write([]byte("upstream-age-data"))
+	})
+	handler := mw.testHandler(origin)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/upstream-age", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req)
+
+	time.Sleep(1100 * time.Millisecond)
+
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req)
+
+	ageStr := rec2.Header().Get("Age")
+	ageVal, err := strconv.Atoi(ageStr)
+	if err != nil {
+		t.Fatalf("invalid Age header: %q", ageStr)
+	}
+	if ageVal < 46 {
+		t.Fatalf("expected served Age >= 46 (45 initial + 1 resident), got %d", ageVal)
+	}
+}
+
+// TestRFC_ClientDirectives_PragmaAndOnlyIfCached verifies RFC 9111 §5.4 and §5.2.1.7:
+// 1. Pragma: no-cache acts as Cache-Control: no-cache when RespectClientCacheControl is enabled.
+// 2. only-if-cached returns 504 Gateway Timeout when cache is missed or expired.
+func TestRFC_ClientDirectives_PragmaAndOnlyIfCached(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t, WithRespectClientCacheControl())
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Write([]byte("client-cc-data"))
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. Initial request populates cache
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/client-cc", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+
+	// 2. Pragma: no-cache forces origin bypass (RFC 9111 §5.4)
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/client-cc", nil)
+	req2.Header.Set("Pragma", "no-cache")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if cs := rec2.Header().Get("Cache-Status"); !strings.Contains(cs, "pragma-no-cache") {
+		t.Fatalf("expected pragma-no-cache bypass status, got: %s", cs)
+	}
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected 2 origin calls after Pragma: no-cache, got %d", originCalls.Load())
+	}
+
+	// 3. Cache-Control: max-age=0 forces revalidation / bypass (RFC 9111 §5.2.1.1)
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/client-cc", nil)
+	req3.Header.Set("Cache-Control", "max-age=0")
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if cs := rec3.Header().Get("Cache-Status"); !strings.Contains(cs, "max-age-0") {
+		t.Fatalf("expected max-age-0 bypass status, got: %s", cs)
+	}
+
+	// 4. only-if-cached on a missing URL returns 504 Gateway Timeout (RFC 9111 §5.2.1.7)
+	reqMiss := httptest.NewRequest(http.MethodGet, "http://example.com/missing-url", nil)
+	reqMiss.Header.Set("Cache-Control", "only-if-cached")
+	recMiss := httptest.NewRecorder()
+	handler.ServeHTTP(recMiss, reqMiss)
+	if recMiss.Code != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504 Gateway Timeout for only-if-cached on miss, got %d", recMiss.Code)
+	}
+}
+
+// TestRFC_MutatingMethod_InvalidatesLocation verifies RFC 9111 §4.4:
+// A successful non-safe request (POST, PUT, DELETE, PATCH) invalidates both the effective request URI
+// and any URIs specified in Location or Content-Location response headers.
+func TestRFC_MutatingMethod_InvalidatesLocation(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t, WithAutoInvalidateMutatingMethods())
+
+	var getCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/resource/1" {
+			getCalls.Add(1)
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			w.Write([]byte("resource-1-data"))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/resource/update" {
+			w.Header().Set("Location", "http://example.com/resource/1")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte("created"))
+			return
+		}
+	})
+	handler := mw.testHandler(origin)
+
+	// Step 1: Cache GET /resource/1
+	reqGet := httptest.NewRequest(http.MethodGet, "http://example.com/resource/1", nil)
+	recGet1 := httptest.NewRecorder()
+	handler.ServeHTTP(recGet1, reqGet)
+	if getCalls.Load() != 1 {
+		t.Fatalf("expected 1 get call, got %d", getCalls.Load())
+	}
+
+	// Verify it is cached
+	recGet2 := httptest.NewRecorder()
+	handler.ServeHTTP(recGet2, reqGet)
+	if cs := recGet2.Header().Get("Cache-Status"); !strings.Contains(cs, "hit") {
+		t.Fatalf("expected cache hit, got: %s", cs)
+	}
+	if getCalls.Load() != 1 {
+		t.Fatalf("expected still 1 get call, got %d", getCalls.Load())
+	}
+
+	// Step 2: POST /resource/update with Location: http://example.com/resource/1 (RFC 9111 §4.4)
+	reqPost := httptest.NewRequest(http.MethodPost, "http://example.com/resource/update", nil)
+	recPost := httptest.NewRecorder()
+	handler.ServeHTTP(recPost, reqPost)
+	if recPost.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d", recPost.Code)
+	}
+
+	// Step 3: GET /resource/1 must now be invalidated and fetch origin
+	recGet3 := httptest.NewRecorder()
+	handler.ServeHTTP(recGet3, reqGet)
+	if getCalls.Load() != 2 {
+		t.Fatalf("expected GET /resource/1 to be invalidated by Location header, origin calls: %d", getCalls.Load())
+	}
+}
+
+// TestRFC_IfModifiedSince_SecondsPrecision verifies RFC 7232 §3.3 / RFC 9110 §13.1.3:
+// If-Modified-Since evaluates equality with 1-second resolution (sub-second fractions ignored).
+func TestRFC_IfModifiedSince_SecondsPrecision(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	lmTime := time.Date(2026, 8, 28, 12, 0, 0, 500000000, time.UTC) // 12:00:00.500
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("Last-Modified", lmTime.Format(http.TimeFormat))
+		w.Write([]byte("ims-data"))
+	})
+	handler := mw.testHandler(origin)
+
+	// Populate cache
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/ims-test", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	// Client sends IMS matching exact second
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/ims-test", nil)
+	req2.Header.Set("If-Modified-Since", lmTime.Truncate(time.Second).Format(http.TimeFormat))
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified, got %d", rec2.Code)
+	}
+}
+
+// TestRFC_Expires_Alone_Cacheable verifies RFC 9111 §4.2.1 / §5.3 / Cloudflare compatibility:
+// A response without Cache-Control is cacheable if Expires is set to a future date.
+func TestRFC_Expires_Alone_Cacheable(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Date", time.Now().Format(http.TimeFormat))
+		w.Header().Set("Expires", time.Now().Add(60*time.Second).Format(http.TimeFormat))
+		w.Write([]byte("expires-only-data"))
+	})
+	handler := mw.testHandler(origin)
+
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/expires-only", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/expires-only", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if cs := rec2.Header().Get("Cache-Status"); !strings.Contains(cs, "hit") {
+		t.Fatalf("expected cache hit for Expires-only response, got: %s", cs)
+	}
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cached hit without calling origin, got %d calls", originCalls.Load())
+	}
 }
 

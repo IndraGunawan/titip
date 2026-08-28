@@ -105,10 +105,12 @@ func generatePrimaryKey(r *http.Request, cfg *KeyConfig) string {
 			rawPath = r.URL.Path
 		}
 	}
-	// Clean the path (resolves ../, ./, double-slashes and normalizes trailing slashes).
+	// Clean the path (resolves ../, ./, double-slashes while preserving trailing slash).
 	cleanedPath := path.Clean(rawPath)
 	if cleanedPath == "." {
 		cleanedPath = "/"
+	} else if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(cleanedPath, "/") {
+		cleanedPath += "/"
 	}
 
 	buf.WriteString("p=")
@@ -356,7 +358,7 @@ func generateVariantKey(r *http.Request, varyHeaderNames []string) string {
 				if i > 0 {
 					buf.WriteByte(',')
 				}
-				buf.WriteString(strings.ToLower(strings.TrimSpace(v)))
+				buf.WriteString(strings.TrimSpace(v))
 			}
 		}
 		first = false

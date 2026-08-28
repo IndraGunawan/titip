@@ -199,13 +199,13 @@ func TestParsePurgeTarget_RespectsKeyConfig(t *testing.T) {
 		t.Errorf("expected whitelisted id=100 query only, got: %s", pt2.query)
 	}
 
-	// 3. Trailing slash normalized to stripped path.
+	// 3. Trailing slash preserved on path.
 	pt3, err := parsePurgeTarget("/docs/", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if pt3.path != "/docs" {
-		t.Errorf("expected trailing slash stripped to /docs, got: %s", pt3.path)
+	if pt3.path != "/docs/" {
+		t.Errorf("expected trailing slash preserved to /docs/, got: %s", pt3.path)
 	}
 }
 

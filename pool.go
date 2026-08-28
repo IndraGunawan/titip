@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pierrec/lz4/v4"
+	"github.com/pquerna/cachecontrol/cacheobject"
 	googleproto "google.golang.org/protobuf/proto"
 
 	pb "github.com/indragunawan/titip/proto"
@@ -244,16 +245,18 @@ func decompressLZ4(src []byte, dst *bytes.Buffer) error {
 // requestContext holds request-scoped execution state across state transitions.
 // Recycled via sync.Pool to maintain zero allocations on hot hit paths.
 type requestContext struct {
-	w          http.ResponseWriter
-	r          *http.Request
-	next       http.Handler
-	primaryKey string
-	variantKey string
-	meta       *pb.CacheMetadata
-	varInfo    *pb.VariantInfo
-	freshness  freshnessInfo
-	nowNano    int64
-	isVaryMiss bool
+	w            http.ResponseWriter
+	r            *http.Request
+	next         http.Handler
+	reqCC        *cacheobject.RequestCacheDirectives
+	primaryKey   string
+	variantKey   string
+	meta         *pb.CacheMetadata
+	isSoftPurged bool
+	varInfo      *pb.VariantInfo
+	freshness    freshnessInfo
+	nowNano      int64
+	isVaryMiss   bool
 }
 
 // Reset clears all fields before returning the struct to the pool.
@@ -261,9 +264,11 @@ func (ctx *requestContext) Reset() {
 	ctx.w = nil
 	ctx.r = nil
 	ctx.next = nil
+	ctx.reqCC = nil
 	ctx.primaryKey = ""
 	ctx.variantKey = ""
 	ctx.meta = nil
+	ctx.isSoftPurged = false
 	ctx.varInfo = nil
 	ctx.freshness = freshnessInfo{}
 	ctx.nowNano = 0

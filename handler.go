@@ -13,6 +13,7 @@ import (
 
 	"github.com/indragunawan/titip/esi"
 	pb "github.com/indragunawan/titip/proto"
+	"github.com/pquerna/cachecontrol/cacheobject"
 )
 
 // defaultVariantKey is used as the variant key when no Vary headers are specified.
@@ -43,8 +44,8 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 		}
 	}()
 
-	// A. WebSocket Handshake Bypass
-	if strings.EqualFold(ctx.r.Header.Get(headerUpgrade), upgradeWebSocket) {
+	// A. WebSocket Handshake Bypass (RFC 6455 / RFC 9110 §7.8)
+	if containsToken(ctx.r.Header.Get(headerUpgrade), upgradeWebSocket) {
 		t.recordRequest(ctx, statusBypass)
 		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=websocket-upgrade")
 		return stateBypassOrigin
@@ -79,11 +80,31 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 		return stateBypassOrigin
 	}
 
-	// F. Client Cache-Control: no-store / no-cache
+	// F. Client Cache-Control / Pragma (RFC 9111 §5.2.1 & §5.4)
 	if t.cfg.RespectClientCacheControl {
-		if cc := ctx.r.Header.Get(headerCacheControl); strings.Contains(cc, "no-store") || strings.Contains(cc, "no-cache") {
+		cc := ctx.r.Header.Get(headerCacheControl)
+		pragma := ctx.r.Header.Get(headerPragma)
+
+		if cc != "" {
+			if reqCC, err := cacheobject.ParseRequestCacheControl(cc); err == nil {
+				ctx.reqCC = reqCC
+				// RFC 9111 §5.2.1.4 / §5.2.1.5: no-store and no-cache
+				if reqCC.NoStore || reqCC.NoCache {
+					t.recordRequest(ctx, statusBypass)
+					t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=no-store")
+					return stateBypassOrigin
+				}
+				// RFC 9111 §5.2.1.1: max-age=0 forces revalidation / origin bypass
+				if reqCC.MaxAge == 0 {
+					t.recordRequest(ctx, statusBypass)
+					t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=max-age-0")
+					return stateBypassOrigin
+				}
+			}
+		} else if strings.EqualFold(strings.TrimSpace(pragma), "no-cache") {
+			// RFC 9111 §5.4: Pragma: no-cache acts as Cache-Control: no-cache
 			t.recordRequest(ctx, statusBypass)
-			t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=no-store")
+			t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=pragma-no-cache")
 			return stateBypassOrigin
 		}
 	}
@@ -96,7 +117,7 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 	ctx.primaryKey = generatePrimaryKey(ctx.r, &t.cfg.KeyConfig)
 
 	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.StorageTimeout)
-	meta, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)
+	meta, isSoftPurged, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)
 	storeCancel()
 
 	if err != nil {
@@ -109,7 +130,15 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	ctx.meta = meta
+	ctx.isSoftPurged = isSoftPurged
 	if meta == nil {
+		// RFC 9111 §5.2.1.7: only-if-cached requires responding with 504 Gateway Timeout on miss
+		if ctx.reqCC != nil && ctx.reqCC.OnlyIfCached {
+			t.recordRequest(ctx, statusMiss)
+			t.emitCacheStatus(ctx.w, tokenMiss, "miss; detail=only-if-cached")
+			http.Error(ctx.w, "Gateway Timeout", http.StatusGatewayTimeout)
+			return nil
+		}
 		// URL Miss -> fetch origin directly without singleflight
 		ctx.isVaryMiss = false
 		return stateFetchOriginMiss
@@ -127,6 +156,13 @@ func stateMatchVariant(t *Titip, ctx *requestContext) stateFn {
 
 	varInfo, exists := ctx.meta.Variants[ctx.variantKey]
 	if !exists || varInfo == nil {
+		// RFC 9111 §5.2.1.7: only-if-cached requires responding with 504 Gateway Timeout on miss
+		if ctx.reqCC != nil && ctx.reqCC.OnlyIfCached {
+			t.recordRequest(ctx, statusMiss)
+			t.emitCacheStatus(ctx.w, tokenMiss, "miss; detail=only-if-cached")
+			http.Error(ctx.w, "Gateway Timeout", http.StatusGatewayTimeout)
+			return nil
+		}
 		// Variant Miss -> fetch new variant directly without singleflight
 		ctx.isVaryMiss = true
 		return stateFetchOriginMiss
@@ -141,7 +177,7 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	ctx.nowNano = time.Now().UnixNano()
 
 	// If entry is soft-purged, refresh synchronously via stale revalidation
-	if ctx.meta.IsSoftPurged {
+	if ctx.isSoftPurged {
 		return stateFetchOriginRevalidate
 	}
 
@@ -161,6 +197,14 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	// Stale-While-Revalidate Window
 	if ctx.meta.StaleUntilUnixNano > ctx.meta.ExpiresAtUnixNano && ctx.nowNano <= ctx.meta.StaleUntilUnixNano {
 		return stateServeSWR
+	}
+
+	// If client requested only-if-cached and entry is expired, return 504 per RFC 9111 §5.2.1.7
+	if t.cfg.RespectClientCacheControl && strings.Contains(ctx.r.Header.Get(headerCacheControl), "only-if-cached") {
+		t.recordRequest(ctx, statusMiss)
+		t.emitCacheStatus(ctx.w, tokenMiss, "miss; detail=only-if-cached-expired")
+		http.Error(ctx.w, "Gateway Timeout", http.StatusGatewayTimeout)
+		return nil
 	}
 
 	// Expired -> Synchronous Singleflight Revalidation
@@ -206,10 +250,9 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 		)
 	}
 
-	age := (ctx.nowNano - ctx.meta.CreatedAtUnixNano) / int64(time.Second)
-	if age < 0 {
-		age = 0
-	}
+	// RFC 9111 §5.1 / §4.2.3: current_age = corrected_initial_age + resident_time
+	residentSec := max((ctx.nowNano-ctx.meta.CreatedAtUnixNano)/int64(time.Second), 0)
+	age := ctx.meta.CorrectedInitialAgeSeconds + residentSec
 	ageStr := strconv.FormatInt(age, 10)
 	ttlStr := strconv.FormatInt(t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano), 10)
 
@@ -246,10 +289,8 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	}
 	defer putBuffer(dstBuf)
 
-	age := (ctx.nowNano - ctx.meta.CreatedAtUnixNano) / int64(time.Second)
-	if age < 0 {
-		age = 0
-	}
+	residentSec := max((ctx.nowNano-ctx.meta.CreatedAtUnixNano)/int64(time.Second), 0)
+	age := ctx.meta.CorrectedInitialAgeSeconds + residentSec
 	ageStr := strconv.FormatInt(age, 10)
 
 	if t.cfg.ESI.Enabled && len(varInfo.EsiFragments) > 0 {
@@ -318,7 +359,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	headersClone := rec.Header().Clone()
 
 	// Calculate freshness & evaluate cacheability
-	freshness := calculateFreshness(rec.Code, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
+	freshness := calculateFreshness(rec.Code, ctx.r.Header, headersClone, reqTime, respTime, respTime)
 
 	// Stream / SSE Response Detection
 	if strings.Contains(strings.ToLower(headersClone.Get(headerContentType)), contentTypeEventStream) {
@@ -396,7 +437,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 
 // 9. stateFetchOriginRevalidate: Singleflight Coalesced Revalidation (with Upstream 304 support & stale fallback)
 func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
-	sfKey := ctx.primaryKey + "|" + ctx.variantKey
+	sfKey := ctx.primaryKey + ":" + ctx.variantKey
 
 	// Fetch existing stale variant from Redis for 304 revalidation or 5xx fallback
 	var staleVar *pb.VariantInfo
@@ -409,8 +450,8 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	val, err, shared := t.sf.Do(sfKey, func() (any, error) {
-		detachedCtx := context.WithoutCancel(ctx.r.Context())
-		originCtx, cancel := context.WithTimeout(detachedCtx, t.cfg.OriginTimeout)
+		// Context Detachment: wrap client context so cancellations don't abort in-flight origin fetch
+		originCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.OriginTimeout)
 		defer cancel()
 
 		rec := getResponseRecorder()
@@ -420,9 +461,9 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		// If another concurrent singleflight already refreshed this entry in storage while we were delayed,
 		// load the freshly saved entry from storage directly rather than querying the origin again.
 		metaCtx, metaCancel := context.WithTimeout(originCtx, t.cfg.StorageTimeout)
-		latestMeta, errMeta := t.storage.GetMeta(metaCtx, ctx.primaryKey)
+		latestMeta, latestSoftPurged, errMeta := t.storage.GetMeta(metaCtx, ctx.primaryKey)
 		metaCancel()
-		if errMeta == nil && latestMeta != nil && !latestMeta.IsSoftPurged && latestMeta.ExpiresAtUnixNano > time.Now().UnixNano() {
+		if errMeta == nil && latestMeta != nil && !latestSoftPurged && latestMeta.ExpiresAtUnixNano > time.Now().UnixNano() {
 			varCtx, varCancel := context.WithTimeout(originCtx, t.cfg.StorageTimeout)
 			latestVar, compBody, errVar := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 			varCancel()
@@ -471,19 +512,36 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		}
 
 		respTime := time.Now()
+
 		headersClone := rec.Header().Clone()
 		bodyBytes := bytes.Clone(rec.Body.Bytes())
-
 		// Upstream 304 Not Modified Handling
 		if rec.Code == http.StatusNotModified && staleVar != nil && len(staleCompBody) > 0 {
-			freshness := calculateFreshness(200, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
+			freshness := calculateFreshness(200, ctx.r.Header, headersClone, reqTime, respTime, respTime)
 			if freshness.EffectiveTTL > 0 && !t.closed.Load() {
+				// Merge upstream 304 headers per RFC 9111 §4.3.4
+				for k, vv := range headersClone {
+					canon := http.CanonicalHeaderKey(k)
+					if !isHopByHopHeader(canon) {
+						staleVar.ResponseHeaders[k] = &pb.HeaderValues{Values: vv}
+					}
+				}
+				if etag := headersClone.Get(headerETag); etag != "" {
+					staleVar.Etag = etag
+				}
+				if lm := headersClone.Get(headerLastModified); lm != "" {
+					if t, err := parseDate(lm); err == nil && !t.IsZero() {
+						staleVar.LastModifiedUnixNano = t.UnixNano()
+					}
+				}
+
 				// Refresh Redis TTL without rewriting body
 				ctx.meta.ExpiresAtUnixNano = respTime.Add(freshness.EffectiveTTL).UnixNano()
 				if freshness.StaleWhileRevalidateTTL > 0 {
 					ctx.meta.StaleUntilUnixNano = ctx.meta.ExpiresAtUnixNano + int64(freshness.StaleWhileRevalidateTTL)
+				} else {
+					ctx.meta.StaleUntilUnixNano = ctx.meta.ExpiresAtUnixNano
 				}
-				ctx.meta.IsSoftPurged = false
 				staleWindow := max(freshness.StaleWhileRevalidateTTL, freshness.StaleIfErrorTTL)
 				storageTTL := freshness.EffectiveTTL + staleWindow
 				if storageTTL <= 0 {
@@ -508,7 +566,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			}, nil
 		}
 
-		freshness := calculateFreshness(rec.Code, headersClone, reqTime, respTime, respTime, t.cacheableStatusCodes)
+		freshness := calculateFreshness(rec.Code, ctx.r.Header, headersClone, reqTime, respTime, respTime)
 		shouldCache := freshness.IsCacheable && !t.closed.Load()
 		if ctx.r.Method == http.MethodHead && !t.cfg.ConvertHeadToGet {
 			shouldCache = false
@@ -596,30 +654,32 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		}
 	}
 
-	// Serve fresh response
-	for k, vv := range res.headers {
-		for _, v := range vv {
-			ctx.w.Header().Add(k, v)
+	// Serve fresh origin response
+	if res.statusCode != 0 {
+		for k, vv := range res.headers {
+			for _, v := range vv {
+				ctx.w.Header().Add(k, v)
+			}
 		}
-	}
 
-	t.recordRequest(ctx, statusMiss)
-	t.emitCacheStatus(ctx.w, tokenExpired, fmt.Sprintf("fwd=stale; fwd-status=%d%s; stored; detail=soft-refreshed", res.statusCode, collapsedToken))
-	ctx.w.WriteHeader(res.statusCode)
-	if ctx.r.Method != http.MethodHead {
-		_, _ = ctx.w.Write(res.body)
+		t.recordRequest(ctx, statusMiss)
+		t.emitCacheStatus(ctx.w, tokenExpired, fmt.Sprintf("fwd=stale; fwd-status=%d%s; stored; detail=soft-refreshed", res.statusCode, collapsedToken))
+		ctx.w.WriteHeader(res.statusCode)
+		if ctx.r.Method != http.MethodHead {
+			_, _ = ctx.w.Write(res.body)
+		}
 	}
 
 	return nil
 }
 
-// 10. stateBypassOrigin: Transparent Pass-Through
+// 10. stateBypassOrigin: Bypasses Titip cache completely and forwards request directly to next handler
 func stateBypassOrigin(t *Titip, ctx *requestContext) stateFn {
 	ctx.next.ServeHTTP(ctx.w, ctx.r)
 	return nil
 }
 
-// --- Helper Functions ---
+// --- Helper Structs ---
 
 type staleFallback struct {
 	varInfo *pb.VariantInfo
@@ -629,11 +689,11 @@ type staleFallback struct {
 
 type fetchResult struct {
 	statusCode  int
+	is304Origin bool
+	isFallback  bool
+	fallback    *staleFallback
 	headers     http.Header
 	body        []byte
-	isFallback  bool
-	is304Origin bool
-	fallback    *staleFallback
 	ttl         time.Duration
 }
 
@@ -688,12 +748,12 @@ func (t *Titip) saveVariantToStorage(
 	}
 
 	newMeta := &pb.CacheMetadata{
-		PrimaryKey:        primaryKey,
-		VaryHeaderNames:   varNames,
-		CreatedAtUnixNano: respTime.UnixNano(),
-		ExpiresAtUnixNano: respTime.Add(freshness.EffectiveTTL).UnixNano(),
-		Tags:              tags,
-		IsSoftPurged:      false,
+		PrimaryKey:                 primaryKey,
+		VaryHeaderNames:            varNames,
+		CreatedAtUnixNano:          respTime.UnixNano(),
+		ExpiresAtUnixNano:          respTime.Add(freshness.EffectiveTTL).UnixNano(),
+		CorrectedInitialAgeSeconds: int64(freshness.CorrectedInitialAge / time.Second),
+		Tags:                       tags,
 	}
 	if freshness.StaleWhileRevalidateTTL > 0 {
 		newMeta.StaleUntilUnixNano = newMeta.ExpiresAtUnixNano + int64(freshness.StaleWhileRevalidateTTL)
@@ -753,7 +813,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	headers := rec.Header().Clone()
 	bodyBytes := bytes.Clone(rec.Body.Bytes())
 
-	freshness := calculateFreshness(rec.Code, headers, reqTime, respTime, respTime, t.cacheableStatusCodes)
+	freshness := calculateFreshness(rec.Code, r.Header, headers, reqTime, respTime, respTime)
 	shouldCache := freshness.IsCacheable && !t.closed.Load()
 	if r.Method == http.MethodHead && !t.cfg.ConvertHeadToGet {
 		shouldCache = false
@@ -764,19 +824,44 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 }
 
 func (t *Titip) handleMutatingRequest(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	next.ServeHTTP(w, r)
+	if !t.cfg.AutoInvalidateMutatingMethods {
+		next.ServeHTTP(w, r)
+		return
+	}
 
-	if t.cfg.AutoInvalidateMutatingMethods {
-		// Use Purge (path sweep) rather than an exact key delete so that
-		// the method-agnostic invalidation rule applies: a POST request must
-		// invalidate the GET-cached entries for the same URL.
+	rec := getResponseRecorder()
+	defer putResponseRecorder(rec)
+	next.ServeHTTP(rec, r)
+
+	for k, vv := range rec.Header() {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(rec.Code)
+	if rec.Body.Len() > 0 {
+		_, _ = w.Write(rec.Body.Bytes())
+	}
+
+	// Invalidate on successful unsafe request (non-error) per RFC 9111 §4.4
+	if rec.Code >= 200 && rec.Code < 400 {
+		delCtx, delCancel := context.WithTimeout(context.Background(), t.cfg.StorageTimeout)
+		defer delCancel()
+
 		purgeTarget := r.URL.String()
 		if purgeTarget == "" && r.Host != "" {
 			purgeTarget = "http://" + r.Host + r.URL.Path
 		}
-		delCtx, delCancel := context.WithTimeout(context.Background(), t.cfg.StorageTimeout)
-		defer delCancel()
 		_, _ = t.Purge(delCtx, purgeTarget)
+
+		// RFC 9111 §4.4: Invalidate URI in Location header
+		if loc := rec.Header().Get(headerLocation); loc != "" {
+			_, _ = t.Purge(delCtx, loc)
+		}
+		// RFC 9111 §4.4: Invalidate URI in Content-Location header
+		if cloc := rec.Header().Get(headerContentLocation); cloc != "" {
+			_, _ = t.Purge(delCtx, cloc)
+		}
 	}
 }
 
@@ -790,9 +875,10 @@ func isMutatingMethod(method string) bool {
 }
 
 func (t *Titip) checkConditionalMatch(r *http.Request, varInfo *pb.VariantInfo) bool {
-	// If-None-Match (Weak ETag comparison per RFC-7232 §2.3.2)
+	// If-None-Match (Weak ETag comparison per RFC 7232 §2.3.2 / RFC 9110 §13.1.2)
 	if ifNoneMatch := r.Header.Get(headerIfNoneMatch); ifNoneMatch != "" {
-		if ifNoneMatch == "*" && varInfo != nil {
+		trimmed := strings.TrimSpace(ifNoneMatch)
+		if trimmed == "*" && varInfo != nil {
 			return true
 		}
 		if varInfo != nil && varInfo.Etag != "" {
@@ -805,12 +891,13 @@ func (t *Titip) checkConditionalMatch(r *http.Request, varInfo *pb.VariantInfo) 
 		return false
 	}
 
-	// If-Modified-Since
+	// If-Modified-Since (RFC 7232 §3.3 / RFC 9110 §13.1.3: 1-second resolution comparison)
 	if ifModSince := r.Header.Get(headerIfModifiedSince); ifModSince != "" && varInfo != nil && varInfo.LastModifiedUnixNano > 0 {
 		clientTime, err := parseDate(ifModSince)
 		if err == nil {
-			cachedTime := time.Unix(0, varInfo.LastModifiedUnixNano)
-			return !cachedTime.After(clientTime)
+			cachedSec := time.Unix(0, varInfo.LastModifiedUnixNano).Truncate(time.Second)
+			clientSec := clientTime.Truncate(time.Second)
+			return !cachedSec.After(clientSec)
 		}
 	}
 
@@ -885,6 +972,7 @@ func isHopByHopHeader(k string) bool {
 		"Keep-Alive",
 		"Proxy-Authenticate",
 		"Proxy-Authorization",
+		"Proxy-Connection",
 		"Te",
 		"Trailers",
 		"Transfer-Encoding",

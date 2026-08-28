@@ -276,17 +276,17 @@ func (x *VariantInfo) GetEsiFragments() []*EsiFragment {
 
 // CacheMetadata stores the primary URL index and variant registry
 type CacheMetadata struct {
-	state              protoimpl.MessageState  `protogen:"open.v1"`
-	PrimaryKey         string                  `protobuf:"bytes,1,opt,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
-	VaryHeaderNames    []string                `protobuf:"bytes,2,rep,name=vary_header_names,json=varyHeaderNames,proto3" json:"vary_header_names,omitempty"`                                    // e.g. ["Accept-Encoding", "Accept-Language"]
-	Variants           map[string]*VariantInfo `protobuf:"bytes,3,rep,name=variants,proto3" json:"variants,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Keyed by normalized vary values
-	CreatedAtUnixNano  int64                   `protobuf:"varint,4,opt,name=created_at_unix_nano,json=createdAtUnixNano,proto3" json:"created_at_unix_nano,omitempty"`
-	ExpiresAtUnixNano  int64                   `protobuf:"varint,5,opt,name=expires_at_unix_nano,json=expiresAtUnixNano,proto3" json:"expires_at_unix_nano,omitempty"`
-	StaleUntilUnixNano int64                   `protobuf:"varint,6,opt,name=stale_until_unix_nano,json=staleUntilUnixNano,proto3" json:"stale_until_unix_nano,omitempty"`
-	Tags               []string                `protobuf:"bytes,7,rep,name=tags,proto3" json:"tags,omitempty"`
-	IsSoftPurged       bool                    `protobuf:"varint,8,opt,name=is_soft_purged,json=isSoftPurged,proto3" json:"is_soft_purged,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state                      protoimpl.MessageState  `protogen:"open.v1"`
+	PrimaryKey                 string                  `protobuf:"bytes,1,opt,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
+	VaryHeaderNames            []string                `protobuf:"bytes,2,rep,name=vary_header_names,json=varyHeaderNames,proto3" json:"vary_header_names,omitempty"`                                    // e.g. ["Accept-Encoding", "Accept-Language"]
+	Variants                   map[string]*VariantInfo `protobuf:"bytes,3,rep,name=variants,proto3" json:"variants,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Keyed by normalized vary values
+	CreatedAtUnixNano          int64                   `protobuf:"varint,4,opt,name=created_at_unix_nano,json=createdAtUnixNano,proto3" json:"created_at_unix_nano,omitempty"`
+	ExpiresAtUnixNano          int64                   `protobuf:"varint,5,opt,name=expires_at_unix_nano,json=expiresAtUnixNano,proto3" json:"expires_at_unix_nano,omitempty"`
+	StaleUntilUnixNano         int64                   `protobuf:"varint,6,opt,name=stale_until_unix_nano,json=staleUntilUnixNano,proto3" json:"stale_until_unix_nano,omitempty"`
+	CorrectedInitialAgeSeconds int64                   `protobuf:"varint,7,opt,name=corrected_initial_age_seconds,json=correctedInitialAgeSeconds,proto3" json:"corrected_initial_age_seconds,omitempty"`
+	Tags                       []string                `protobuf:"bytes,8,rep,name=tags,proto3" json:"tags,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *CacheMetadata) Reset() {
@@ -361,18 +361,18 @@ func (x *CacheMetadata) GetStaleUntilUnixNano() int64 {
 	return 0
 }
 
+func (x *CacheMetadata) GetCorrectedInitialAgeSeconds() int64 {
+	if x != nil {
+		return x.CorrectedInitialAgeSeconds
+	}
+	return 0
+}
+
 func (x *CacheMetadata) GetTags() []string {
 	if x != nil {
 		return x.Tags
 	}
 	return nil
-}
-
-func (x *CacheMetadata) GetIsSoftPurged() bool {
-	if x != nil {
-		return x.IsSoftPurged
-	}
-	return false
 }
 
 var File_titip_proto protoreflect.FileDescriptor
@@ -410,7 +410,7 @@ const file_titip_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aW\n" +
 	"\x14ResponseHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.titip.HeaderValuesR\x05value:\x028\x01\"\xbc\x03\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.titip.HeaderValuesR\x05value:\x028\x01\"\xd9\x03\n" +
 	"\rCacheMetadata\x12\x1f\n" +
 	"\vprimary_key\x18\x01 \x01(\tR\n" +
 	"primaryKey\x12*\n" +
@@ -418,9 +418,9 @@ const file_titip_proto_rawDesc = "" +
 	"\bvariants\x18\x03 \x03(\v2\".titip.CacheMetadata.VariantsEntryR\bvariants\x12/\n" +
 	"\x14created_at_unix_nano\x18\x04 \x01(\x03R\x11createdAtUnixNano\x12/\n" +
 	"\x14expires_at_unix_nano\x18\x05 \x01(\x03R\x11expiresAtUnixNano\x121\n" +
-	"\x15stale_until_unix_nano\x18\x06 \x01(\x03R\x12staleUntilUnixNano\x12\x12\n" +
-	"\x04tags\x18\a \x03(\tR\x04tags\x12$\n" +
-	"\x0eis_soft_purged\x18\b \x01(\bR\fisSoftPurged\x1aO\n" +
+	"\x15stale_until_unix_nano\x18\x06 \x01(\x03R\x12staleUntilUnixNano\x12A\n" +
+	"\x1dcorrected_initial_age_seconds\x18\a \x01(\x03R\x1acorrectedInitialAgeSeconds\x12\x12\n" +
+	"\x04tags\x18\b \x03(\tR\x04tags\x1aO\n" +
 	"\rVariantsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12(\n" +
 	"\x05value\x18\x02 \x01(\v2\x12.titip.VariantInfoR\x05value:\x028\x01B+Z)github.com/indragunawan/titip/proto;protob\x06proto3"

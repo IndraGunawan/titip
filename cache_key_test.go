@@ -151,11 +151,11 @@ func TestGeneratePrimaryKey_Method_EmptyNormalisesToGet(t *testing.T) {
 // AC-1: Path normalisation
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestGeneratePrimaryKey_Path_TrailingSlashStripped(t *testing.T) {
+func TestGeneratePrimaryKey_Path_TrailingSlashPreserved(t *testing.T) {
 	req := makeReq("http://example.com/docs/")
 	key := generatePrimaryKey(req, &KeyConfig{})
-	if !contains(key, "p=/docs:") {
-		t.Fatalf("trailing slash should be stripped, got: %s", key)
+	if !contains(key, "p=/docs/:") {
+		t.Fatalf("trailing slash should be preserved, got: %s", key)
 	}
 }
 
@@ -551,7 +551,7 @@ func TestGeneratePrimaryKey_Golden(t *testing.T) {
 			name:     "default zero-value config with sorted query",
 			setup:    func() *http.Request { return makeReq("http://Example.COM/api/items/?sort=desc&page=2&id=100") },
 			cfg:      KeyConfig{},
-			expected: "p=/api/items:h=example.com:m=GET:qs=id=100&page=2&sort=desc",
+			expected: "p=/api/items/:h=example.com:m=GET:qs=id=100&page=2&sort=desc",
 		},
 		{
 			name: "TLS with protocol included",
@@ -611,7 +611,7 @@ func TestGenerateVariantKey_Basic(t *testing.T) {
 	}
 	vary := []string{"Accept-Language", "Accept-Encoding"}
 	key := generateVariantKey(req, vary)
-	expected := "accept-encoding=gzip, deflate, br|accept-language=en-us,en;q=0.9"
+	expected := "accept-encoding=gzip, deflate, br|accept-language=en-US,en;q=0.9"
 	if key != expected {
 		t.Fatalf("expected %q\n     got %q", expected, key)
 	}
@@ -798,5 +798,41 @@ func BenchmarkGenerateVariantKey(b *testing.B) {
 
 	for b.Loop() {
 		_ = generateVariantKey(req, vary)
+	}
+}
+
+func TestGeneratePrimaryKey_TrailingSlash(t *testing.T) {
+	reqWithoutSlash := makeReq("http://example.com/api")
+	keyWithout := generatePrimaryKey(reqWithoutSlash, &KeyConfig{})
+	if keyWithout != "p=/api:h=example.com:m=GET" {
+		t.Errorf("expected p=/api, got %s", keyWithout)
+	}
+
+	reqWithSlash := makeReq("http://example.com/api/")
+	keyWith := generatePrimaryKey(reqWithSlash, &KeyConfig{})
+	if keyWith != "p=/api/:h=example.com:m=GET" {
+		t.Errorf("expected p=/api/, got %s", keyWith)
+	}
+
+	if keyWithout == keyWith {
+		t.Fatalf("expected /api and /api/ to have distinct primary keys")
+	}
+
+	reqQueryWithSlash := makeReq("http://example.com/api/?zone=abc")
+	keyQueryWith := generatePrimaryKey(reqQueryWithSlash, &KeyConfig{})
+	if keyQueryWith != "p=/api/:h=example.com:m=GET:qs=zone=abc" {
+		t.Errorf("expected p=/api/:h=example.com:m=GET:qs=zone=abc, got %s", keyQueryWith)
+	}
+}
+
+func TestGenerateVariantKey_PreservesCasing(t *testing.T) {
+	req := &http.Request{
+		Header: http.Header{
+			"X-Custom-Vary": []string{"CaseSensitiveValue123"},
+		},
+	}
+	vKey := generateVariantKey(req, []string{"X-Custom-Vary"})
+	if vKey != "x-custom-vary=CaseSensitiveValue123" {
+		t.Errorf("expected x-custom-vary=CaseSensitiveValue123, got %s", vKey)
 	}
 }
