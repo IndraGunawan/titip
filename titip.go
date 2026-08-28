@@ -34,12 +34,12 @@ func New(opts ...Option) (*Titip, error) {
 		CacheStatusMode:           CacheStatusSimpleToken,
 		RespectClientCacheControl: false,
 		ConvertHeadToGet:          true,
-		KeyConfig:                KeyConfig{},
-		CacheableStatusCodes:     defaultCacheableStatusCodes,
-		TagHeaderName:            headerCacheTag,
-		OriginTimeout:            30 * time.Second,
-		StorageTimeout:           1 * time.Second,
-		Logger:                   slog.Default(),
+		KeyConfig:                 KeyConfig{},
+		CacheableStatusCodes:      defaultCacheableStatusCodes,
+		TagHeaderName:             headerCacheTag,
+		OriginTimeout:             30 * time.Second,
+		StorageTimeout:            1 * time.Second,
+		Logger:                    slog.Default(),
 		ESI: ESIConfig{
 			Enabled:                false,
 			HeaderRequired:         false,
@@ -107,24 +107,10 @@ func New(opts ...Option) (*Titip, error) {
 //   - "/api/products"           — sweeps the path and ALL query string variations
 //   - "/api/products?id=42"     — purges only this exact query variant
 //   - "/assets/*"               — wipes all cached paths under /assets/ (wildcard)
-//   - "https://example.com/api" — host-scoped sweep
+//   - "https://example.com/api" — host-scoped sweep (include domain in target to scope by host)
 //
 // By default, purge is a hard-delete (immediate physical eviction). Use WithSoftPurge()
 // to mark entries as stale instead for safe thundering-herd protection.
-//
-// Use WithPurgeHost(host) to scope a path-only target to a specific domain.
-// Purge invalidates cache entries matching the specified path, URL, exact query variant, or wildcard.
-//
-// The target supports four formats:
-//   - "/api/products"           — sweeps the path and ALL query string variations
-//   - "/api/products?id=42"     — purges only this exact query variant
-//   - "/assets/*"               — wipes all cached paths under /assets/ (wildcard)
-//   - "https://example.com/api" — host-scoped sweep
-//
-// By default, purge is a hard-delete (immediate physical eviction). Use WithSoftPurge()
-// to mark entries as stale instead for safe thundering-herd protection.
-//
-// Use WithPurgeHost(host) to scope a path-only target to a specific domain.
 //
 // Returns the total number of logical cache entries invalidated.
 func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (int64, error) {
@@ -135,7 +121,6 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 
 	mode := purgeModeString(cfg.Soft)
 
-	// Override host from option if provided (takes precedence over parsed host).
 	pt, err := parsePurgeTarget(target, &t.cfg.KeyConfig)
 	if err != nil {
 		t.metrics.recordPurge("url", mode, "error", 0)
@@ -143,9 +128,6 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 	}
 	if pt == nil {
 		return 0, nil
-	}
-	if cfg.Host != "" {
-		pt.host = cfg.Host
 	}
 
 	patterns := buildPurgePatterns(pt, &t.cfg.KeyConfig)
@@ -231,41 +213,26 @@ func (t *Titip) softPurgeByPattern(ctx context.Context, pattern string) (int64, 
 }
 
 // PurgeTag invalidates all cache entries tagged with the specified tag.
-//
 // The tag is treated as a literal string. To wipe the entire cache namespace, use PurgeAll.
-//
-// Returns the total number of logical cache entries invalidated.
 func (t *Titip) PurgeTag(ctx context.Context, tag string, opts ...PurgeOption) (int64, error) {
 	cfg := &PurgeConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
-
 	mode := purgeModeString(cfg.Soft)
-
 	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
-		t.logger.DebugContext(ctx, "titip: purge tag",
-			slog.String("tag", tag),
-			slog.Bool("soft", cfg.Soft),
-		)
+		t.logger.DebugContext(ctx, "titip: purge tag", slog.String("tag", tag), slog.Bool("soft", cfg.Soft))
 	}
-
 	n, err := t.storage.PurgeByTag(ctx, tag, cfg.Soft)
 	if err != nil {
 		t.metrics.recordPurge("tag", mode, "error", 0)
 		return 0, fmt.Errorf("titip: purge tag: %w", err)
 	}
-
 	t.metrics.recordPurge("tag", mode, "success", n)
 	return n, nil
 }
 
 // PurgeAll deletes every cache entry in the configured storage namespace.
-// Only entries belonging to Titip's key prefix are affected — other Redis keys are preserved.
-//
-// Requires the storage backend to implement storage.AllPurger or storage.PatternDeleter.
-//
-// Returns the total number of logical cache entries invalidated.
 func (t *Titip) PurgeAll(ctx context.Context) (int64, error) {
 	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
 		t.logger.DebugContext(ctx, "titip: purge all")
@@ -292,7 +259,6 @@ func (t *Titip) PurgeAll(ctx context.Context) (int64, error) {
 		t.metrics.recordPurge("all", "hard", "success", n)
 		return n, nil
 	}
-
 	t.metrics.recordPurge("all", "hard", "error", 0)
 	return 0, fmt.Errorf("titip: purge all: storage does not implement AllPurger or PatternDeleter")
 }

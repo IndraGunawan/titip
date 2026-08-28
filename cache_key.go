@@ -222,6 +222,20 @@ func buildQueryString(r *http.Request, cfg *KeyConfig) string {
 	return buildSortedQueryString(r, cfg)
 }
 
+// isQueryAllowed reports whether query param k should be included per cfg.
+func isQueryAllowed(k string, cfg *KeyConfig) bool {
+	if len(cfg.IncludedQueryParams) > 0 {
+		return slices.Contains(cfg.IncludedQueryParams, k)
+	}
+	if slices.Contains(cfg.ExcludedQueryParams, k) {
+		return false
+	}
+	if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, k) {
+		return false
+	}
+	return true
+}
+
 // buildSortedQueryString parses, filters, sorts, and reassembles the query string.
 func buildSortedQueryString(r *http.Request, cfg *KeyConfig) string {
 	values, err := url.ParseQuery(r.URL.RawQuery)
@@ -230,20 +244,8 @@ func buildSortedQueryString(r *http.Request, cfg *KeyConfig) string {
 	}
 
 	keys := make([]string, 0, len(values))
-	if len(cfg.IncludedQueryParams) > 0 {
-		for k := range values {
-			if slices.Contains(cfg.IncludedQueryParams, k) {
-				keys = append(keys, k)
-			}
-		}
-	} else {
-		for k := range values {
-			if slices.Contains(cfg.ExcludedQueryParams, k) {
-				continue
-			}
-			if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, k) {
-				continue
-			}
+	for k := range values {
+		if isQueryAllowed(k, cfg) {
 			keys = append(keys, k)
 		}
 	}
@@ -290,17 +292,8 @@ func buildUnsortedQueryString(r *http.Request, cfg *KeyConfig) string {
 			k = rawKey
 		}
 
-		if len(cfg.IncludedQueryParams) > 0 {
-			if !slices.Contains(cfg.IncludedQueryParams, k) {
-				continue
-			}
-		} else {
-			if slices.Contains(cfg.ExcludedQueryParams, k) {
-				continue
-			}
-			if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, k) {
-				continue
-			}
+		if !isQueryAllowed(k, cfg) {
+			continue
 		}
 
 		v := ""

@@ -442,186 +442,108 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 	return int64(totalProcessed), nil
 }
 
+// scanAndUnlink deletes all keys matching pattern via UNLINK, counting primary meta keys.
+func (s *RedisStorage) scanAndUnlink(ctx context.Context, pattern string) (deleted int, primaryDeleted int, err error) {
+	isMeta := strings.HasPrefix(pattern, s.prefix+"meta:") || pattern == s.prefix+"*"
+	cursor := uint64(0)
+	for {
+		scanCmd := s.client.B().Scan().Cursor(cursor).Match(pattern).Count(scanBatchSize).Build()
+		resp := s.client.Do(ctx, scanCmd)
+		if e := resp.Error(); e != nil {
+			return 0, 0, fmt.Errorf("titip: redis: scan: %w", e)
+		}
+		entry, e := resp.AsScanEntry()
+		if e != nil {
+			return 0, 0, fmt.Errorf("titip: redis: scan entry: %w", e)
+		}
+		if len(entry.Elements) > 0 {
+			cmd := s.client.B().Unlink().Key(entry.Elements...).Build()
+			if e := s.client.Do(ctx, cmd).Error(); e != nil && !rueidis.IsRedisNil(e) {
+				return 0, 0, fmt.Errorf("titip: redis: unlink: %w", e)
+			}
+			deleted += len(entry.Elements)
+			if isMeta {
+				for _, k := range entry.Elements {
+					if strings.HasPrefix(k, s.prefix+"meta:") {
+						primaryDeleted++
+					}
+				}
+			}
+		}
+		cursor = entry.Cursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return
+}
+
 // DeletePattern deletes all keys matching the given glob pattern within the storage namespace.
-// If the pattern does not explicitly specify a keyspace prefix ("meta:", "body:", "tag:"),
-// it automatically deletes both matching metadata Hashes and variant body payload keys.
-// Uses SCAN + UNLINK for non-blocking, incremental deletion.
-// Returns the count of matching primary metadata entries deleted.
 func (s *RedisStorage) DeletePattern(ctx context.Context, pattern string) (int64, error) {
 	var patterns []string
 	isExplicitPrefix := strings.HasPrefix(pattern, "meta:") || strings.HasPrefix(pattern, "body:") || strings.HasPrefix(pattern, "tag:") || pattern == "*"
 	if isExplicitPrefix {
 		patterns = []string{s.prefix + pattern}
 	} else {
-		patterns = []string{
-			s.prefix + "meta:" + pattern,
-			s.prefix + "body:" + pattern + "*",
-		}
+		patterns = []string{s.prefix + "meta:" + pattern, s.prefix + "body:" + pattern + "*"}
 	}
-
-	deleted := 0
-	primaryDeleted := 0
-	for _, fullPattern := range patterns {
-		isMetaPattern := strings.HasPrefix(fullPattern, s.prefix+"meta:") || fullPattern == s.prefix+"*"
-		cursor := uint64(0)
-		for {
-			scanCmd := s.client.B().Scan().
-				Cursor(cursor).
-				Match(fullPattern).
-				Count(scanBatchSize).
-				Build()
-			scanResp := s.client.Do(ctx, scanCmd)
-			if err := scanResp.Error(); err != nil {
-				return 0, fmt.Errorf("titip: redis: delete pattern scan: %w", err)
-			}
-
-			scanEntry, err := scanResp.AsScanEntry()
-			if err != nil {
-				return 0, fmt.Errorf("titip: redis: delete pattern scan entry: %w", err)
-			}
-
-			if len(scanEntry.Elements) > 0 {
-				unlinkCmd := s.client.B().Unlink().Key(scanEntry.Elements...).Build()
-				if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
-					return 0, fmt.Errorf("titip: redis: delete pattern unlink: %w", err)
-				}
-				deleted += len(scanEntry.Elements)
-				if isMetaPattern {
-					for _, k := range scanEntry.Elements {
-						if strings.HasPrefix(k, s.prefix+"meta:") {
-							primaryDeleted++
-						}
-					}
-				}
-			}
-
-			cursor = scanEntry.Cursor
-			if cursor == 0 {
-				break
-			}
+	deleted, primaryDeleted := 0, 0
+	for _, p := range patterns {
+		d, pd, err := s.scanAndUnlink(ctx, p)
+		if err != nil {
+			return 0, err
 		}
+		deleted += d
+		primaryDeleted += pd
 	}
-
 	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "titip: redis: delete pattern complete",
-			slog.String("pattern", pattern),
-			slog.Int("deleted_count", deleted),
-			slog.Int("primary_deleted_count", primaryDeleted),
-		)
+		s.logger.DebugContext(ctx, "titip: redis: delete pattern complete", slog.String("pattern", pattern), slog.Int("deleted_count", deleted), slog.Int("primary_deleted_count", primaryDeleted))
 	}
-
 	return int64(primaryDeleted), nil
 }
 
 // PurgeAll deletes every key in the configured storage namespace prefix.
-// Only keys matching the prefix are affected; all other Redis keys are preserved.
-// Uses SCAN + UNLINK for non-blocking, incremental deletion.
-// Returns the number of primary metadata entries deleted.
 func (s *RedisStorage) PurgeAll(ctx context.Context) (int64, error) {
-	fullPattern := s.prefix + "*"
-
-	deleted := 0
-	primaryDeleted := 0
-	cursor := uint64(0)
-	for {
-		scanCmd := s.client.B().Scan().
-			Cursor(cursor).
-			Match(fullPattern).
-			Count(scanBatchSize).
-			Build()
-		scanResp := s.client.Do(ctx, scanCmd)
-		if err := scanResp.Error(); err != nil {
-			return 0, fmt.Errorf("titip: redis: purge all scan: %w", err)
-		}
-
-		scanEntry, err := scanResp.AsScanEntry()
-		if err != nil {
-			return 0, fmt.Errorf("titip: redis: purge all scan entry: %w", err)
-		}
-
-		if len(scanEntry.Elements) > 0 {
-			unlinkCmd := s.client.B().Unlink().Key(scanEntry.Elements...).Build()
-			if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
-				return 0, fmt.Errorf("titip: redis: purge all unlink: %w", err)
-			}
-			deleted += len(scanEntry.Elements)
-			for _, k := range scanEntry.Elements {
-				if strings.HasPrefix(k, s.prefix+"meta:") {
-					primaryDeleted++
-				}
-			}
-		}
-
-		cursor = scanEntry.Cursor
-		if cursor == 0 {
-			break
-		}
+	deleted, primaryDeleted, err := s.scanAndUnlink(ctx, s.prefix+"*")
+	if err != nil {
+		return 0, err
 	}
-
 	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "titip: redis: purge all complete",
-			slog.String("prefix", s.prefix),
-			slog.Int("deleted_count", deleted),
-			slog.Int("primary_deleted_count", primaryDeleted),
-		)
+		s.logger.DebugContext(ctx, "titip: redis: purge all complete", slog.String("prefix", s.prefix), slog.Int("deleted_count", deleted), slog.Int("primary_deleted_count", primaryDeleted))
 	}
-
 	return int64(primaryDeleted), nil
 }
 
-// SoftPurgePattern scans all metadata keys matching the given glob pattern (scoped to the storage prefix)
-// and marks each matching primary metadata entry as soft-purged (IsSoftPurged = true).
-// Stale body payloads are preserved for stale-if-error fallback.
-// Returns the number of primary metadata entries soft-purged.
+// SoftPurgePattern scans all metadata keys matching pattern and marks each soft-purged.
 func (s *RedisStorage) SoftPurgePattern(ctx context.Context, pattern string) (int64, error) {
 	fullPattern := s.prefix + "meta:" + strings.TrimPrefix(pattern, "meta:")
-
 	count := 0
 	cursor := uint64(0)
 	for {
-		scanCmd := s.client.B().Scan().
-			Cursor(cursor).
-			Match(fullPattern).
-			Count(scanBatchSize).
-			Build()
-		scanResp := s.client.Do(ctx, scanCmd)
-		if err := scanResp.Error(); err != nil {
-			return 0, fmt.Errorf("titip: redis: soft purge pattern scan: %w", err)
+		scanCmd := s.client.B().Scan().Cursor(cursor).Match(fullPattern).Count(scanBatchSize).Build()
+		resp := s.client.Do(ctx, scanCmd)
+		if err := resp.Error(); err != nil {
+			return 0, fmt.Errorf("titip: redis: scan: %w", err)
 		}
-
-		scanEntry, err := scanResp.AsScanEntry()
+		entry, err := resp.AsScanEntry()
 		if err != nil {
-			return 0, fmt.Errorf("titip: redis: soft purge pattern scan entry: %w", err)
+			return 0, fmt.Errorf("titip: redis: scan entry: %w", err)
 		}
-
-		for _, key := range scanEntry.Elements {
-			// Strip the storage prefix and "meta:" to recover the primary key.
+		for _, key := range entry.Elements {
 			primaryKey := strings.TrimPrefix(key, s.prefix+"meta:")
-			if _, err := s.SoftPurge(ctx, primaryKey); err != nil {
-				// Non-fatal: log and continue to avoid partial failures.
-				if s.logger != nil {
-					s.logger.ErrorContext(ctx, "titip: redis: soft purge pattern: failed to soft-purge key",
-						slog.String("key", key),
-						slog.Any("error", err),
-					)
-				}
+			if _, e := s.SoftPurge(ctx, primaryKey); e != nil && s.logger != nil {
+				s.logger.ErrorContext(ctx, "titip: redis: soft purge pattern: failed to soft-purge key", slog.String("key", key), slog.Any("error", e))
 			}
 			count++
 		}
-
-		cursor = scanEntry.Cursor
+		cursor = entry.Cursor
 		if cursor == 0 {
 			break
 		}
 	}
-
 	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "titip: redis: soft purge pattern complete",
-			slog.String("pattern", fullPattern),
-			slog.Int("soft_purged_count", count),
-		)
+		s.logger.DebugContext(ctx, "titip: redis: soft purge pattern complete", slog.String("pattern", fullPattern), slog.Int("soft_purged_count", count))
 	}
-
 	return int64(count), nil
 }
 

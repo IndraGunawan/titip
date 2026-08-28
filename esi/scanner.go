@@ -2,6 +2,7 @@ package esi
 
 import (
 	"bytes"
+	"time"
 
 	proto "github.com/indragunawan/titip/proto"
 )
@@ -343,40 +344,25 @@ func extractAttribute(tagHeader []byte, attrName []byte) string {
 	return string(b)
 }
 
-// parseTimeoutBytes parses seconds (e.g. "0.5", "10", "2.5s", "500ms") directly from []byte into milliseconds.
+// parseTimeoutBytes parses timeout strings like "0.5", "2.5s", "500ms" into milliseconds.
+// ponytail: stdlib time.ParseDuration covers this; fallback bare seconds → ms.
 func parseTimeoutBytes(b []byte) uint32 {
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 {
 		return 0
 	}
-	if bytes.HasSuffix(b, []byte("ms")) {
-		val := parseUintBytes(bytes.TrimSuffix(b, []byte("ms")))
-		return uint32(val)
+	s := string(b)
+	// time.ParseDuration requires unit; bare number means seconds per ESI spec
+	if d, err := time.ParseDuration(s); err == nil {
+		return uint32(d.Milliseconds())
 	}
-	b = bytes.TrimSuffix(b, []byte("s"))
-	if dotIdx := bytes.IndexByte(b, '.'); dotIdx != -1 {
-		intPart := parseUintBytes(b[:dotIdx])
-		fracBytes := b[dotIdx+1:]
-		if len(fracBytes) > 0 {
-			var fracVal uint64
-			var div uint64 = 1
-			for _, c := range fracBytes {
-				if c >= '0' && c <= '9' {
-					fracVal = fracVal*10 + uint64(c-'0')
-					div *= 10
-				}
-			}
-			if div > 1 {
-				ms := intPart*1000 + (fracVal * 1000 / div)
-				return uint32(ms)
-			}
-		}
-		return uint32(intPart * 1000)
+	if d, err := time.ParseDuration(s + "s"); err == nil {
+		return uint32(d.Milliseconds())
 	}
-	return uint32(parseUintBytes(b) * 1000)
+	return 0
 }
 
-// parseUintBytes parses a uint64 directly from []byte.
+// parseUintBytes parses a uint64 from []byte (used for max-depth).
 func parseUintBytes(b []byte) uint64 {
 	b = bytes.TrimSpace(b)
 	var val uint64

@@ -43,6 +43,107 @@ type fragmentResult struct {
 	mode       string
 }
 
+type fetchTarget struct {
+	src       string
+	alt       string
+	timeoutMs uint32
+	maxDepth  uint32
+	onError   string
+	fallback  []byte
+}
+
+// ponytail: shared helpers to avoid duplicating ESI collect/fetch/assemble across processESI and processNestedESI
+func collectTargets(fragments []*pb.EsiFragment) map[string]fetchTarget {
+	m := make(map[string]fetchTarget, len(fragments))
+	for _, frag := range fragments {
+		if frag.Src != "" {
+			if _, exists := m[frag.Src]; !exists {
+				m[frag.Src] = fetchTarget{src: frag.Src, alt: frag.Alt, timeoutMs: frag.TimeoutMs, maxDepth: frag.MaxDepth, onError: frag.OnError, fallback: frag.FallbackBody}
+			}
+		}
+	}
+	return m
+}
+
+func assembleResults(fragments []*pb.EsiFragment, fetched map[string]*fragmentResult) []*fragmentResult {
+	results := make([]*fragmentResult, len(fragments))
+	for i, frag := range fragments {
+		if frag.Src == "" {
+			results[i] = &fragmentResult{spec: frag}
+			continue
+		}
+		if res, ok := fetched[frag.Src]; ok {
+			results[i] = &fragmentResult{spec: frag, body: res.body, err: res.err, setCookies: res.setCookies, duration: res.duration, mode: res.mode}
+		} else {
+			results[i] = &fragmentResult{spec: frag, body: frag.FallbackBody}
+		}
+	}
+	return results
+}
+
+func (t *Titip) fetchAllTargets(ctx *requestContext, targets map[string]fetchTarget, state esiExecutionState) (map[string]*fragmentResult, []string) {
+	maxWorkers := t.cfg.ESI.MaxConcurrentRequests
+	if maxWorkers <= 0 {
+		maxWorkers = 8
+	}
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	fetched := make(map[string]*fragmentResult, len(targets))
+	var allCookies []string
+	for src, tgt := range targets {
+		wg.Add(1)
+		go func(s string, tg fetchTarget) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			res := t.executeInclude(ctx, s, tg, state)
+			mu.Lock()
+			fetched[s] = res
+			if len(res.setCookies) > 0 {
+				allCookies = append(allCookies, res.setCookies...)
+			}
+			mu.Unlock()
+		}(src, tgt)
+	}
+	wg.Wait()
+	return fetched, allCookies
+}
+
+func (t *Titip) fetchAllTargetsUnbounded(ctx *requestContext, targets map[string]fetchTarget, state esiExecutionState) (map[string]*fragmentResult, []string) {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	fetched := make(map[string]*fragmentResult, len(targets))
+	var allCookies []string
+	for src, tgt := range targets {
+		wg.Add(1)
+		go func(s string, tg fetchTarget) {
+			defer wg.Done()
+			res := t.executeInclude(ctx, s, tg, state)
+			mu.Lock()
+			fetched[s] = res
+			if len(res.setCookies) > 0 {
+				allCookies = append(allCookies, res.setCookies...)
+			}
+			mu.Unlock()
+		}(src, tgt)
+	}
+	wg.Wait()
+	return fetched, allCookies
+}
+
+func (t *Titip) expandNestedESI(ctx *requestContext, body []byte, cookies []string, state esiExecutionState) ([]byte, []string) {
+	hasESI, frags := esi.Scan(body)
+	if !hasESI || len(frags) == 0 {
+		return body, cookies
+	}
+	processed, nestedCookies := t.processNestedESI(ctx, body, frags, state)
+	if len(nestedCookies) > 0 {
+		cookies = append(cookies, nestedCookies...)
+	}
+	return processed, cookies
+}
+
 // processESI processes all ESI fragments in parentBody, executes includes concurrently,
 // splices the results, and writes the assembled response to ctx.w.
 func (t *Titip) processESI(
@@ -71,31 +172,7 @@ func (t *Titip) processESI(
 		execState.visitedURLs = append(execState.visitedURLs, ctx.r.URL.Path)
 	}
 
-	// 1. Group fragments by URL for deduplication
-	type fetchTarget struct {
-		src       string
-		alt       string
-		timeoutMs uint32
-		maxDepth  uint32
-		onError   string
-		fallback  []byte
-	}
-
-	uniqueTargets := make(map[string]fetchTarget)
-	for _, frag := range fragments {
-		if frag.Src != "" {
-			if _, exists := uniqueTargets[frag.Src]; !exists {
-				uniqueTargets[frag.Src] = fetchTarget{
-					src:       frag.Src,
-					alt:       frag.Alt,
-					timeoutMs: frag.TimeoutMs,
-					maxDepth:  frag.MaxDepth,
-					onError:   frag.OnError,
-					fallback:  frag.FallbackBody,
-				}
-			}
-		}
-	}
+	uniqueTargets := collectTargets(fragments)
 
 	if t.logger.Enabled(parentReqCtx, slog.LevelDebug) {
 		t.logger.DebugContext(parentReqCtx, "titip: esi: processing document",
@@ -106,64 +183,8 @@ func (t *Titip) processESI(
 		)
 	}
 
-	// 2. Concurrently fetch unique targets with bounded worker pool
-	maxWorkers := t.cfg.ESI.MaxConcurrentRequests
-	if maxWorkers <= 0 {
-		maxWorkers = 8
-	}
-	sem := make(chan struct{}, maxWorkers)
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	fetchedBodies := make(map[string]*fragmentResult)
-	var allCookies []string
-
-	for src, target := range uniqueTargets {
-		wg.Add(1)
-		go func(s string, tgt fetchTarget) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			res := t.executeInclude(ctx, s, tgt, execState)
-			mu.Lock()
-			fetchedBodies[s] = res
-			if len(res.setCookies) > 0 {
-				allCookies = append(allCookies, res.setCookies...)
-			}
-			mu.Unlock()
-		}(src, target)
-	}
-
-	wg.Wait()
-
-	// 3. Assemble fragment results mapped back to original document fragment order
-	results := make([]*fragmentResult, len(fragments))
-	for i, frag := range fragments {
-		if frag.Src == "" {
-			// Remove block, comment tag, or comment wrapper strip
-			results[i] = &fragmentResult{
-				spec: frag,
-				body: nil,
-			}
-		} else {
-			if res, found := fetchedBodies[frag.Src]; found {
-				results[i] = &fragmentResult{
-					spec:       frag,
-					body:       res.body,
-					err:        res.err,
-					setCookies: res.setCookies,
-					duration:   res.duration,
-					mode:       res.mode,
-				}
-			} else {
-				results[i] = &fragmentResult{
-					spec: frag,
-					body: frag.FallbackBody,
-				}
-			}
-		}
-	}
+	fetchedBodies, allCookies := t.fetchAllTargets(ctx, uniqueTargets, execState)
+	results := assembleResults(fragments, fetchedBodies)
 
 	// 4. Pre-sized output buffer splicing
 	outBuf := getBuffer()
@@ -315,18 +336,7 @@ func (t *Titip) executeInclude(
 	// Attempt primary src fetch
 	body, cookies, mode, err := t.fetchFragment(parentCtx, src, effectiveTimeout, childState)
 	if err == nil {
-		// If body contains nested ESI tags, recursively process them within childState
-		if bytes.Contains(body, []byte("<esi:")) || bytes.Contains(body, []byte("<!--esi")) {
-			hasESI, frags := esi.Scan(body)
-			if hasESI && len(frags) > 0 {
-				processed, nestedCookies := t.processNestedESI(parentCtx, body, frags, childState)
-				body = processed
-				if len(nestedCookies) > 0 {
-					cookies = append(cookies, nestedCookies...)
-				}
-			}
-		}
-
+		body, cookies = t.expandNestedESI(parentCtx, body, cookies, childState)
 		t.metrics.recordESIFragment("success")
 		t.metrics.recordESIDuration(mode, time.Since(fetchStart))
 		if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
@@ -358,18 +368,7 @@ func (t *Titip) executeInclude(
 
 		altBody, altCookies, altMode, altErr := t.fetchFragment(parentCtx, target.alt, remainingBudget, altChildState)
 		if altErr == nil {
-			// If alt body contains nested ESI tags, recursively process them
-			if bytes.Contains(altBody, []byte("<esi:")) || bytes.Contains(altBody, []byte("<!--esi")) {
-				hasESI, frags := esi.Scan(altBody)
-				if hasESI && len(frags) > 0 {
-					processed, nestedCookies := t.processNestedESI(parentCtx, altBody, frags, altChildState)
-					altBody = processed
-					if len(nestedCookies) > 0 {
-						altCookies = append(altCookies, nestedCookies...)
-					}
-				}
-			}
-
+			altBody, altCookies = t.expandNestedESI(parentCtx, altBody, altCookies, altChildState)
 			t.metrics.recordESIFragment("fallback")
 			t.metrics.recordESIDuration(altMode, time.Since(altStart))
 			if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
@@ -420,81 +419,11 @@ func (t *Titip) processNestedESI(
 	fragments []*pb.EsiFragment,
 	state esiExecutionState,
 ) ([]byte, []string) {
-	type fetchTarget struct {
-		src       string
-		alt       string
-		timeoutMs uint32
-		maxDepth  uint32
-		onError   string
-		fallback  []byte
-	}
-
-	uniqueTargets := make(map[string]fetchTarget)
-	for _, frag := range fragments {
-		if frag.Src != "" {
-			if _, exists := uniqueTargets[frag.Src]; !exists {
-				uniqueTargets[frag.Src] = fetchTarget{
-					src:       frag.Src,
-					alt:       frag.Alt,
-					timeoutMs: frag.TimeoutMs,
-					maxDepth:  frag.MaxDepth,
-					onError:   frag.OnError,
-					fallback:  frag.FallbackBody,
-				}
-			}
-		}
-	}
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	fetchedBodies := make(map[string]*fragmentResult)
-	var allCookies []string
-
-	for src, target := range uniqueTargets {
-		wg.Add(1)
-		go func(s string, tgt fetchTarget) {
-			defer wg.Done()
-			res := t.executeInclude(parentCtx, s, tgt, state)
-			mu.Lock()
-			fetchedBodies[s] = res
-			if len(res.setCookies) > 0 {
-				allCookies = append(allCookies, res.setCookies...)
-			}
-			mu.Unlock()
-		}(src, target)
-	}
-	wg.Wait()
-
-	results := make([]*fragmentResult, len(fragments))
-	for i, frag := range fragments {
-		if frag.Src == "" {
-			// Remove block, comment tag, or comment wrapper strip
-			results[i] = &fragmentResult{
-				spec: frag,
-				body: nil,
-			}
-		} else {
-			if res, found := fetchedBodies[frag.Src]; found {
-				results[i] = &fragmentResult{
-					spec:       frag,
-					body:       res.body,
-					err:        res.err,
-					setCookies: res.setCookies,
-					duration:   res.duration,
-					mode:       res.mode,
-				}
-			} else {
-				results[i] = &fragmentResult{
-					spec: frag,
-					body: frag.FallbackBody,
-				}
-			}
-		}
-	}
-
+	uniqueTargets := collectTargets(fragments)
+	fetchedBodies, allCookies := t.fetchAllTargetsUnbounded(parentCtx, uniqueTargets, state)
+	results := assembleResults(fragments, fetchedBodies)
 	outBuf := getBuffer()
 	defer putBuffer(outBuf)
-
 	t.spliceFragments(body, results, outBuf)
 	return bytes.Clone(outBuf.Bytes()), allCookies
 }

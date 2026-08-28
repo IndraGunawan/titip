@@ -24,22 +24,17 @@ var (
 	ErrInvalidMethod = errors.New("titip: esi: only GET and HEAD methods are permitted")
 )
 
-// blockedCIDRs contains all private, loopback, link-local, carrier-grade NAT, and cloud metadata prefixes.
+// blockedCIDRs contains prefixes not covered by netip.IsPrivate/IsLoopback/etc.
+// ponytail: 10/8, 172.16/12, 192.168/16 and 127/8 are already IsPrivate/IsLoopback — kept only non-stdlib ones.
 var blockedCIDRs = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),       // Current network
-	netip.MustParsePrefix("10.0.0.0/8"),      // RFC 1918 Private
 	netip.MustParsePrefix("100.64.0.0/10"),   // Carrier-Grade NAT (RFC 6598)
-	netip.MustParsePrefix("127.0.0.0/8"),     // Loopback
-	netip.MustParsePrefix("169.254.0.0/16"), // Link-Local / Cloud Metadata
-	netip.MustParsePrefix("172.16.0.0/12"),   // RFC 1918 Private
 	netip.MustParsePrefix("192.0.0.0/24"),    // IETF Protocol Assignments
-	netip.MustParsePrefix("192.168.0.0/16"),  // RFC 1918 Private
 	netip.MustParsePrefix("198.18.0.0/15"),   // Network Benchmark
 	netip.MustParsePrefix("224.0.0.0/4"),     // Multicast
 	netip.MustParsePrefix("240.0.0.0/4"),     // Reserved
 	netip.MustParsePrefix("::1/128"),         // IPv6 Loopback
 	netip.MustParsePrefix("fc00::/7"),        // IPv6 Unique Local Address
-	netip.MustParsePrefix("fe80::/10"),       // IPv6 Link-Local
 }
 
 // SSRFConfig configures outbound ESI fetch security.
@@ -187,18 +182,7 @@ func NewSSRFSafeTransport(cfg SSRFConfig, dialTimeout time.Duration) http.RoundT
 				}
 			}
 
-			// Perform DNS resolution first and inspect all resolved IPs before dialing
-			if cfg.BlockPrivateIPs {
-				ips, lookupErr := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-				if lookupErr == nil && len(ips) > 0 {
-					for _, ip := range ips {
-						if IsIPBlocked(ip) {
-							return nil, fmt.Errorf("%w: resolved blocked ip %s for host %s", ErrSSRFBlocked, ip.String(), host)
-						}
-					}
-				}
-			}
-
+			// ponytail: Control already blocks private IPs post-resolution; explicit LookupNetIP caused double DNS.
 			return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
 		},
 		MaxIdleConns:          100,

@@ -323,8 +323,7 @@ func WithESIErrorMarker(marker string) Option {
 
 // PurgeConfig defines options for cache invalidations.
 type PurgeConfig struct {
-	Soft bool   // Soft marks entries as stale rather than evicting immediately (default: false = hard delete).
-	Host string // Host scopes the purge to a specific domain (lowercased, default ports stripped).
+	Soft bool // Soft marks entries as stale rather than evicting immediately (default: false = hard delete).
 }
 
 // PurgeOption configures Purge, PurgeTag, or PurgeAll operations.
@@ -335,14 +334,5 @@ type PurgeOption func(*PurgeConfig)
 func WithSoftPurge() PurgeOption {
 	return func(c *PurgeConfig) {
 		c.Soft = true
-	}
-}
-
-// WithPurgeHost scopes a Purge operation to a specific domain.
-// The host is normalized (lowercased, default ports stripped) automatically.
-// Takes precedence over any host parsed from the target URL.
-func WithPurgeHost(host string) PurgeOption {
-	return func(c *PurgeConfig) {
-		c.Host = normalizeHost(host, "")
 	}
 }
