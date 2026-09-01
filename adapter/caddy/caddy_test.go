@@ -722,10 +722,8 @@ func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
 
 	var wg sync.WaitGroup
 	concurrentRequests := 20
-	for i := 0; i < concurrentRequests; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range concurrentRequests {
+		wg.Go(func() {
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/multi-frag", nil)
 			repl := caddymain.NewReplacer()
 			ctx := context.WithValue(req.Context(), caddymain.ReplacerCtxKey, repl)
@@ -742,7 +740,7 @@ func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
 			if rec.Body.String() != expected {
 				t.Errorf("unexpected body: got %q, want %q", rec.Body.String(), expected)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
@@ -836,6 +834,7 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 	prefix := fmt.Sprintf("test:caddy:global:inherit:%d:", rand.Int63())
 
 	caddyfileInput := fmt.Sprintf(`{
+		skip_install_trust
 		titip {
 			storage redis {
 				address %q
@@ -909,6 +908,7 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 
 	caddyfileInput := fmt.Sprintf(`{
 		admin off
+		skip_install_trust
 		titip {
 			storage redis {
 				address %q
@@ -965,6 +965,7 @@ func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 
 	caddyfileInput := fmt.Sprintf(`{
 		admin off
+		skip_install_trust
 		titip {
 			storage redis {
 				address %q
@@ -1052,6 +1053,7 @@ func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 
 	caddyfileInput := fmt.Sprintf(`{
 		admin off
+		skip_install_trust
 		titip {
 			storage redis {
 				address %q

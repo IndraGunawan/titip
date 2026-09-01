@@ -306,7 +306,7 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 			Tags:       []string{"category:tech"},
 		}
 		v := &pb.VariantInfo{VariantKey: "gzip", StatusCode: 200}
-		body := []byte(fmt.Sprintf("tech_body_%d", i))
+		body := fmt.Appendf(nil, "tech_body_%d", i)
 		if err := store.SetVariant(ctx, pk, meta, v, body, 60*time.Second); err != nil {
 			t.Fatalf("set variant failed: %v", err)
 		}
@@ -320,7 +320,7 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 			Tags:       []string{"category:news"},
 		}
 		v := &pb.VariantInfo{VariantKey: "gzip", StatusCode: 200}
-		body := []byte(fmt.Sprintf("news_body_%d", i))
+		body := fmt.Appendf(nil, "news_body_%d", i)
 		if err := store.SetVariant(ctx, pk, meta, v, body, 60*time.Second); err != nil {
 			t.Fatalf("set variant failed: %v", err)
 		}
@@ -535,7 +535,7 @@ func TestConcurrencyAndRaces(t *testing.T) {
 			for j := range iterations {
 				varKey := fmt.Sprintf("v_%d", j%3)
 				v := &pb.VariantInfo{VariantKey: varKey, StatusCode: 200}
-				body := []byte(fmt.Sprintf("body_%d_%d", id, j))
+				body := fmt.Appendf(nil, "body_%d_%d", id, j)
 
 				_ = store.SetVariant(ctx, pk, meta, v, body, 30*time.Second)
 				_, _, _ = store.GetVariant(ctx, pk, varKey)
@@ -669,6 +669,60 @@ func TestTagHashFieldAutoEviction(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("expected exactly 1 entry purged, got %d", n)
+	}
+}
+
+func TestStorage_Variant_HEXPIRE_Eviction(t *testing.T) {
+	client, store, prefix := setupTestRedis(t)
+	ctx := context.Background()
+
+	pk := "https://example.com/multi-variant-expire"
+	meta := &pb.CacheMetadata{
+		PrimaryKey:      pk,
+		VaryHeaderNames: []string{"Accept-Encoding"},
+	}
+
+	// 1. Save variant 1 (gzip) with short TTL (1s)
+	vShort := &pb.VariantInfo{VariantKey: "gzip", StatusCode: 200}
+	if err := store.SetVariant(ctx, pk, meta, vShort, []byte("gzip-body"), 1*time.Second); err != nil {
+		t.Fatalf("failed to set short variant: %v", err)
+	}
+
+	// 2. Save variant 2 (br) with long TTL (60s)
+	vLong := &pb.VariantInfo{VariantKey: "br", StatusCode: 200}
+	if err := store.SetVariant(ctx, pk, meta, vLong, []byte("br-body"), 60*time.Second); err != nil {
+		t.Fatalf("failed to set long variant: %v", err)
+	}
+
+	metaKey := prefix + "meta:" + pk
+
+	// Verify both variants exist initially in metadata hash
+	gzipVal, err := client.Do(ctx, client.B().Hget().Key(metaKey).Field("v:gzip").Build()).ToString()
+	if err != nil || gzipVal == "" {
+		t.Fatalf("expected v:gzip in meta hash, got err=%v", err)
+	}
+	brVal, err := client.Do(ctx, client.B().Hget().Key(metaKey).Field("v:br").Build()).ToString()
+	if err != nil || brVal == "" {
+		t.Fatalf("expected v:br in meta hash, got err=%v", err)
+	}
+
+	// Wait for short variant field TTL to elapse
+	time.Sleep(1500 * time.Millisecond)
+
+	// Verify v:gzip was automatically evicted by Redis HEXPIRE
+	gzipResp := client.Do(ctx, client.B().Hget().Key(metaKey).Field("v:gzip").Build())
+	if !rueidis.IsRedisNil(gzipResp.Error()) {
+		t.Fatalf("expected v:gzip field to be auto-evicted from metadata hash, got %v", gzipResp.Error())
+	}
+
+	// Long variant (v:br) and _index must still exist
+	brValAfter, err := client.Do(ctx, client.B().Hget().Key(metaKey).Field("v:br").Build()).ToString()
+	if err != nil || brValAfter == "" {
+		t.Fatalf("expected v:br to still exist in metadata hash, got err=%v", err)
+	}
+	indexVal, err := client.Do(ctx, client.B().Hget().Key(metaKey).Field("_index").Build()).ToString()
+	if err != nil || indexVal == "" {
+		t.Fatalf("expected _index to still exist in metadata hash, got err=%v", err)
 	}
 }
 

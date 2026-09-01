@@ -1,187 +1,115 @@
 # Titip Redis Storage Engine
 
-High-performance, low-allocation Redis storage backend for `titip` HTTP caching middleware, powered by [`rueidis`](https://github.com/redis/rueidis).
+Redis storage backend for the `titip` HTTP caching middleware, powered by [`rueidis`](https://github.com/redis/rueidis).
 
 ---
 
-## 1. System Requirements
+## Requirements
 
-- **Redis 7.4+** (or Redis 8.0+)
-  - **`HEXPIRE` / `HPEXPIRE`**: Requires native Hash field-level expiration introduced in Redis 7.4. Automatically evicts individual expired primary keys from surrogate tag hashes in the background with zero application overhead.
-  - **`EXPIRE ... GT` & `EXPIRE ... NX`**: Requires native Greater-Than / Not-Exists key expiration extensions introduced in Redis 7.0 to dynamically maintain metadata and tag hash TTLs equal to the longest-surviving item's TTL.
-  - Requires atomic Redis Hash commands (`HSET`, `HMGET`, `HGETALL`, `HKEYS`, `HSCAN`).
+- **Redis 7.4+** (utilizes native Hash field expiration `HEXPIRE` and dynamic TTL extension `EXPIRE ... GT`)
 - **Go 1.22+**
 
 ---
 
-## 2. Storage Architecture & Two-Stage Resolution
-
-Titip decouples cache lookups into a high-speed **Two-Stage Resolution** model to eliminate unnecessary Body I/O during metadata validation, conditional `304 Not Modified` checks, and `HEAD` requests.
-
-```mermaid
-graph TD
-    Client[HTTP Request] --> S1[Stage 1: Lookup Metadata Hash]
-    S1 -->|meta:PRIMARY_KEY| RedisMeta[Redis Hash: _index + Variants]
-    RedisMeta --> VaryCheck{Vary Headers & Freshness Check}
-
-    VaryCheck -->|Conditional 304 / HEAD Hit| Serve304[Serve 304 / Headers with 0 Body I/O]
-    VaryCheck -->|Fresh Variant Hit| S2[Stage 2: Fetch Body]
-    VaryCheck -->|Variant Miss / Expired| Origin[Origin Server Revalidation]
-
-    S2 -->|body:PRIMARY_KEY:VARIANT_KEY| RedisBody[Redis String: LZ4 Compressed Body]
-    RedisBody --> Decompress[Decompress LZ4 & Stream to Client]
-```
-
-### Redis Key Layout
+## Key Layout
 
 | Key Pattern | Redis Type | Description |
 | :--- | :--- | :--- |
-| `<prefix>meta:<primaryKey>` | **Hash** | Holds Stage 1 metadata index (`_index` field) and all variant header descriptors (`<variantKey>` fields). |
-| `<prefix>body:<primaryKey>:<variantKey>` | **String** | Holds the LZ4-compressed response payload for an individual variant. |
-| `<prefix>tag:<tag>` | **Hash** | Hash of Primary Keys indexed under a surrogate tag (e.g. `category:tech`), with per-item field expiration (`HEXPIRE`) and top-level longest-item TTL tracking (`EXPIRE GT`). |
+| `<prefix>meta:<primaryKey>` | **Hash** | Stores metadata index and variant descriptors with per-variant field expiration. |
+| `<prefix>body:<primaryKey>:<variantKey>` | **String** | Stores the compressed response payload for an individual variant. |
+| `<prefix>tag:<tag>` | **Hash** | Indexes primary keys under surrogate tags with per-item field expiration. |
 
 ---
 
-## 3. Data Model & Protobuf Serialization
+## Storage Architecture & Lifecycle
 
-### A. Metadata Hash Fields (`<prefix>meta:<primaryKey>`)
+Titip decouples cache storage into a **Two-Stage Resolution** model to optimize I/O and memory usage:
 
-1. **`_index` Field (`CacheMetadata` Protobuf)**:
-   - Contains lean metadata common to the primary URL:
-     - `PrimaryKey`: Canonical URL / key string.
-     - `VaryHeaderNames`: Ordered list of `Vary` header names (e.g. `["Accept-Encoding", "Accept-Language"]`).
-     - `CreatedAtUnixNano`: Creation timestamp.
-     - `ExpiresAtUnixNano`: Cache expiration timestamp.
-     - `StaleUntilUnixNano`: Stale-while-revalidate expiration timestamp.
-     - `Tags`: Surrogate cache tags.
-     - `IsSoftPurged`: Boolean flag indicating if the entry was soft-purged.
+1. **Two-Stage Resolution**:
+   - **Stage 1 (Metadata Hash)**: Fast lookup of metadata and variant descriptors to negotiate `Vary` headers, check freshness, and serve conditional `304 Not Modified` responses with zero body payload I/O.
+   - **Stage 2 (Variant Body)**: Compressed response payloads are fetched only when serving full cache hits (`200 OK`).
 
-2. **`<variantKey>` Fields (`VariantInfo` Protobuf)**:
-   - Each variant (e.g. `default`, `gzip`, `br`, `en-US`) has its own field inside the Hash:
-     - `VariantKey`: Variant identifier.
-     - `StatusCode`: HTTP response status code (e.g. 200, 404).
-     - `ResponseHeaders`: Compressed map of response headers.
-     - `Etag`: Response ETag validator.
-     - `LastModifiedUnixNano`: Last-Modified timestamp.
-     - `RawBodySize`: Original uncompressed payload size.
-     - `CompressedBodySize`: LZ4-compressed payload size.
+2. **Field-Level Expiration (`HEXPIRE`)**:
+   - Individual variant fields in metadata hashes and primary key members in tag hashes have their own TTLs set via native `HEXPIRE`. When an item expires, Redis automatically evicts the field in the background.
 
-### B. Variant Body Keys (`<prefix>body:<primaryKey>:<variantKey>`)
-
-- Stores the raw bytes of the LZ4-compressed HTTP response body.
-- Retained for `EffectiveTTL + max(StaleWhileRevalidateTTL, StaleIfErrorTTL)`.
+3. **Dynamic TTL Extension (`EXPIRE ... GT`)**:
+   - Metadata hashes and tag hashes dynamically extend their key-level TTL to match the expiration of the longest-surviving item using native `EXPIRE ... GT` without requiring read-modify-write operations.
 
 ---
 
-## 4. Write Pipeline (`SetVariant`)
-
-When saving or updating a cached variant, Titip executes an **atomic multi-operation pipeline in a single network roundtrip** (`DoMulti`):
-
-```go
-cmds := []rueidis.Completed{
-    // 1. Atomically update metadata index and variant headers in Hash
-    HSET metaKey _index <metaBytes> <variantKey> <varBytes>,
-
-    // 2. Clear soft purge status on fresh write
-    HDEL metaKey _soft_purged,
-
-    // 3. Save LZ4-compressed body with retention TTL
-    SET bodyKey <body> EX <storageTTL>,
-
-    // 4. Dynamic metadata TTL: set if NX, extend if GT
-    EXPIRE metaKey <storageTTL> NX,
-    EXPIRE metaKey <storageTTL> GT,
-
-    // 5. Index tags in Redis Hashes with per-item field TTL (HEXPIRE) and key TTL extension (EXPIRE GT)
-    HSET tagKey <primaryKey> "1",
-    HEXPIRE tagKey <storageTTL> FIELDS 1 <primaryKey>,
-    EXPIRE tagKey <storageTTL> NX,
-    EXPIRE tagKey <storageTTL> GT,
-}
-```
-
-### Dynamic TTL Extension & Field-Level Expiration
-
-1. **Metadata Hash TTL**: The metadata Hash TTL always equals the expiration of the **longest-surviving variant** using native `EXPIRE ... GT` (zero read-modify-write).
-2. **Tag Hash Field & Key Expiration**:
-   - Each primary key member is stored as a field in `<prefix>tag:<tag>` with its own TTL set via `HEXPIRE`. When an individual cache item expires, Redis automatically cleans it up from the tag Hash.
-   - The top-level `<prefix>tag:<tag>` Hash key TTL dynamically extends via `EXPIRE ... GT` to equal the longest TTL of all items in that tag.
-
----
-
-## 5. Invalidation & Purging Mechanics
-
-### A. URL Purging (`Purge(ctx, primaryKey, soft)`)
-
-1. **Hard Purge (`Purge(ctx, primaryKey, soft=false)`)**:
-   - Fetches all variant field names using `HKEYS metaKey`.
-   - Atomically executes a pipelined `DEL` deleting `metaKey` and every associated `bodyKey` (`body:<primaryKey>:<variantKey>`).
-   - **Guarantees zero orphaned body keys** in Redis.
-
-2. **Soft Purge (`Purge(ctx, primaryKey, soft=true)`)**:
-   - Executes an atomic Lua script verifying `_index` existence and sets `_soft_purged` to `"1"` directly in the Redis hash (zero read-modify-write).
-   - Preserves all variant body keys intact so concurrent requests can serve stale cached content while asynchronously revalidating in the background.
-
----
-
-### B. Tag Purging (`PurgeByTag(ctx, tag, soft)`)
-
-1. **Hard Tag Purge (`PurgeByTag(ctx, tag, soft=false)`)**:
-   - Streams active primary keys in `<prefix>tag:<tag>` via non-blocking `HSCAN`.
-   - Pipelines `HKEYS` queries across matched primary keys.
-   - Atomically deletes the tag Hash key, all metadata Hash keys, and all variant body keys.
-
-2. **Soft Tag Purge (`PurgeByTag(ctx, tag, soft=true)`)**:
-   - Streams active primary keys in `<prefix>tag:<tag>` via non-blocking `HSCAN`.
-   - Sets `_soft_purged 1` across all matched metadata hashes while leaving body keys intact for stale fallbacks.
-
----
-
-## 6. Go Usage Example
+## Usage
 
 ```go
 package main
 
 import (
- "context"
- "log"
- "time"
+	"context"
+	"log"
+	"time"
 
- "github.com/redis/rueidis"
+	"github.com/redis/rueidis"
 
- "github.com/indragunawan/titip"
- storageRedis "github.com/indragunawan/titip/storage/redis"
+	"github.com/indragunawan/titip"
+	storageRedis "github.com/indragunawan/titip/storage/redis"
 )
 
 func main() {
- // 1. Initialize Rueidis client
- client, err := rueidis.NewClient(rueidis.ClientOption{
-  InitAddress:  []string{"127.0.0.1:6379"},
-  DisableCache: true,
- })
- if err != nil {
-  log.Fatalf("failed to connect to Redis: %v", err)
- }
- defer client.Close()
+	// 1. Initialize Rueidis client
+	client, err := rueidis.NewClient(rueidis.ClientOption{
+		InitAddress: []string{"127.0.0.1:6379"},
+	})
+	if err != nil {
+		log.Fatalf("failed to connect to Redis: %v", err)
+	}
+	defer client.Close()
 
- // 2. Initialize Titip Redis Storage Engine
- store, err := storageRedis.New(
-  client,
-  storageRedis.WithKeyPrefix("myapp:cache:"),
- )
- if err != nil {
-  log.Fatalf("failed to initialize storage: %v", err)
- }
+	// 2. Initialize Titip Redis Storage Engine
+	store, err := storageRedis.New(
+		client,
+		storageRedis.WithKeyPrefix("myapp:cache:"),
+	)
+	if err != nil {
+		log.Fatalf("failed to initialize storage: %v", err)
+	}
 
- // 3. Attach storage to Titip
- engine, err := titip.New(
-  titip.WithStorage(store),
-  titip.WithOriginTimeout(5*time.Second),
-  titip.WithStorageTimeout(2*time.Second),
- )
- if err != nil {
-  log.Fatalf("failed to initialize titip: %v", err)
- }
- defer engine.Close(context.Background())
+	// 3. Attach storage to Titip
+	cache, err := titip.New(
+		titip.WithStorage(store),
+		titip.WithOriginTimeout(5*time.Second),
+		titip.WithStorageTimeout(1*time.Second),
+	)
+	if err != nil {
+		log.Fatalf("failed to initialize titip: %v", err)
+	}
+	defer cache.Close(context.Background())
+}
+```
+
+---
+
+## Caddy Integration
+
+To use Redis storage with Caddy, include `github.com/indragunawan/titip/storage/redis/caddy` when compiling Caddy with `xcaddy`:
+
+```bash
+xcaddy build \
+  --with github.com/indragunawan/titip/adapter/caddy \
+  --with github.com/indragunawan/titip/storage/redis/caddy
+```
+
+### Caddyfile Configuration
+
+```caddyfile
+:8080 {
+    route {
+        titip {
+            storage redis {
+                address localhost:6379
+                key_prefix titip:
+                password {env.REDIS_PASSWORD}
+                db 0
+            }
+        }
+    }
 }
 ```

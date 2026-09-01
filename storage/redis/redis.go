@@ -24,6 +24,9 @@ const (
 	scanBatchSize = 100
 )
 
+// softPurgeScript atomically marks an existing metadata hash as soft-purged.
+// Lua is required to ensure atomicity: a direct HSET on a non-existent or expired key
+// would create a phantom hash key with no TTL (TTL=-1) that leaks memory forever.
 var softPurgeScript = rueidis.NewLuaScript(`
 if redis.call('HEXISTS', KEYS[1], '_index') == 1 then
     redis.call('HSET', KEYS[1], '_soft_purged', '1')
@@ -229,14 +232,24 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		Build()
 	cmds = append(cmds, hsetCmd)
 
-	// 2. HDEL metaKey _soft_purged (resets soft purge on fresh content)
+	// 2. Set field-level TTL on the variant field in metadata Hash (HEXPIRE)
+	hexpireVariantCmd := s.client.B().Hexpire().
+		Key(s.metaKey(primaryKey)).
+		Seconds(ttlSeconds).
+		Fields().
+		Numfields(1).
+		Field(s.variantField(variant.VariantKey)).
+		Build()
+	cmds = append(cmds, hexpireVariantCmd)
+
+	// 3. HDEL metaKey _soft_purged (resets soft purge on fresh content)
 	hdelSoftPurgeCmd := s.client.B().Hdel().
 		Key(s.metaKey(primaryKey)).
 		Field(softPurgedField).
 		Build()
 	cmds = append(cmds, hdelSoftPurgeCmd)
 
-	// 3. SET bodyKey <body> EX <ttl>
+	// 4. SET bodyKey <body> EX <ttl>
 	setBodyCmd := s.client.B().Set().
 		Key(s.bodyKey(primaryKey, variant.VariantKey)).
 		Value(rueidis.BinaryString(body)).
@@ -244,7 +257,7 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		Build()
 	cmds = append(cmds, setBodyCmd)
 
-	// 4. Dynamic TTL: Set initial TTL if none exists (NX), or extend if new TTL is greater (GT)
+	// 5. Dynamic TTL: Set initial TTL if none exists (NX), or extend if new TTL is greater (GT)
 	expireNXCmd := s.client.B().Expire().Key(s.metaKey(primaryKey)).Seconds(ttlSeconds).Nx().Build()
 	expireGTCmd := s.client.B().Expire().Key(s.metaKey(primaryKey)).Seconds(ttlSeconds).Gt().Build()
 	cmds = append(cmds, expireNXCmd, expireGTCmd)

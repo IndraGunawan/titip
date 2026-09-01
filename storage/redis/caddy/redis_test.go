@@ -17,12 +17,11 @@ func getTestRedisAddr() string {
 
 func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 	config := `redis {
-		address 127.0.0.1:6379
+		address 127.0.0.1:6379 127.0.0.1:6380,127.0.0.1:6381
 		key_prefix custom:
 		username testuser
 		password testpass
 		db 2
-		client_side_cache false
 	}`
 
 	d := caddyfile.NewTestDispenser(config)
@@ -31,9 +30,16 @@ func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 
-	if r.Address != "127.0.0.1:6379" {
-		t.Errorf("expected address 127.0.0.1:6379, got %s", r.Address)
+	expectedAddrs := []string{"127.0.0.1:6379", "127.0.0.1:6380", "127.0.0.1:6381"}
+	if len(r.Addresses) != len(expectedAddrs) {
+		t.Fatalf("expected %d addresses, got %v", len(expectedAddrs), r.Addresses)
 	}
+	for i, addr := range expectedAddrs {
+		if r.Addresses[i] != addr {
+			t.Errorf("address[%d] expected %q, got %q", i, addr, r.Addresses[i])
+		}
+	}
+
 	if r.KeyPrefix != "custom:" {
 		t.Errorf("expected key_prefix custom:, got %s", r.KeyPrefix)
 	}
@@ -46,15 +52,12 @@ func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 	if r.DB != 2 {
 		t.Errorf("expected db 2, got %d", r.DB)
 	}
-	if r.ClientSideCache != false {
-		t.Errorf("expected client_side_cache false, got %v", r.ClientSideCache)
-	}
 }
 
 func TestRedisStorage_ProvisionAndCleanup(t *testing.T) {
 	addr := getTestRedisAddr()
 	r := &RedisStorage{
-		Address:   addr,
+		Addresses: []string{addr},
 		KeyPrefix: "caddy_test:",
 	}
 

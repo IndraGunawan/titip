@@ -1,4 +1,4 @@
-# Titip Caddy Adapter — Turnkey Interactive Demo
+# Titip Caddy Adapter — Interactive Demo
 
 Demonstrates native Caddy HTTP reverse proxy caching with dynamic Redis storage and the Caddy Admin Purge API (`POST /titip/purge`).
 
@@ -61,7 +61,7 @@ curl -i http://localhost:8080/esi-demo
 
 1. Caddy intercepts the origin HTML containing `<esi:include>`, `<esi:remove>`, `<esi:comment>`, and `<!--esi ... -->`.
 2. Concurrently dispatches in-process virtual subrequests to fetch `/api/esi/header`, `/api/esi/user`, and `/api/esi/footer`.
-3. Slices and splices the components together into a single memory buffer with **$0\text{ heap allocations}$** on cache hits.
+3. Slices and splices the components together using pooled memory buffers.
 4. Forwards fragment `Set-Cookie` headers (`caddy_user_session`) directly to downstream clients.
 
 ---

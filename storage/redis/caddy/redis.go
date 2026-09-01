@@ -3,6 +3,7 @@ package caddy
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -18,12 +19,11 @@ func init() {
 
 // RedisStorage implements a Caddy storage guest module under the "titip.storage.redis" namespace.
 type RedisStorage struct {
-	Address         string `json:"address,omitempty"`
-	KeyPrefix       string `json:"key_prefix,omitempty"`
-	Username        string `json:"username,omitempty"`
-	Password        string `json:"password,omitempty"`
-	DB              int    `json:"db,omitempty"`
-	ClientSideCache bool   `json:"client_side_cache,omitempty"`
+	Addresses []string `json:"addresses,omitempty"`
+	KeyPrefix string   `json:"key_prefix,omitempty"`
+	Username  string   `json:"username,omitempty"`
+	Password  string   `json:"password,omitempty"`
+	DB        int      `json:"db,omitempty"`
 
 	store  storage.Storage
 	client rueidis.Client
@@ -40,10 +40,20 @@ func (RedisStorage) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the Redis client and storage backend.
 func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	repl := caddy.NewReplacer()
-	addr := repl.ReplaceKnown(r.Address, "")
-	if addr == "" {
-		addr = "127.0.0.1:6379"
+	var addrs []string
+	for _, raw := range r.Addresses {
+		replaced := repl.ReplaceKnown(raw, "")
+		for a := range strings.SplitSeq(replaced, ",") {
+			trimmed := strings.TrimSpace(a)
+			if trimmed != "" {
+				addrs = append(addrs, trimmed)
+			}
+		}
 	}
+	if len(addrs) == 0 {
+		addrs = []string{"127.0.0.1:6379"}
+	}
+
 	prefix := repl.ReplaceKnown(r.KeyPrefix, "")
 	if prefix == "" {
 		prefix = "titip:"
@@ -52,11 +62,10 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	password := repl.ReplaceKnown(r.Password, "")
 
 	opt := rueidis.ClientOption{
-		InitAddress:  []string{addr},
-		Username:     username,
-		Password:     password,
-		SelectDB:     r.DB,
-		DisableCache: !r.ClientSideCache,
+		InitAddress: addrs,
+		Username:    username,
+		Password:    password,
+		SelectDB:    r.DB,
 	}
 
 	client, err := rueidis.NewClient(opt)
@@ -100,11 +109,19 @@ func (r *RedisStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
-			case "address":
-				if !d.NextArg() {
+			case "address", "addresses":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
 					return d.ArgErr()
 				}
-				r.Address = d.Val()
+				for _, arg := range args {
+					for a := range strings.SplitSeq(arg, ",") {
+						trimmed := strings.TrimSpace(a)
+						if trimmed != "" {
+							r.Addresses = append(r.Addresses, trimmed)
+						}
+					}
+				}
 			case "key_prefix":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -129,15 +146,6 @@ func (r *RedisStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid db number %q: %v", d.Val(), err)
 				}
 				r.DB = db
-			case "client_side_cache":
-				if !d.NextArg() {
-					return d.ArgErr()
-				}
-				csc, err := strconv.ParseBool(d.Val())
-				if err != nil {
-					return d.Errf("invalid client_side_cache value %q: %v", d.Val(), err)
-				}
-				r.ClientSideCache = csc
 			default:
 				return d.Errf("unknown subdirective %q", d.Val())
 			}

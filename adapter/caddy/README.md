@@ -24,7 +24,7 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
 
 ```caddyfile
 {
-    # 🌐 Global Titip Cache Configuration (Shared Redis Storage & Default Policies)
+    # Global Titip Cache Configuration (Shared Redis Storage & Default Policies)
     titip {
         storage redis {
             address localhost:6379
@@ -45,7 +45,7 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
 }
 
 :8080 {
-    # 🚀 Inherits all global Titip settings & shared storage automatically!
+    # Inherits global Titip settings and shared storage
     titip
     reverse_proxy localhost:9000
 }
@@ -136,7 +136,7 @@ curl -X POST http://localhost:2019/titip/purge \
 
 ---
 
-## 4. Multi-Site & Zero-Downtime Reloads
+## 4. Multi-Site & Graceful Reloads
 
 * **Multi-Site Routing**: Multiple `titip` directive blocks can run simultaneously across different virtual hosts or path prefixes.
-* **Zero-Downtime Dynamic Reloads**: Implements `caddy.CleanerUpper` to cleanly drain background revalidation tasks and terminate connections during `caddy reload`.
+* **Graceful Dynamic Reloads**: Implements `caddy.CleanerUpper` to cleanly drain background revalidation tasks and close connections during `caddy reload`.
