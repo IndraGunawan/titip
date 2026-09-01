@@ -67,6 +67,15 @@ func getKeyTTL(ctx context.Context, client rueidis.Client, key string) int64 {
 	return res
 }
 
+func getFieldTTL(ctx context.Context, client rueidis.Client, key, field string) int64 {
+	resp := client.Do(ctx, client.B().Httl().Key(key).Fields().Numfields(1).Field(field).Build())
+	slice, err := resp.AsIntSlice()
+	if err == nil && len(slice) > 0 {
+		return slice[0]
+	}
+	return -2
+}
+
 func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 	ctx := context.Background()
 	_, store, _ := setupTestRedis(t)
@@ -303,7 +312,40 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 		}
 	}
 
-	// Hard Purge
+	// Setup 2 URLs under tag "category:news" for soft purge
+	for i := 1; i <= 2; i++ {
+		pk := fmt.Sprintf("https://example.com/news/%d", i)
+		meta := &pb.CacheMetadata{
+			PrimaryKey: pk,
+			Tags:       []string{"category:news"},
+		}
+		v := &pb.VariantInfo{VariantKey: "gzip", StatusCode: 200}
+		body := []byte(fmt.Sprintf("news_body_%d", i))
+		if err := store.SetVariant(ctx, pk, meta, v, body, 60*time.Second); err != nil {
+			t.Fatalf("set variant failed: %v", err)
+		}
+	}
+
+	// 1. Soft Purge on "category:news"
+	nSoft, err := store.PurgeByTag(ctx, "category:news", true)
+	if err != nil {
+		t.Fatalf("soft purge tag failed: %v", err)
+	}
+	if nSoft != 2 {
+		t.Fatalf("expected 2 entries soft-purged, got %d", nSoft)
+	}
+	for i := 1; i <= 2; i++ {
+		pk := fmt.Sprintf("https://example.com/news/%d", i)
+		m, softPurged, err := store.GetMeta(ctx, pk)
+		if err != nil || m == nil {
+			t.Fatalf("expected meta to exist for %s, err: %v", pk, err)
+		}
+		if !softPurged {
+			t.Fatalf("expected entry %s to be marked soft-purged", pk)
+		}
+	}
+
+	// 2. Hard Purge on "category:tech"
 	n, err := store.PurgeByTag(ctx, "category:tech", false)
 	if err != nil {
 		t.Fatalf("purge tag failed: %v", err)
@@ -312,7 +354,7 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 		t.Fatalf("expected 3 entries purged, got %d", n)
 	}
 
-	// Verify all deleted
+	// Verify all deleted for tech
 	for i := 1; i <= 3; i++ {
 		pk := fmt.Sprintf("https://example.com/tech/%d", i)
 		if keyExists(ctx, client, prefix+"meta:"+pk) {
@@ -321,6 +363,9 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 		if keyExists(ctx, client, prefix+"body:"+pk+":gzip") {
 			t.Fatalf("expected body key %s:gzip to be deleted", pk)
 		}
+	}
+	if keyExists(ctx, client, prefix+"tag:category:tech") {
+		t.Fatalf("expected tag hash key to be unlinked after hard purge")
 	}
 }
 
@@ -502,7 +547,7 @@ func TestConcurrencyAndRaces(t *testing.T) {
 	wg.Wait()
 }
 
-func TestTagSetDynamicTTLExtension(t *testing.T) {
+func TestTagHashDynamicTTLExtension(t *testing.T) {
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -522,10 +567,14 @@ func TestTagSetDynamicTTLExtension(t *testing.T) {
 	tagKey := prefix + "tag:" + tag
 	ttl1 := getKeyTTL(ctx, client, tagKey)
 	if ttl1 < 25 || ttl1 > 30 {
-		t.Fatalf("expected tag TTL ~30s, got %v", ttl1)
+		t.Fatalf("expected tag key TTL ~30s, got %v", ttl1)
+	}
+	fieldTTL1 := getFieldTTL(ctx, client, tagKey, pk1)
+	if fieldTTL1 < 25 || fieldTTL1 > 30 {
+		t.Fatalf("expected field pk1 TTL ~30s, got %v", fieldTTL1)
 	}
 
-	// 2. Store item 2 under same tag with 120s TTL -> extends tag set TTL
+	// 2. Store item 2 under same tag with 120s TTL -> extends tag hash key TTL to 120s
 	pk2 := "https://example.com/item/2"
 	meta2 := &pb.CacheMetadata{
 		PrimaryKey: pk2,
@@ -536,9 +585,90 @@ func TestTagSetDynamicTTLExtension(t *testing.T) {
 		t.Fatalf("failed to set item2: %v", err)
 	}
 
+	// Top-level key TTL must extend to longest item TTL (~120s)
 	ttl2 := getKeyTTL(ctx, client, tagKey)
 	if ttl2 < 115 || ttl2 > 120 {
-		t.Fatalf("expected tag TTL to extend to ~120s, got %v", ttl2)
+		t.Fatalf("expected tag key TTL to extend to ~120s, got %v", ttl2)
+	}
+
+	// pk1 field TTL should still be ~30s, while pk2 field TTL is ~120s
+	f1 := getFieldTTL(ctx, client, tagKey, pk1)
+	if f1 < 25 || f1 > 30 {
+		t.Fatalf("expected pk1 field TTL ~30s, got %v", f1)
+	}
+	f2 := getFieldTTL(ctx, client, tagKey, pk2)
+	if f2 < 115 || f2 > 120 {
+		t.Fatalf("expected pk2 field TTL ~120s, got %v", f2)
+	}
+}
+
+func TestTagHashFieldAutoEviction(t *testing.T) {
+	ctx := context.Background()
+	client, store, prefix := setupTestRedis(t)
+
+	tag := "flash-sale"
+	tagKey := prefix + "tag:" + tag
+
+	pkShort := "https://example.com/short"
+	metaShort := &pb.CacheMetadata{
+		PrimaryKey: pkShort,
+		Tags:       []string{tag},
+	}
+	vShort := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+
+	pkLong := "https://example.com/long"
+	metaLong := &pb.CacheMetadata{
+		PrimaryKey: pkLong,
+		Tags:       []string{tag},
+	}
+	vLong := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+
+	// Store short item with 1s TTL and long item with 60s TTL
+	if err := store.SetVariant(ctx, pkShort, metaShort, vShort, []byte("short"), 1*time.Second); err != nil {
+		t.Fatalf("failed to set short item: %v", err)
+	}
+	if err := store.SetVariant(ctx, pkLong, metaLong, vLong, []byte("long"), 60*time.Second); err != nil {
+		t.Fatalf("failed to set long item: %v", err)
+	}
+
+	// Verify both exist initially in the tag Hash
+	shortVal, err := client.Do(ctx, client.B().Hget().Key(tagKey).Field(pkShort).Build()).ToString()
+	if err != nil || shortVal != "1" {
+		t.Fatalf("expected short item in tag hash, got err=%v, val=%s", err, shortVal)
+	}
+	longVal, err := client.Do(ctx, client.B().Hget().Key(tagKey).Field(pkLong).Build()).ToString()
+	if err != nil || longVal != "1" {
+		t.Fatalf("expected long item in tag hash, got err=%v, val=%s", err, longVal)
+	}
+
+	// Wait for short item field TTL to elapse
+	time.Sleep(1500 * time.Millisecond)
+
+	// Verify short item field was automatically evicted by Redis HEXPIRE
+	shortResp := client.Do(ctx, client.B().Hget().Key(tagKey).Field(pkShort).Build())
+	if !rueidis.IsRedisNil(shortResp.Error()) {
+		t.Fatalf("expected short item field to be auto-evicted from tag hash, got %v", shortResp.Error())
+	}
+
+	// Long item must still be present
+	longValAfter, err := client.Do(ctx, client.B().Hget().Key(tagKey).Field(pkLong).Build()).ToString()
+	if err != nil || longValAfter != "1" {
+		t.Fatalf("expected long item to still exist, got err=%v, val=%s", err, longValAfter)
+	}
+
+	// Tag key TTL should still be active (~58s)
+	keyTTL := getKeyTTL(ctx, client, tagKey)
+	if keyTTL < 50 || keyTTL > 60 {
+		t.Fatalf("expected tag key TTL ~58s, got %v", keyTTL)
+	}
+
+	// Purge by tag should only process the 1 remaining active item
+	n, err := store.PurgeByTag(ctx, tag, false)
+	if err != nil {
+		t.Fatalf("purge tag failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected exactly 1 entry purged, got %d", n)
 	}
 }
 

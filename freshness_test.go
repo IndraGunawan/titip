@@ -187,18 +187,24 @@ func TestIsResponseCacheable_StrictRules(t *testing.T) {
 		t.Fatal("expected IsCacheable=false for Expires: 0")
 	}
 
-	// Rule 5 (RFC 9110 §15): Uncacheable status codes (e.g. 100 Continue, 205 Reset Content, 206 Partial Content)
+	// Rule 5 (RFC 9110 §15): Uncacheable status codes (e.g. 100 Continue, 205 Reset Content, 206 Partial Content, 303 See Other, 401 Unauthorized, 407 Proxy Auth, 421 Misdirected, 426 Upgrade Required)
 	hValidCC := http.Header{
 		"Cache-Control": []string{"public, max-age=300"},
 	}
-	if info := calculateFreshness(http.StatusContinue, nil, hValidCC, time.Now(), time.Now(), time.Now()); info.IsCacheable {
-		t.Fatal("expected IsCacheable=false for status 100")
+	uncacheableStatuses := []int{
+		http.StatusContinue,
+		http.StatusResetContent,       // 205
+		http.StatusPartialContent,     // 206
+		http.StatusSeeOther,           // 303
+		http.StatusUnauthorized,       // 401
+		http.StatusProxyAuthRequired,  // 407
+		http.StatusMisdirectedRequest, // 421
+		http.StatusUpgradeRequired,    // 426
 	}
-	if info := calculateFreshness(http.StatusResetContent, nil, hValidCC, time.Now(), time.Now(), time.Now()); info.IsCacheable {
-		t.Fatal("expected IsCacheable=false for status 205")
-	}
-	if info := calculateFreshness(http.StatusPartialContent, nil, hValidCC, time.Now(), time.Now(), time.Now()); info.IsCacheable {
-		t.Fatal("expected IsCacheable=false for status 206")
+	for _, st := range uncacheableStatuses {
+		if info := calculateFreshness(st, nil, hValidCC, time.Now(), time.Now(), time.Now()); info.IsCacheable {
+			t.Fatalf("expected IsCacheable=false for uncacheable status %d", st)
+		}
 	}
 
 	// Rule 6 (RFC 9110 §15.5 & RFC 9111 §3.1): Cacheable standard error status codes (404, 500, 503, 414) with explicit Cache-Control
@@ -226,22 +232,22 @@ func TestIsResponseCacheable_StrictRules(t *testing.T) {
 	// Max-age alone with Auth header must be uncacheable
 	hAuthMaxAge := http.Header{"Cache-Control": []string{"max-age=300"}}
 	if info := calculateFreshness(http.StatusOK, reqAuth, hAuthMaxAge, time.Now(), time.Now(), time.Now()); info.IsCacheable {
-		t.Fatal("expected IsCacheable=false for Authorization request without public/s-maxage/must-revalidate")
+		t.Fatal("expected IsCacheable=false for Authorization request without public/s-maxage")
 	}
-	// With public: cacheable (RFC 9111 §3.5 bullet 1)
+	// With must-revalidate alone in shared cache: uncacheable without public/s-maxage to prevent cross-user leak
+	hAuthMustReval := http.Header{"Cache-Control": []string{"must-revalidate, max-age=300"}}
+	if info := calculateFreshness(http.StatusOK, reqAuth, hAuthMustReval, time.Now(), time.Now(), time.Now()); info.IsCacheable {
+		t.Fatal("expected IsCacheable=false for Authorization request with only must-revalidate in shared cache")
+	}
+	// With public: cacheable (RFC 9111 §3.5)
 	hAuthPublic := http.Header{"Cache-Control": []string{"public, max-age=300"}}
 	if info := calculateFreshness(http.StatusOK, reqAuth, hAuthPublic, time.Now(), time.Now(), time.Now()); !info.IsCacheable {
 		t.Fatal("expected IsCacheable=true for Authorization request with public directive")
 	}
-	// With s-maxage: cacheable (RFC 9111 §3.5 bullet 2)
+	// With s-maxage: cacheable (RFC 9111 §3.5)
 	hAuthSMaxAge := http.Header{"Cache-Control": []string{"s-maxage=300"}}
 	if info := calculateFreshness(http.StatusOK, reqAuth, hAuthSMaxAge, time.Now(), time.Now(), time.Now()); !info.IsCacheable {
 		t.Fatal("expected IsCacheable=true for Authorization request with s-maxage directive")
-	}
-	// With must-revalidate: cacheable (RFC 9111 §3.5 bullet 3)
-	hAuthMustReval := http.Header{"Cache-Control": []string{"must-revalidate, max-age=300"}}
-	if info := calculateFreshness(http.StatusOK, reqAuth, hAuthMustReval, time.Now(), time.Now(), time.Now()); !info.IsCacheable {
-		t.Fatal("expected IsCacheable=true for Authorization request with must-revalidate directive")
 	}
 
 	// Rule 9 (RFC 5861 §3 & §4 / RFC 9111 §5.2.2.1): must-revalidate and proxy-revalidate disable SWR and SIE
@@ -297,3 +303,141 @@ func TestFreshnessAndKeyGenConcurrency(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestRFC_CacheControl_ConflictResolution verifies that conflicting Cache-Control 
+// directives are handled safely via conservative rejection gates.
+// This serves as regression protection if isResponseCacheable() implementation changes.
+func TestRFC_CacheControl_ConflictResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		header      string
+		expectCache bool
+		reason      string
+	}{
+		{
+			name:        "public_and_private_explicit",
+			header:      "public, private, max-age=60",
+			expectCache: false,
+			reason:      "private wins over public per RFC conservative choice",
+		},
+		{
+			name:        "private_and_public_reverse_order",
+			header:      "private, public, max-age=60",
+			expectCache: false,
+			reason:      "order-independent: private always prohibits shared caching",
+		},
+		{
+			name:        "no_store_and_public",
+			header:      "no-store, public, max-age=60",
+			expectCache: false,
+			reason:      "no-store overrides any permissive directive",
+		},
+		{
+			name:        "max_age_zero_with_public",
+			header:      "public, max-age=0",
+			expectCache: true,
+			reason:      "valid directive, cache allowed but immediately expires",
+		},
+		{
+			name:        "s_maxage_less_than_max_age",
+			header:      "public, max-age=300, s-maxage=60",
+			expectCache: true,
+			reason:      "RFC-compliant: shared caches use shorter TTL, private caches longer",
+		},
+		{
+			name:        "s_maxage_greater_than_max_age",
+			header:      "public, max-age=60, s-maxage=300",
+			expectCache: true,
+			reason:      "RFC-compliant: different TTLs per cache type",
+		},
+		{
+			name:        "no_cache_and_public",
+			header:      "no-cache, public, max-age=60",
+			expectCache: true,
+			reason:      "cache allowed but requires revalidation before each use",
+		},
+		{
+			name:        "must_revalidate_and_swroverride",
+			header:      "public, max-age=60, must-revalidate, stale-while-revalidate=30",
+			expectCache: true,
+			reason:      "cacheable but SWR disabled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := http.Header{"Cache-Control": []string{tt.header}}
+			info := calculateFreshness(http.StatusOK, nil, headers, time.Now(), time.Now(), time.Now())
+
+			if info.IsCacheable != tt.expectCache {
+				t.Fatalf("IsCacheable=%v, expected %v (%s)",
+					info.IsCacheable, tt.expectCache, tt.reason)
+			}
+
+			// Additional validation for specific scenarios
+			if tt.name == "public_and_private_explicit" && info.Directives.Public && info.Directives.PrivatePresent {
+				t.Log("Library sets both flags - safety net relies on check order")
+			}
+		})
+	}
+}
+
+func TestMultipleVaryHeaders(t *testing.T) {
+	t.Parallel()
+
+	// 1. Multiple Vary lines where second line is "*" must prohibit caching
+	hMultipleVaryStar := http.Header{
+		"Cache-Control": []string{"public, max-age=300"},
+		"Vary":          []string{"Accept-Encoding", "*"},
+	}
+	if info := calculateFreshness(http.StatusOK, nil, hMultipleVaryStar, time.Now(), time.Now(), time.Now()); info.IsCacheable {
+		t.Fatal("expected IsCacheable=false when second Vary header is *")
+	}
+
+	// 2. Multiple Vary lines with valid names must remain cacheable
+	hMultipleVaryValid := http.Header{
+		"Cache-Control": []string{"public, max-age=300"},
+		"Vary":          []string{"Accept-Encoding", "Accept-Language, User-Agent"},
+	}
+	if info := calculateFreshness(http.StatusOK, nil, hMultipleVaryValid, time.Now(), time.Now(), time.Now()); !info.IsCacheable {
+		t.Fatal("expected IsCacheable=true for multiple valid Vary headers")
+	}
+}
+
+func TestMultipleCacheControlHeaders(t *testing.T) {
+	t.Parallel()
+
+	// 1. Multiple Cache-Control lines combined with valid directives
+	hMultipleCC := http.Header{
+		"Cache-Control": []string{"public", "max-age=300, s-maxage=600"},
+	}
+	info := calculateFreshness(http.StatusOK, nil, hMultipleCC, time.Now(), time.Now(), time.Now())
+	if !info.IsCacheable {
+		t.Fatal("expected IsCacheable=true when Cache-Control is split across multiple lines")
+	}
+	if info.FreshnessLifetime != 600*time.Second {
+		t.Fatalf("expected FreshnessLifetime=600s from s-maxage across split headers, got %v", info.FreshnessLifetime)
+	}
+
+	// 2. Multiple Cache-Control lines where second line is 'private'
+	hMultipleCCPrivate := http.Header{
+		"Cache-Control": []string{"s-maxage=60, public", "private"},
+	}
+	infoPrivate := calculateFreshness(http.StatusOK, nil, hMultipleCCPrivate, time.Now(), time.Now(), time.Now())
+	if infoPrivate.IsCacheable {
+		t.Fatal("expected IsCacheable=false when second Cache-Control line contains 'private'")
+	}
+
+	// 3. Multiple Cache-Control lines where second line is 'no-store'
+	hMultipleCCNoStore := http.Header{
+		"Cache-Control": []string{"public, max-age=3600", "no-store"},
+	}
+	infoNoStore := calculateFreshness(http.StatusOK, nil, hMultipleCCNoStore, time.Now(), time.Now(), time.Now())
+	if infoNoStore.IsCacheable {
+		t.Fatal("expected IsCacheable=false when second Cache-Control line contains 'no-store'")
+	}
+}
+
+

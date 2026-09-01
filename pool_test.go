@@ -11,6 +11,7 @@ import (
 
 	googleproto "google.golang.org/protobuf/proto"
 
+	"github.com/indragunawan/titip/esi"
 	pb "github.com/indragunawan/titip/proto"
 )
 
@@ -395,8 +396,8 @@ func TestESIMemoryPoolRecycling(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 	handler := mw.testHandler(mux)
@@ -446,8 +447,8 @@ func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 	handler := mw.testHandler(mux)

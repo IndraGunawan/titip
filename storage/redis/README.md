@@ -6,9 +6,10 @@ High-performance, low-allocation Redis storage backend for `titip` HTTP caching 
 
 ## 1. System Requirements
 
-- **Redis 7.0+** (or Redis 8.0+ / Valkey 7.2+ / Dragonfly)
-  - Requires native **`EXPIRE ... GT`** and **`EXPIRE ... NX`** command extensions introduced in Redis 7.0.
-  - Requires atomic Redis Hash commands (`HSET`, `HMGET`, `HGETALL`, `HKEYS`).
+- **Redis 7.4+** (or Redis 8.0+)
+  - **`HEXPIRE` / `HPEXPIRE`**: Requires native Hash field-level expiration introduced in Redis 7.4. Automatically evicts individual expired primary keys from surrogate tag hashes in the background with zero application overhead.
+  - **`EXPIRE ... GT` & `EXPIRE ... NX`**: Requires native Greater-Than / Not-Exists key expiration extensions introduced in Redis 7.0 to dynamically maintain metadata and tag hash TTLs equal to the longest-surviving item's TTL.
+  - Requires atomic Redis Hash commands (`HSET`, `HMGET`, `HGETALL`, `HKEYS`, `HSCAN`).
 - **Go 1.22+**
 
 ---
@@ -37,7 +38,7 @@ graph TD
 | :--- | :--- | :--- |
 | `<prefix>meta:<primaryKey>` | **Hash** | Holds Stage 1 metadata index (`_index` field) and all variant header descriptors (`<variantKey>` fields). |
 | `<prefix>body:<primaryKey>:<variantKey>` | **String** | Holds the LZ4-compressed response payload for an individual variant. |
-| `<prefix>tag:<tag>` | **Set** | Set of Primary Keys indexed under a specific surrogate tag (e.g. `category:tech`). |
+| `<prefix>tag:<tag>` | **Hash** | Hash of Primary Keys indexed under a surrogate tag (e.g. `category:tech`), with per-item field expiration (`HEXPIRE`) and top-level longest-item TTL tracking (`EXPIRE GT`). |
 
 ---
 
@@ -74,33 +75,37 @@ graph TD
 
 ## 4. Write Pipeline (`SetVariant`)
 
-When saving or updating a cached variant, Titip executes an **atomic 5-operation pipeline in a single network roundtrip** (`DoMulti`):
+When saving or updating a cached variant, Titip executes an **atomic multi-operation pipeline in a single network roundtrip** (`DoMulti`):
 
 ```go
 cmds := []rueidis.Completed{
     // 1. Atomically update metadata index and variant headers in Hash
     HSET metaKey _index <metaBytes> <variantKey> <varBytes>,
 
-    // 2. Save LZ4-compressed body with retention TTL
+    // 2. Clear soft purge status on fresh write
+    HDEL metaKey _soft_purged,
+
+    // 3. Save LZ4-compressed body with retention TTL
     SET bodyKey <body> EX <storageTTL>,
 
-    // 3. Dynamic TTL: Set initial TTL if persistent (NX)
+    // 4. Dynamic metadata TTL: set if NX, extend if GT
     EXPIRE metaKey <storageTTL> NX,
-
-    // 4. Dynamic TTL: Extend metadata TTL if this variant has a longer TTL (GT)
     EXPIRE metaKey <storageTTL> GT,
 
-    // 5. Index tags in Redis Sets
-    SADD tagKey <primaryKey>,
+    // 5. Index tags in Redis Hashes with per-item field TTL (HEXPIRE) and key TTL extension (EXPIRE GT)
+    HSET tagKey <primaryKey> "1",
+    HEXPIRE tagKey <storageTTL> FIELDS 1 <primaryKey>,
+    EXPIRE tagKey <storageTTL> NX,
+    EXPIRE tagKey <storageTTL> GT,
 }
 ```
 
-### Dynamic Metadata TTL Extension
+### Dynamic TTL Extension & Field-Level Expiration
 
-Because multiple variants for the same URL can have different expiration times (or be generated hours apart), the metadata Hash TTL must always equal the expiration of the **longest-surviving variant**.
-
-- **No Read-Modify-Write**: Titip avoids fetching, unmarshaling, and rewriting entire metadata records.
-- **Native `EXPIRE ... GT`**: Redis 7+ native Greater-Than comparison updates the Hash TTL if and only if the new variant's TTL exceeds the existing remaining TTL.
+1. **Metadata Hash TTL**: The metadata Hash TTL always equals the expiration of the **longest-surviving variant** using native `EXPIRE ... GT` (zero read-modify-write).
+2. **Tag Hash Field & Key Expiration**:
+   - Each primary key member is stored as a field in `<prefix>tag:<tag>` with its own TTL set via `HEXPIRE`. When an individual cache item expires, Redis automatically cleans it up from the tag Hash.
+   - The top-level `<prefix>tag:<tag>` Hash key TTL dynamically extends via `EXPIRE ... GT` to equal the longest TTL of all items in that tag.
 
 ---
 
@@ -122,12 +127,12 @@ Because multiple variants for the same URL can have different expiration times (
 ### B. Tag Purging (`PurgeByTag(ctx, tag, soft)`)
 
 1. **Hard Tag Purge (`PurgeByTag(ctx, tag, soft=false)`)**:
-   - Streams primary keys in `<prefix>tag:<tag>` via non-blocking `SSCAN`.
+   - Streams active primary keys in `<prefix>tag:<tag>` via non-blocking `HSCAN`.
    - Pipelines `HKEYS` queries across matched primary keys.
-   - Atomically deletes the tag Set key, all metadata Hash keys, and all variant body keys.
+   - Atomically deletes the tag Hash key, all metadata Hash keys, and all variant body keys.
 
 2. **Soft Tag Purge (`PurgeByTag(ctx, tag, soft=true)`)**:
-   - Streams primary keys in `<prefix>tag:<tag>` via non-blocking `SSCAN`.
+   - Streams active primary keys in `<prefix>tag:<tag>` via non-blocking `HSCAN`.
    - Sets `_soft_purged 1` across all matched metadata hashes while leaving body keys intact for stale fallbacks.
 
 ---

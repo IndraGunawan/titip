@@ -12,31 +12,6 @@ import (
 // maxCacheTTL is the maximum allowed cache TTL (1 year) per RFC 9111 / RFC 7234 and Titip architecture constraints.
 const maxCacheTTL = 365 * 24 * time.Hour
 
-// defaultCacheableStatusCodes contains the standard standard set of cacheable HTTP status codes.
-var defaultCacheableStatusCodes = map[int]struct{}{
-	http.StatusOK:                         {}, // 200
-	http.StatusNonAuthoritativeInfo:       {}, // 203
-	http.StatusNoContent:                  {}, // 204
-	http.StatusPartialContent:             {}, // 206
-	http.StatusMultipleChoices:            {}, // 300
-	http.StatusMovedPermanently:           {}, // 301
-	http.StatusFound:                      {}, // 302
-	http.StatusTemporaryRedirect:          {}, // 307
-	http.StatusPermanentRedirect:          {}, // 308
-	http.StatusBadRequest:                 {}, // 400
-	http.StatusForbidden:                  {}, // 403
-	http.StatusNotFound:                   {}, // 404
-	http.StatusMethodNotAllowed:           {}, // 405
-	http.StatusGone:                       {}, // 410
-	http.StatusRequestURITooLong:          {}, // 414
-	http.StatusUnavailableForLegalReasons: {}, // 451
-	http.StatusInternalServerError:        {}, // 500
-	http.StatusNotImplemented:             {}, // 501
-	http.StatusBadGateway:                 {}, // 502
-	http.StatusServiceUnavailable:         {}, // 503
-	http.StatusGatewayTimeout:             {}, // 504
-}
-
 // freshnessInfo encapsulates the calculated RFC 9111 (and RFC 7234 Section 4.2.3) freshness metrics.
 type freshnessInfo struct {
 	ApparentAge             time.Duration
@@ -86,15 +61,12 @@ func parseDate(dateHeader string) (time.Time, error) {
 }
 
 // calculateFreshness computes RFC 9111 (and RFC 7234 Section 4.2.3) age and freshness values.
-func calculateFreshness(
-	statusCode int,
-	reqHeaders, respHeaders http.Header,
-	reqTime, respTime, now time.Time,
-) freshnessInfo {
+func calculateFreshness(statusCode int, reqHeaders, respHeaders http.Header, reqTime, respTime, now time.Time) freshnessInfo {
 	info := freshnessInfo{}
 
-	ccHeader := respHeaders.Get(headerCacheControl)
-	if ccHeader != "" {
+	ccValues := respHeaders.Values(headerCacheControl)
+	if len(ccValues) > 0 {
+		ccHeader := strings.Join(ccValues, ", ")
 		if d, err := cacheobject.ParseResponseCacheControl(ccHeader); err == nil {
 			info.Directives = d
 		}
@@ -191,17 +163,25 @@ func calculateFreshness(
 }
 
 // isResponseCacheable determines if a response is cacheable under RFC 9111 & Titip policies.
-func isResponseCacheable(
-	statusCode int,
-	reqHeaders, respHeaders http.Header,
-	directives *cacheobject.ResponseCacheDirectives,
-) bool {
-	// RFC 9110 §15 / RFC 9111 §3.1: 1xx Informational, 205 Reset Content, and 206 Partial Content are uncacheable
-	if statusCode < 200 || statusCode == http.StatusResetContent || statusCode == http.StatusPartialContent {
+func isResponseCacheable(statusCode int, reqHeaders, respHeaders http.Header, directives *cacheobject.ResponseCacheDirectives) bool {
+	// RFC 9110 / RFC 9111: Explicitly uncacheable status codes
+	// 1xx (Informational), 205 (Reset Content), 206 (Partial Content), 303 (See Other),
+	// 401 (Unauthorized), 407 (Proxy Authentication Required), 421 (Misdirected Request), 426 (Upgrade Required)
+	switch statusCode {
+	case http.StatusResetContent,
+		http.StatusPartialContent,
+		http.StatusSeeOther,
+		http.StatusUnauthorized,
+		http.StatusProxyAuthRequired,
+		http.StatusMisdirectedRequest,
+		http.StatusUpgradeRequired:
+		return false
+	}
+	if statusCode < 200 {
 		return false
 	}
 
-	// Prohibit caching if Set-Cookie header is present (NEVER leak user sessions per AGENTS.md)
+	// Prohibit caching if Set-Cookie header is present
 	if respHeaders.Get(headerSetCookie) != "" {
 		return false
 	}
@@ -212,8 +192,8 @@ func isResponseCacheable(
 	}
 
 	// RFC 9111 §4.1 / RFC 7231 §7.1.4: Vary: * prohibits shared caching and subsequent matching
-	if vary := respHeaders.Get(headerVary); vary != "" {
-		for _, v := range strings.Split(vary, ",") {
+	for _, vary := range respHeaders.Values(headerVary) {
+		for v := range strings.SplitSeq(vary, ",") {
 			if strings.TrimSpace(v) == "*" {
 				return false
 			}
@@ -248,9 +228,9 @@ func isResponseCacheable(
 	}
 
 	// RFC 9111 §3.5: Shared cache MUST NOT store response to request containing Authorization
-	// unless response contains public, s-maxage, or must-revalidate
+	// unless response contains explicit public or s-maxage directive
 	if reqHeaders != nil && reqHeaders.Get(headerAuthorization) != "" {
-		if !directives.Public && directives.SMaxAge < 0 && !directives.MustRevalidate {
+		if !directives.Public && directives.SMaxAge < 0 {
 			return false
 		}
 	}

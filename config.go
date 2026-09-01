@@ -1,17 +1,12 @@
 package titip
 
 import (
-	"bytes"
-	"context"
-	"errors"
-	"fmt"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/indragunawan/titip/esi"
 	"github.com/indragunawan/titip/storage"
 )
 
@@ -54,219 +49,128 @@ const (
 	tokenDynamic = "DYNAMIC"
 )
 
-// InternalFetcherFunc defines the signature for resolving in-process ESI includes.
-type InternalFetcherFunc func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error)
-
-// ESIConfig defines the configuration options for Edge Side Includes (ESI) processing.
-type ESIConfig struct {
-	// Enabled is the master switch for ESI parsing and fragment splicing (default: false).
-	Enabled bool
-
-	// HeaderRequired processes ESI only when the origin returns Surrogate-Control or Edge-Control (default: false).
-	HeaderRequired bool
-
-	// InternalFetcher provides a custom hook to resolve internal/same-host ESI includes in-process.
-	InternalFetcher InternalFetcherFunc
-
-	// MaxDepth defines the maximum global recursion depth for nested includes (default: 3).
-	MaxDepth uint32
-
-	// MaxTimeout specifies the global maximum time budget for fetching an include fragment (default: 30s).
-	MaxTimeout time.Duration
-
-	// MaxConcurrentRequests caps concurrent fragment fetch goroutines per document (default: 8).
-	MaxConcurrentRequests int
-
-	// BlockPrivateIPs blocks private, loopback, and cloud metadata CIDRs at dial time (default: true).
-	BlockPrivateIPs bool
-
-	// AllowedHosts restricts external HTTP includes to matching domain patterns (default: empty = all public).
-	AllowedHosts []string
-
-	// AllowPrivateIPsForAllowedHosts allows internal IPs for explicitly whitelisted hosts (default: false).
-	AllowPrivateIPsForAllowedHosts bool
-
-	// MaxResponseSize caps the maximum allowed fragment body size in bytes (default: 10MB, 0 = unlimited).
-	MaxResponseSize int64
-
-	// ForwardFragmentCookies forwards Set-Cookie headers from subrequests to the client (default: true).
-	ForwardFragmentCookies bool
-
-	// IncludeErrorMarker is the HTML placeholder rendered on unhandled fetch errors (default: "").
-	IncludeErrorMarker string
-}
-
-// Config defines the configuration parameters for the Titip middleware.
-type Config struct {
-	Storage                       storage.Storage
-	Logger                        *slog.Logger
-	Metrics                       prometheus.Registerer
-	CacheStatusMode               CacheStatusMode
-	RespectClientCacheControl     bool
-	ConvertHeadToGet              bool
-	AutoInvalidateMutatingMethods bool
-	KeyConfig                     KeyConfig
-	TagHeaderName                 string
-	OriginTimeout                 time.Duration
-	StorageTimeout                time.Duration
-	ESI                           ESIConfig
+// config defines the configuration parameters for the Titip middleware.
+type config struct {
+	storage                       storage.Storage
+	logger                        *slog.Logger
+	metrics                       prometheus.Registerer
+	cacheStatusMode               CacheStatusMode
+	respectClientCacheControl     bool
+	convertHeadToGet              bool
+	autoInvalidateMutatingMethods bool
+	keyConfig                     KeyConfig
+	tagHeaderName                 string
+	originTimeout                 time.Duration
+	storageTimeout                time.Duration
+	esi                           esi.Config
 }
 
 // Option configures Titip middleware options.
-type Option func(*Config)
+type Option func(*config)
 
 // WithConvertHeadToGet configures whether HEAD cache misses and revalidations are converted to GET
 // when fetching from the upstream origin to prime the cache (defaults to true).
 // When false, HEAD misses query the origin as HEAD and are not saved to cache.
 func WithConvertHeadToGet(enable bool) Option {
-	return func(c *Config) {
-		c.ConvertHeadToGet = enable
+	return func(c *config) {
+		c.convertHeadToGet = enable
 	}
 }
 
 // WithAutoInvalidateMutatingMethods enables automatic invalidation of cached GET entries
-// when successful mutating requests (POST, PUT, DELETE, PATCH) are received for the URI.
+// when successful mutating requests (POST, PUT, DELETE, PATCH) are received for the URI,
+// matching the mandatory invalidation behavior defined in RFC 9111 Section 4.4.
+// By default, this is disabled so applications can rely on explicit tag-based (Cache-Tag) or URL invalidation.
 func WithAutoInvalidateMutatingMethods() Option {
-	return func(c *Config) {
-		c.AutoInvalidateMutatingMethods = true
+	return func(c *config) {
+		c.autoInvalidateMutatingMethods = true
 	}
 }
 
 // WithMetrics configures the Prometheus metrics registerer.
 func WithMetrics(reg prometheus.Registerer) Option {
-	return func(c *Config) {
-		c.Metrics = reg
+	return func(c *config) {
+		c.metrics = reg
 	}
 }
 
 // WithStorageTimeout configures maximum timeout for storage operations (defaults to 1s).
 func WithStorageTimeout(d time.Duration) Option {
-	return func(c *Config) {
-		c.StorageTimeout = d
+	return func(c *config) {
+		c.storageTimeout = d
 	}
 }
 
 // WithStorage configures the backend cache storage engine.
 func WithStorage(s storage.Storage) Option {
-	return func(c *Config) {
-		c.Storage = s
+	return func(c *config) {
+		c.storage = s
 	}
 }
 
 // WithLogger configures the structured slog.Logger.
 func WithLogger(l *slog.Logger) Option {
-	return func(c *Config) {
-		c.Logger = l
+	return func(c *config) {
+		c.logger = l
 	}
 }
 
 // WithCacheStatusMode configures Cache-Status header mode.
 func WithCacheStatusMode(mode CacheStatusMode) Option {
-	return func(c *Config) {
-		c.CacheStatusMode = mode
+	return func(c *config) {
+		c.cacheStatusMode = mode
 	}
 }
 
 // WithRespectClientCacheControl enables respecting client request Cache-Control directives (e.g. no-cache, no-store).
 // By default, client cache directives are ignored to protect origin servers.
 func WithRespectClientCacheControl() Option {
-	return func(c *Config) {
-		c.RespectClientCacheControl = true
+	return func(c *config) {
+		c.respectClientCacheControl = true
 	}
 }
 
 // WithKeyConfig configures cache key generation rules.
 func WithKeyConfig(cfg KeyConfig) Option {
-	return func(c *Config) {
-		c.KeyConfig = cfg
+	return func(c *config) {
+		c.keyConfig = cfg
 	}
 }
 
 // WithTagHeaderName configures the response header inspected for cache tags (defaults to "Cache-Tag").
 func WithTagHeaderName(name string) Option {
-	return func(c *Config) {
-		c.TagHeaderName = name
+	return func(c *config) {
+		c.tagHeaderName = name
 	}
 }
 
 // WithOriginTimeout configures maximum origin fetch timeout (defaults to 30s).
 func WithOriginTimeout(d time.Duration) Option {
-	return func(c *Config) {
-		c.OriginTimeout = d
+	return func(c *config) {
+		c.originTimeout = d
 	}
 }
 
-// WithESI enables ESI processing with safe production defaults (SSRF protection enabled, 30s timeout, max depth 3).
-// Optional mutator functions can be passed to adjust specific settings on the ESI configuration.
-func WithESI(mutators ...func(*ESIConfig)) Option {
-	return func(c *Config) {
-		c.ESI.Enabled = true
-		for _, m := range mutators {
-			if m != nil {
-				m(&c.ESI)
-			}
-		}
+// WithESI enables ESI processing with the provided ESI configuration.
+func WithESI(cfg esi.Config) Option {
+	return func(c *config) {
+		c.esi = cfg
+		c.esi.Enabled = true
 	}
 }
 
-// ESIHandlerFetcher adapts any standard http.Handler into an InternalFetcherFunc for in-process subrequests.
-func ESIHandlerFetcher(router http.Handler) InternalFetcherFunc {
-	return func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
-		if router == nil {
-			return nil, nil, errors.New("titip: esi: router is nil")
-		}
-
-		parsedURL, err := url.Parse(targetPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("titip: esi: parse url: %w", err)
-		}
-
-		subReq := &http.Request{
-			Method:     http.MethodGet,
-			URL:        parsedURL,
-			RequestURI: targetPath,
-			Header:     r.Header.Clone(),
-			Host:       r.Host,
-			RemoteAddr: "127.0.0.1:10000",
-			Proto:      r.Proto,
-			ProtoMajor: r.ProtoMajor,
-			ProtoMinor: r.ProtoMinor,
-			Body:       http.NoBody,
-		}
-		subReq.Header.Set("Accept-Encoding", "identity")
-		if r.Trailer != nil {
-			subReq.Trailer = r.Trailer.Clone()
-		}
-		subReq = subReq.WithContext(ctx)
-
-		rec := getResponseRecorder()
-		defer putResponseRecorder(rec)
-
-		router.ServeHTTP(rec, subReq)
-
-		if rec.Code == http.StatusNotFound {
-			return nil, nil, ErrESIFallbackToHTTP
-		}
-		if rec.Code >= 400 {
-			return nil, rec.Header().Clone(), fmt.Errorf("subrequest returned status %d", rec.Code)
-		}
-
-		return bytes.Clone(rec.Body.Bytes()), rec.Header().Clone(), nil
-	}
-}
-
-// PurgeConfig defines options for cache invalidations.
-type PurgeConfig struct {
-	Soft bool // Soft marks entries as stale rather than evicting immediately (default: false = hard delete).
+// purgeConfig defines options for cache invalidations.
+type purgeConfig struct {
+	soft bool // soft marks entries as stale rather than evicting immediately (default: false = hard delete).
 }
 
 // PurgeOption configures Purge, PurgeTag, or PurgeAll operations.
-type PurgeOption func(*PurgeConfig)
+type PurgeOption func(*purgeConfig)
 
 // WithSoftPurge marks entries as stale rather than evicting immediately (safe thundering-herd mode).
 // The stale copy is preserved for stale-if-error fallback if the origin subsequently fails.
 func WithSoftPurge() PurgeOption {
-	return func(c *PurgeConfig) {
-		c.Soft = true
+	return func(c *purgeConfig) {
+		c.soft = true
 	}
 }

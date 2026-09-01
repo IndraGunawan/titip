@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"slices"
@@ -24,8 +25,6 @@ var (
 	errESICircularInclude = errors.New("titip: esi: circular include loop detected")
 	// errESIMaxDepthExceeded is returned when max recursion depth is reached.
 	errESIMaxDepthExceeded = errors.New("titip: esi: max recursion depth exceeded")
-	// ErrESIFallbackToHTTP is returned by an InternalFetcher to signal that Titip should resolve this include via outbound HTTP.
-	ErrESIFallbackToHTTP = errors.New("titip: esi: fallback to outbound http")
 )
 
 type esiContextKey struct{}
@@ -84,7 +83,7 @@ func assembleResults(fragments []*pb.EsiFragment, fetched map[string]*fragmentRe
 }
 
 func (t *Titip) fetchAllTargets(ctx *requestContext, targets map[string]fetchTarget, state esiExecutionState) (map[string]*fragmentResult, []string) {
-	maxWorkers := t.cfg.ESI.MaxConcurrentRequests
+	maxWorkers := t.cfg.esi.MaxConcurrentRequests
 	if maxWorkers <= 0 {
 		maxWorkers = 8
 	}
@@ -165,7 +164,7 @@ func (t *Titip) processESI(
 	if !ok {
 		execState = esiExecutionState{
 			depth:       0,
-			maxDepth:    t.cfg.ESI.MaxDepth,
+			maxDepth:    t.cfg.esi.MaxDepth,
 			visitedURLs: make([]string, 0, 8),
 		}
 	}
@@ -177,7 +176,7 @@ func (t *Titip) processESI(
 	uniqueTargets := collectTargets(fragments)
 
 	if t.logger.Enabled(parentReqCtx, slog.LevelDebug) {
-		t.logger.DebugContext(parentReqCtx, "titip: esi: processing document",
+		t.logger.DebugContext(parentReqCtx, "esi: processing document",
 			slog.String("path", ctx.r.URL.Path),
 			slog.Int("total_fragments", len(fragments)),
 			slog.Int("unique_targets", len(uniqueTargets)),
@@ -202,8 +201,7 @@ func (t *Titip) processESI(
 	}
 
 	// Strip ESI/edge internal headers
-	reconciledHeaders.Del("Surrogate-Control")
-	reconciledHeaders.Del("Edge-Control")
+	reconciledHeaders.Del(headerSurrogateControl)
 
 	// Weaken or recalculate ETag
 	if etag := reconciledHeaders.Get(headerETag); etag != "" {
@@ -213,8 +211,8 @@ func (t *Titip) processESI(
 	}
 
 	// Update Content-Length only if the origin explicitly provided one
-	if reconciledHeaders.Get("Content-Length") != "" {
-		reconciledHeaders.Set("Content-Length", strconv.Itoa(len(splicedBytes)))
+	if reconciledHeaders.Get(headerContentLength) != "" {
+		reconciledHeaders.Set(headerContentLength, strconv.Itoa(len(splicedBytes)))
 	}
 
 	// Copy reconciled headers to client writer
@@ -227,7 +225,7 @@ func (t *Titip) processESI(
 	}
 
 	// Forward dynamic subrequest Set-Cookie headers to live client
-	if t.cfg.ESI.ForwardFragmentCookies && len(allCookies) > 0 {
+	if !t.cfg.esi.DisableForwardCookies && len(allCookies) > 0 {
 		for _, cookie := range allCookies {
 			ctx.w.Header().Add("Set-Cookie", cookie)
 		}
@@ -236,7 +234,7 @@ func (t *Titip) processESI(
 	// Emit Cache-Status
 	totalDur := time.Since(startTime)
 	if t.logger.Enabled(parentReqCtx, slog.LevelDebug) {
-		t.logger.DebugContext(parentReqCtx, "titip: esi: completed splicing",
+		t.logger.DebugContext(parentReqCtx, "esi: completed splicing",
 			slog.String("path", ctx.r.URL.Path),
 			slog.Int("final_bytes", len(splicedBytes)),
 			slog.Duration("duration", totalDur),
@@ -282,7 +280,7 @@ func (t *Titip) executeInclude(
 	defer func() {
 		if r := recover(); r != nil {
 			if t.logger.Enabled(parentCtx.r.Context(), slog.LevelError) {
-				t.logger.ErrorContext(parentCtx.r.Context(), "titip: esi: worker panic recovered",
+				t.logger.ErrorContext(parentCtx.r.Context(), "esi: worker panic recovered",
 					slog.Any("panic", r),
 					slog.String("src", src),
 					slog.String("stack", string(debug.Stack())),
@@ -311,7 +309,7 @@ func (t *Titip) executeInclude(
 	if slices.Contains(state.visitedURLs, src) {
 		t.metrics.recordESIFragment("fallback")
 		if t.logger.Enabled(parentCtx.r.Context(), slog.LevelWarn) {
-			t.logger.WarnContext(parentCtx.r.Context(), "titip: esi: circular include loop detected",
+			t.logger.WarnContext(parentCtx.r.Context(), "esi: circular include loop detected",
 				slog.String("src", src),
 				slog.Any("visited", state.visitedURLs),
 			)
@@ -323,7 +321,7 @@ func (t *Titip) executeInclude(
 
 	// Determine timeout budget
 	tagTimeout := time.Duration(target.timeoutMs) * time.Millisecond
-	effectiveTimeout := t.cfg.ESI.MaxTimeout
+	effectiveTimeout := t.cfg.esi.MaxTimeout
 	if tagTimeout > 0 && tagTimeout < effectiveTimeout {
 		effectiveTimeout = tagTimeout
 	}
@@ -342,7 +340,7 @@ func (t *Titip) executeInclude(
 		t.metrics.recordESIFragment("success")
 		t.metrics.recordESIDuration(mode, time.Since(fetchStart))
 		if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
-			t.logger.DebugContext(parentCtx.r.Context(), "titip: esi: fragment resolved",
+			t.logger.DebugContext(parentCtx.r.Context(), "esi: fragment resolved",
 				slog.String("src", src),
 				slog.String("mode", mode),
 				slog.Duration("duration", time.Since(fetchStart)),
@@ -374,7 +372,7 @@ func (t *Titip) executeInclude(
 			t.metrics.recordESIFragment("fallback")
 			t.metrics.recordESIDuration(altMode, time.Since(altStart))
 			if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
-				t.logger.DebugContext(parentCtx.r.Context(), "titip: esi: alt fragment resolved",
+				t.logger.DebugContext(parentCtx.r.Context(), "esi: alt fragment resolved",
 					slog.String("src", src),
 					slog.String("alt", target.alt),
 					slog.String("mode", altMode),
@@ -389,7 +387,7 @@ func (t *Titip) executeInclude(
 			return res
 		}
 		if t.logger.Enabled(parentCtx.r.Context(), slog.LevelWarn) {
-			t.logger.WarnContext(parentCtx.r.Context(), "titip: esi: alt fragment fetch failed",
+			t.logger.WarnContext(parentCtx.r.Context(), "esi: alt fragment fetch failed",
 				slog.String("src", src),
 				slog.String("alt", target.alt),
 				slog.Any("error", altErr),
@@ -404,7 +402,7 @@ func (t *Titip) executeInclude(
 	res.duration = time.Since(fetchStart)
 
 	if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
-		t.logger.DebugContext(parentCtx.r.Context(), "titip: esi: fragment resolved via fallback",
+		t.logger.DebugContext(parentCtx.r.Context(), "esi: fragment resolved via fallback",
 			slog.String("src", src),
 			slog.Any("error", err),
 			slog.Duration("duration", res.duration),
@@ -457,7 +455,7 @@ func (t *Titip) fetchFragment(
 
 	// 1. If custom InternalFetcher is configured and target URL is relative or same host
 	isSameHost := parsed.Host == "" || strings.EqualFold(parsed.Host, parentCtx.r.Host)
-	if isSameHost && t.cfg.ESI.InternalFetcher != nil {
+	if isSameHost && t.cfg.esi.InternalFetcher != nil {
 		targetPath := parsed.RequestURI()
 		if targetPath == "" {
 			targetPath = "/"
@@ -466,9 +464,9 @@ func (t *Titip) fetchFragment(
 		if err == nil {
 			return body, cookies, mode, nil
 		}
-		if errors.Is(err, ErrESIFallbackToHTTP) {
+		if errors.Is(err, esi.ErrFallbackToHTTP) {
 			if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
-				t.logger.DebugContext(parentCtx.r.Context(), "titip: esi: internal fetcher requested outbound http fallback",
+				t.logger.DebugContext(parentCtx.r.Context(), "esi: internal fetcher requested outbound http fallback",
 					slog.String("target_path", targetPath),
 				)
 			}
@@ -509,7 +507,7 @@ func (t *Titip) fetchViaCustomFetcher(
 				done <- customFetchResult{err: fmt.Errorf("panic: %v", r)}
 			}
 		}()
-		b, h, err := t.cfg.ESI.InternalFetcher(ctx, targetPath, parentReq)
+		b, h, err := t.cfg.esi.InternalFetcher(ctx, targetPath, parentReq)
 		done <- customFetchResult{body: b, headers: h, err: err}
 	}()
 
@@ -529,12 +527,12 @@ func (t *Titip) fetchViaCustomFetcher(
 	body := res.body
 	headers := res.headers
 
-	if t.cfg.ESI.MaxResponseSize > 0 && int64(len(body)) > t.cfg.ESI.MaxResponseSize {
-		return nil, nil, "in_process", fmt.Errorf("fragment body size %d exceeds max %d", len(body), t.cfg.ESI.MaxResponseSize)
+	if t.cfg.esi.MaxResponseSize > 0 && int64(len(body)) > t.cfg.esi.MaxResponseSize {
+		return nil, nil, "in_process", fmt.Errorf("fragment body size %d exceeds max %d", len(body), t.cfg.esi.MaxResponseSize)
 	}
 
 	var cookies []string
-	if t.cfg.ESI.ForwardFragmentCookies && headers != nil {
+	if !t.cfg.esi.DisableForwardCookies && headers != nil {
 		cookies = headers["Set-Cookie"]
 	}
 
@@ -558,12 +556,38 @@ func (t *Titip) fetchOutboundHTTP(
 		return nil, nil, "http", err
 	}
 
-	// Copy forwardable headers and enforce uncompressed fragments
+	// Copy safe general request headers and enforce uncompressed fragments
 	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("User-Agent", parentCtx.r.Header.Get("User-Agent"))
-	req.Header.Set("Accept-Language", parentCtx.r.Header.Get("Accept-Language"))
-	if auth := parentCtx.r.Header.Get("Authorization"); auth != "" {
-		req.Header.Set("Authorization", auth)
+	req.Header.Set(headerUserAgent, parentCtx.r.Header.Get(headerUserAgent))
+	req.Header.Set(headerAcceptLanguage, parentCtx.r.Header.Get(headerAcceptLanguage))
+
+	// Forward sensitive credentials (Cookie, Authorization) ONLY if destination is the same host/domain
+	isSameHost := req.URL.Host == "" || strings.EqualFold(req.URL.Host, parentCtx.r.Host)
+	if !isSameHost {
+		tHost, tPort, err1 := net.SplitHostPort(req.URL.Host)
+		if err1 != nil {
+			tHost = req.URL.Host
+			tPort = ""
+		}
+		pHost, pPort, err2 := net.SplitHostPort(parentCtx.r.Host)
+		if err2 != nil {
+			pHost = parentCtx.r.Host
+			pPort = ""
+		}
+		if strings.EqualFold(tHost, pHost) {
+			if tPort == pPort || ((tPort == "" || tPort == "80" || tPort == "443") && (pPort == "" || pPort == "80" || pPort == "443")) {
+				isSameHost = true
+			}
+		}
+	}
+
+	if isSameHost {
+		for _, c := range parentCtx.r.Header.Values(headerCookie) {
+			req.Header.Add(headerCookie, c)
+		}
+		if auth := parentCtx.r.Header.Get(headerAuthorization); auth != "" {
+			req.Header.Set(headerAuthorization, auth)
+		}
 	}
 
 	resp, err := t.esiHTTPClient.Do(req)
@@ -576,7 +600,7 @@ func (t *Titip) fetchOutboundHTTP(
 		return nil, nil, "http", fmt.Errorf("http fragment returned status %d", resp.StatusCode)
 	}
 
-	maxSize := t.cfg.ESI.MaxResponseSize
+	maxSize := t.cfg.esi.MaxResponseSize
 	if maxSize <= 0 {
 		maxSize = 10 * 1024 * 1024
 	}
@@ -590,7 +614,7 @@ func (t *Titip) fetchOutboundHTTP(
 	}
 
 	var cookies []string
-	if t.cfg.ESI.ForwardFragmentCookies {
+	if !t.cfg.esi.DisableForwardCookies {
 		cookies = resp.Header["Set-Cookie"]
 	}
 
@@ -646,8 +670,8 @@ func (t *Titip) resolveFallback(fallbackBody []byte, onError string) []byte {
 	if strings.EqualFold(onError, "continue") {
 		return nil
 	}
-	if t.cfg.ESI.IncludeErrorMarker != "" {
-		return []byte(t.cfg.ESI.IncludeErrorMarker)
+	if t.cfg.esi.IncludeErrorMarker != "" {
+		return []byte(t.cfg.esi.IncludeErrorMarker)
 	}
 	return nil
 }

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/indragunawan/titip/esi"
 )
 
 func TestESI_InProcessVirtualSubrequests(t *testing.T) {
@@ -49,9 +51,9 @@ func TestESI_InProcessVirtualSubrequests(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
-			e.MaxTimeout = 5 * time.Second
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
+			MaxTimeout:      5 * time.Second,
 		}),
 	)
 
@@ -136,8 +138,8 @@ func TestESI_SamePageDeduplication(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 
@@ -172,8 +174,8 @@ func TestESI_SSRFProtection(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 
@@ -219,8 +221,8 @@ func TestESI_FailOpenFallbackAndAlt(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 
@@ -263,9 +265,9 @@ func TestESI_MaxDepthAndCircularLoop(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
-			e.MaxDepth = 3
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
+			MaxDepth:        3,
 		}),
 	)
 
@@ -298,8 +300,8 @@ func TestESI_WorkerPanicRecovery(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 
@@ -376,8 +378,8 @@ func TestESI_FullDocument_ColdMissAndCacheHitIdentical(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 
@@ -464,8 +466,8 @@ func TestESI_ConcurrentFetchDuration_MaxOfFragments(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 
@@ -552,8 +554,8 @@ func TestESI_LargePayloadSplicing_PositionOffsetsExact(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 
@@ -631,8 +633,8 @@ func TestESI_ContentLengthHeaderPreservation(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 	handler := mw.testHandler(mux)
@@ -768,9 +770,9 @@ func TestESI_RootIndex_AllAttributeCombinations(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
-			e.MaxTimeout = 5 * time.Second
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
+			MaxTimeout:      5 * time.Second,
 		}),
 	)
 
@@ -853,9 +855,9 @@ func TestESI_SameHostAndExternalDomainIncludes(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
-			e.BlockPrivateIPs = false // allow 127.0.0.1 httptest server
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
+			AllowPrivateIPs: true, // allow 127.0.0.1 httptest server
 		}),
 	)
 
@@ -898,8 +900,8 @@ func BenchmarkESI_ColdMiss(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 	handler := mw.testHandler(mux)
@@ -934,8 +936,8 @@ func BenchmarkESI_CacheHit(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
 		}),
 	)
 	handler := mw.testHandler(mux)
@@ -972,8 +974,8 @@ func TestESI_CustomInternalFetcher(t *testing.T) {
 	}
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = customFetcher
+		WithESI(esi.Config{
+			InternalFetcher: customFetcher,
 		}),
 	)
 
@@ -1030,20 +1032,20 @@ func TestESI_InternalFetcher_FallbackToOutboundHTTP_On404(t *testing.T) {
 		_, _ = w.Write([]byte(`<div><esi:include src="` + extServer.URL + `/esi-parts" /></div>`))
 	})
 
-	// Internal fetcher handles /local but returns ErrESIFallbackToHTTP on 404
+	// Internal fetcher handles /local but returns esi.ErrFallbackToHTTP on 404
 	localFetcher := func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
 		if targetPath == "/local" {
 			return []byte(`<span>Local</span>`), nil, nil
 		}
 		// 404 in-process -> delegate to outbound HTTP
-		return nil, nil, ErrESIFallbackToHTTP
+		return nil, nil, esi.ErrFallbackToHTTP
 	}
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = localFetcher
-			e.BlockPrivateIPs = false // allow loopback httptest.Server
-			e.MaxTimeout = 5 * time.Second
+		WithESI(esi.Config{
+			InternalFetcher: localFetcher,
+			AllowPrivateIPs: true, // allow loopback httptest.Server
+			MaxTimeout:      5 * time.Second,
 		}),
 	)
 
@@ -1085,16 +1087,16 @@ func TestESI_InternalFetcher_Non404Error_DoesNotFallback(t *testing.T) {
 		_, _ = w.Write([]byte(`<div><esi:include src="/error-part" onerror="continue" /></div>`))
 	})
 
-	// Internal fetcher returns a 500-type error (not ErrESIFallbackToHTTP)
+	// Internal fetcher returns a 500-type error (not esi.ErrFallbackToHTTP)
 	errFetcher := func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
 		return nil, nil, errors.New("subrequest returned status 500")
 	}
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = errFetcher
-			e.BlockPrivateIPs = false
-			e.MaxTimeout = 5 * time.Second
+		WithESI(esi.Config{
+			InternalFetcher: errFetcher,
+			AllowPrivateIPs: true,
+			MaxTimeout:      5 * time.Second,
 		}),
 	)
 
@@ -1148,12 +1150,12 @@ func TestESI_ESIHandlerFetcher_404_FallbackToOutbound(t *testing.T) {
 		_, _ = w.Write([]byte(`<span>Local Part</span>`))
 	})
 
-	// Wrap mux with ESIHandlerFetcher which returns ErrESIFallbackToHTTP on 404
+	// Wrap mux with ESIHandlerFetcher which returns esi.ErrFallbackToHTTP on 404
 	_, _, mw := setupTestTitip(t,
-		WithESI(func(e *ESIConfig) {
-			e.InternalFetcher = ESIHandlerFetcher(mux)
-			e.BlockPrivateIPs = false
-			e.MaxTimeout = 5 * time.Second
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(mux),
+			AllowPrivateIPs: true,
+			MaxTimeout:      5 * time.Second,
 		}),
 	)
 
@@ -1176,6 +1178,91 @@ func TestESI_ESIHandlerFetcher_404_FallbackToOutbound(t *testing.T) {
 
 	if outboundHits.Load() != 1 {
 		t.Errorf("expected 1 outbound HTTP call for remote-part, got %d", outboundHits.Load())
+	}
+}
+
+func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T) {
+	t.Parallel()
+
+	var sameHostReceivedCookie, sameHostReceivedAuth atomic.Value
+	var crossHostReceivedCookie, crossHostReceivedAuth atomic.Value
+
+	// 1. Same-host external server (simulating ALB routing to another backend service for same domain)
+	sameHostMux := http.NewServeMux()
+	sameHostMux.HandleFunc("/same-fragment", func(w http.ResponseWriter, r *http.Request) {
+		sameHostReceivedCookie.Store(r.Header.Get("Cookie"))
+		sameHostReceivedAuth.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Same Host OK</span>`))
+	})
+	sameHostServer := httptest.NewServer(sameHostMux)
+	defer sameHostServer.Close()
+
+	// 2. Cross-host external server (simulating external 3rd-party provider)
+	crossHostMux := http.NewServeMux()
+	crossHostMux.HandleFunc("/cross-fragment", func(w http.ResponseWriter, r *http.Request) {
+		crossHostReceivedCookie.Store(r.Header.Get("Cookie"))
+		crossHostReceivedAuth.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Cross Host OK</span>`))
+	})
+	crossHostServer := httptest.NewServer(crossHostMux)
+	defer crossHostServer.Close()
+
+	// 3. Parent origin
+	parentMux := http.NewServeMux()
+	parentMux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		tmpl := fmt.Sprintf(`<div><esi:include src="/same-fragment" /> | <esi:include src="%s/cross-fragment" /></div>`, crossHostServer.URL)
+		_, _ = w.Write([]byte(tmpl))
+	})
+
+	// Wrap parentMux with ESIHandlerFetcher that falls back to HTTP on 404
+	_, _, mw := setupTestTitip(t,
+		WithESI(esi.Config{
+			InternalFetcher: esi.HandlerFetcher(parentMux),
+			AllowPrivateIPs: true,
+			MaxTimeout:      5 * time.Second,
+		}),
+	)
+
+	handler := mw.testHandler(parentMux)
+
+	sameHostAddr := strings.TrimPrefix(sameHostServer.URL, "http://")
+	req := httptest.NewRequest(http.MethodGet, "http://"+sameHostAddr+"/page", nil)
+	req.Header.Set("Cookie", "session_id=user123_secret; theme=dark")
+	req.Header.Set("Authorization", "Bearer sensitive_token_xyz")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	expected := `<div><span>Same Host OK</span> | <span>Cross Host OK</span></div>`
+	if rec.Body.String() != expected {
+		t.Fatalf("expected %q, got %q", expected, rec.Body.String())
+	}
+
+	// Verify Same-Host received Cookie and Authorization
+	if cookie, _ := sameHostReceivedCookie.Load().(string); cookie != "session_id=user123_secret; theme=dark" {
+		t.Errorf("expected same-host to receive client cookie, got %q", cookie)
+	}
+	if auth, _ := sameHostReceivedAuth.Load().(string); auth != "Bearer sensitive_token_xyz" {
+		t.Errorf("expected same-host to receive client authorization, got %q", auth)
+	}
+
+	// Verify Cross-Host did NOT receive Cookie or Authorization
+	if cookie, _ := crossHostReceivedCookie.Load().(string); cookie != "" {
+		t.Errorf("expected cross-host to NOT receive client cookie, got %q", cookie)
+	}
+	if auth, _ := crossHostReceivedAuth.Load().(string); auth != "" {
+		t.Errorf("expected cross-host to NOT receive client authorization, got %q", auth)
 	}
 }
 

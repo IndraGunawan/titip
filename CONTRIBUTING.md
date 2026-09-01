@@ -231,7 +231,7 @@ To add an adapter for another web framework (e.g. **Gin**, **Echo**, **Fiber**, 
 
 To support in-process Edge Side Includes (ESI) subrequests without loopback HTTP overhead:
 
-- Allow developers to pass their root router into `titip.WithESI(func(e *titip.ESIConfig) { e.InternalFetcher = titip.ESIHandlerFetcher(router) })`.
+- Allow developers to pass their root router into `titip.WithESI(esi.Config{ InternalFetcher: esi.HandlerFetcher(router) })`.
 - Ensure all virtual subrequests created by Titip execute through the framework router in memory.
 
 ---

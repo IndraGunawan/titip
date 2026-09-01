@@ -326,8 +326,8 @@ func TestGeneratePrimaryKey_Query_SortedByDefault(t *testing.T) {
 func TestGeneratePrimaryKey_Query_IncludedWhitelist(t *testing.T) {
 	req := makeReq("http://example.com/api/items?sort=desc&page=2&id=100&tracking=xyz")
 	key := generatePrimaryKey(req, &KeyConfig{IncludedQueryParams: []string{"id", "page"}})
-	if !contains(key, "id%3D100") && !contains(key, "page%3D2") {
-		t.Logf("key: %s", key)
+	if !contains(key, "id=100") || !contains(key, "page=2") {
+		t.Fatalf("expected id=100 and page=2 in key, got: %s", key)
 	}
 	// tracking and sort must not appear
 	if contains(key, "sort") || contains(key, "tracking") {
@@ -611,9 +611,32 @@ func TestGenerateVariantKey_Basic(t *testing.T) {
 	}
 	vary := []string{"Accept-Language", "Accept-Encoding"}
 	key := generateVariantKey(req, vary)
-	expected := "accept-encoding=gzip, deflate, br|accept-language=en-US,en;q=0.9"
+	expected := "accept-encoding=br,deflate,gzip|accept-language=en-US,en;q=0.9"
 	if key != expected {
 		t.Fatalf("expected %q\n     got %q", expected, key)
+	}
+
+	// Verify order-independence for standard list headers (e.g. Accept-Encoding)
+	reqDifferentOrder := &http.Request{
+		Header: http.Header{
+			"Accept-Encoding": []string{"br, gzip, deflate"},
+			"Accept-Language": []string{"en-US,en;q=0.9"},
+		},
+	}
+	key2 := generateVariantKey(reqDifferentOrder, vary)
+	if key2 != key {
+		t.Fatalf("variant key for Accept-Encoding with different token order must match:\n key1=%s\n key2=%s", key, key2)
+	}
+
+	// Verify custom non-standard Vary header preserves verbatim ordering
+	reqCustom := &http.Request{
+		Header: http.Header{
+			"X-App-Group": []string{"beta,alpha"},
+		},
+	}
+	customKey := generateVariantKey(reqCustom, []string{"X-App-Group"})
+	if customKey != "x-app-group=beta,alpha" {
+		t.Fatalf("custom header must preserve verbatim ordering, got %q", customKey)
 	}
 }
 

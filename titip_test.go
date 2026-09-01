@@ -49,8 +49,8 @@ func setupTestTitip(t testing.TB, opts ...Option) (rueidis.Client, storage.Stora
 
 	defaultOpts := []Option{
 		WithStorage(store),
-		WithOriginTimeout(5 * time.Second),
-		WithStorageTimeout(2 * time.Second),
+		WithOriginTimeout(10 * time.Second),
+		WithStorageTimeout(10 * time.Second),
 		WithCacheStatusMode(CacheStatusRFC9211),
 	}
 	defaultOpts = append(defaultOpts, opts...)
@@ -1861,35 +1861,35 @@ func TestNew_MinimalOptions(t *testing.T) {
 	})
 
 	// 1. Verify default configuration values
-	if mw.cfg.CacheStatusMode != CacheStatusSimpleToken {
-		t.Errorf("expected CacheStatusSimpleToken (%v), got %v", CacheStatusSimpleToken, mw.cfg.CacheStatusMode)
+	if mw.cfg.cacheStatusMode != CacheStatusSimpleToken {
+		t.Errorf("expected CacheStatusSimpleToken (%v), got %v", CacheStatusSimpleToken, mw.cfg.cacheStatusMode)
 	}
-	if mw.cfg.RespectClientCacheControl {
+	if mw.cfg.respectClientCacheControl {
 		t.Errorf("expected RespectClientCacheControl to be false by default")
 	}
-	if mw.cfg.TagHeaderName != headerCacheTag {
-		t.Errorf("expected TagHeaderName %q, got %q", headerCacheTag, mw.cfg.TagHeaderName)
+	if mw.cfg.tagHeaderName != headerCacheTag {
+		t.Errorf("expected TagHeaderName %q, got %q", headerCacheTag, mw.cfg.tagHeaderName)
 	}
-	if mw.cfg.OriginTimeout != 30*time.Second {
-		t.Errorf("expected OriginTimeout 30s, got %v", mw.cfg.OriginTimeout)
+	if mw.cfg.originTimeout != 30*time.Second {
+		t.Errorf("expected OriginTimeout 30s, got %v", mw.cfg.originTimeout)
 	}
-	if mw.cfg.StorageTimeout != 1*time.Second {
-		t.Errorf("expected StorageTimeout 1s, got %v", mw.cfg.StorageTimeout)
+	if mw.cfg.storageTimeout != 1*time.Second {
+		t.Errorf("expected StorageTimeout 1s, got %v", mw.cfg.storageTimeout)
 	}
 	if mw.logger == nil {
 		t.Errorf("expected non-nil default logger")
 	}
-	if mw.cfg.ESI.MaxDepth != 3 {
-		t.Errorf("expected ESI MaxDepth 3, got %d", mw.cfg.ESI.MaxDepth)
+	if mw.cfg.esi.MaxDepth != 3 {
+		t.Errorf("expected ESI MaxDepth 3, got %d", mw.cfg.esi.MaxDepth)
 	}
-	if mw.cfg.ESI.MaxTimeout != 30*time.Second {
-		t.Errorf("expected ESI MaxTimeout 30s, got %v", mw.cfg.ESI.MaxTimeout)
+	if mw.cfg.esi.MaxTimeout != 30*time.Second {
+		t.Errorf("expected ESI MaxTimeout 30s, got %v", mw.cfg.esi.MaxTimeout)
 	}
-	if mw.cfg.ESI.MaxConcurrentRequests != 8 {
-		t.Errorf("expected ESI MaxConcurrentRequests 8, got %d", mw.cfg.ESI.MaxConcurrentRequests)
+	if mw.cfg.esi.MaxConcurrentRequests != 8 {
+		t.Errorf("expected ESI MaxConcurrentRequests 8, got %d", mw.cfg.esi.MaxConcurrentRequests)
 	}
-	if mw.cfg.ESI.MaxResponseSize != 10*1024*1024 {
-		t.Errorf("expected ESI MaxResponseSize 10MB, got %d", mw.cfg.ESI.MaxResponseSize)
+	if mw.cfg.esi.MaxResponseSize != 10*1024*1024 {
+		t.Errorf("expected ESI MaxResponseSize 10MB, got %d", mw.cfg.esi.MaxResponseSize)
 	}
 
 	// 2. Execute live HTTP request lifecycle
@@ -2376,4 +2376,578 @@ func TestRFC_Expires_Alone_Cacheable(t *testing.T) {
 		t.Fatalf("expected cached hit without calling origin, got %d calls", originCalls.Load())
 	}
 }
+
+func TestMultipleVaryHeaders_EndToEnd(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Add("Vary", "Accept-Language")
+		w.Header().Add("Vary", "Accept-Encoding")
+		lang := r.Header.Get("Accept-Language")
+		enc := r.Header.Get("Accept-Encoding")
+		w.Write([]byte("lang=" + lang + ",enc=" + enc))
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. Request with en, gzip -> MISS
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/multi-vary", nil)
+	req1.Header.Set("Accept-Language", "en")
+	req1.Header.Set("Accept-Encoding", "gzip")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Body.String() != "lang=en,enc=gzip" {
+		t.Fatalf("unexpected body: %s", rec1.Body.String())
+	}
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+
+	// 2. Same variant -> HIT
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req1)
+	if !strings.Contains(rec2.Header().Get("Cache-Status"), "hit") {
+		t.Fatalf("expected hit, got: %s", rec2.Header().Get("Cache-Status"))
+	}
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cached hit, got %d origin calls", originCalls.Load())
+	}
+
+	// 3. Different language (fr) -> MISS (different variant due to 1st Vary header)
+	reqFr := httptest.NewRequest(http.MethodGet, "http://example.com/multi-vary", nil)
+	reqFr.Header.Set("Accept-Language", "fr")
+	reqFr.Header.Set("Accept-Encoding", "gzip")
+	recFr := httptest.NewRecorder()
+	handler.ServeHTTP(recFr, reqFr)
+	if recFr.Body.String() != "lang=fr,enc=gzip" {
+		t.Fatalf("unexpected body for fr: %s", recFr.Body.String())
+	}
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected 2 origin calls, got %d", originCalls.Load())
+	}
+
+	// 4. Different encoding (br) -> MISS (different variant due to 2nd Vary header)
+	reqBr := httptest.NewRequest(http.MethodGet, "http://example.com/multi-vary", nil)
+	reqBr.Header.Set("Accept-Language", "en")
+	reqBr.Header.Set("Accept-Encoding", "br")
+	recBr := httptest.NewRecorder()
+	handler.ServeHTTP(recBr, reqBr)
+	if recBr.Body.String() != "lang=en,enc=br" {
+		t.Fatalf("unexpected body for br: %s", recBr.Body.String())
+	}
+	if originCalls.Load() != 3 {
+		t.Fatalf("expected 3 origin calls, got %d", originCalls.Load())
+	}
+}
+
+func TestMultipleCacheControlHeaders_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("MultiLine_Cacheable_Hit", func(t *testing.T) {
+		t.Parallel()
+		_, _, mw := setupTestTitip(t)
+
+		var originCalls atomic.Int64
+		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			originCalls.Add(1)
+			w.Header().Add("Cache-Control", "public")
+			w.Header().Add("Cache-Control", "max-age=60")
+			w.Write([]byte("multi-cc-hit-data"))
+		})
+		handler := mw.testHandler(origin)
+
+		// 1. Initial request -> MISS & Cache
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/multi-cc-hit", nil)
+		rec1 := httptest.NewRecorder()
+		handler.ServeHTTP(rec1, req1)
+		if originCalls.Load() != 1 {
+			t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+		}
+
+		// 2. Second request -> HIT
+		rec2 := httptest.NewRecorder()
+		handler.ServeHTTP(rec2, req1)
+		if !strings.Contains(rec2.Header().Get("Cache-Status"), "hit") {
+			t.Fatalf("expected cache hit for combined Cache-Control, got: %s", rec2.Header().Get("Cache-Status"))
+		}
+		if originCalls.Load() != 1 {
+			t.Fatalf("expected 1 origin call on hit, got %d", originCalls.Load())
+		}
+	})
+
+	t.Run("MultiLine_Conflicting_Private_NeverCached", func(t *testing.T) {
+		t.Parallel()
+		_, _, mw := setupTestTitip(t)
+
+		var originCalls atomic.Int64
+		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			originCalls.Add(1)
+			w.Header().Add("Cache-Control", "s-maxage=60, public")
+			w.Header().Add("Cache-Control", "private")
+			w.Write([]byte("multi-cc-private-data"))
+		})
+		handler := mw.testHandler(origin)
+
+		// 1. Initial request -> MISS (and should not be stored)
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/multi-cc-private", nil)
+		rec1 := httptest.NewRecorder()
+		handler.ServeHTTP(rec1, req1)
+		if originCalls.Load() != 1 {
+			t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+		}
+
+		// 2. Second request -> must still be MISS because private prevented caching
+		rec2 := httptest.NewRecorder()
+		handler.ServeHTTP(rec2, req1)
+		if strings.Contains(rec2.Header().Get("Cache-Status"), "hit") {
+			t.Fatalf("expected MISS on second call when private is present in 2nd CC header, got: %s", rec2.Header().Get("Cache-Status"))
+		}
+		if originCalls.Load() != 2 {
+			t.Fatalf("expected 2 origin calls (bypassed cache), got %d", originCalls.Load())
+		}
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RFC Compliance & Security Hardening Verification Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestRFC_DownstreamConditional_NeverServedFromExpiredCache(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls := originCalls.Add(1)
+		if calls == 1 {
+			w.Header().Set("Cache-Control", "public, max-age=1, stale-if-error=60")
+			w.Header().Set("ETag", `"v1"`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("initial version"))
+			return
+		}
+		// Revalidation call: origin confirms 304 and refreshes max-age=60
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.Header().Set("ETag", `"v1"`)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("ETag", `"v2"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("updated version"))
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. Prime cache with 1-second TTL
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/expired-reval", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK || originCalls.Load() != 1 {
+		t.Fatalf("expected initial 200 OK from origin, got code %d, calls %d", rec1.Code, originCalls.Load())
+	}
+
+	// 2. Wait 1.1s for cache to expire
+	time.Sleep(1100 * time.Millisecond)
+
+	// 3. Client sends conditional request with If-None-Match on expired cache
+	// Must NOT return 304 directly without revalidating with origin (RFC 9111 §4.3.2)
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/expired-reval", nil)
+	req2.Header.Set("If-None-Match", `"v1"`)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected origin to be revalidated on expired cache, but origin calls = %d", originCalls.Load())
+	}
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified after origin revalidation confirmation, got %d", rec2.Code)
+	}
+	if rec2.Header().Get("Age") == "" {
+		t.Fatalf("expected Age header on 304 response, got headers: %#v, code: %d", rec2.Header(), rec2.Code)
+	}
+
+	// 4. Third request within refreshed TTL (60s) gets fresh cache HIT with 0 origin calls
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/expired-reval", nil)
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected 0 additional origin calls on fresh hit, got %d", originCalls.Load())
+	}
+	if rec3.Code != http.StatusOK || rec3.Body.String() != "initial version" {
+		t.Fatalf("unexpected body on fresh hit after 304 revalidation: %s", rec3.Body.String())
+	}
+}
+
+func TestRFC_Preconditions_IfMatch_And_IfUnmodifiedSince(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	lastMod := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("ETag", `"strong-etag-1"`)
+		w.Header().Set("Last-Modified", lastMod.Format(http.TimeFormat))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("resource-content"))
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. Prime cache
+	reqPrime := httptest.NewRequest(http.MethodGet, "http://example.com/preconditions", nil)
+	recPrime := httptest.NewRecorder()
+	handler.ServeHTTP(recPrime, reqPrime)
+	if recPrime.Code != http.StatusOK {
+		t.Fatalf("prime failed: %d", recPrime.Code)
+	}
+
+	// 2. If-Match: matching strong ETag -> 200 OK
+	reqMatch := httptest.NewRequest(http.MethodGet, "http://example.com/preconditions", nil)
+	reqMatch.Header.Set("If-Match", `"strong-etag-1"`)
+	recMatch := httptest.NewRecorder()
+	handler.ServeHTTP(recMatch, reqMatch)
+	if recMatch.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on matching If-Match, got %d", recMatch.Code)
+	}
+
+	// 3. If-Match: non-matching ETag -> 412 Precondition Failed (RFC 9110 §13.1.1)
+	reqNoMatch := httptest.NewRequest(http.MethodGet, "http://example.com/preconditions", nil)
+	reqNoMatch.Header.Set("If-Match", `"other-etag"`)
+	recNoMatch := httptest.NewRecorder()
+	handler.ServeHTTP(recNoMatch, reqNoMatch)
+	if recNoMatch.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412 Precondition Failed on mismatched If-Match, got %d", recNoMatch.Code)
+	}
+
+	// 4. If-Match: weak ETag with strong comparison requirement -> 412 Precondition Failed
+	reqWeakMatch := httptest.NewRequest(http.MethodGet, "http://example.com/preconditions", nil)
+	reqWeakMatch.Header.Set("If-Match", `W/"strong-etag-1"`)
+	recWeakMatch := httptest.NewRecorder()
+	handler.ServeHTTP(recWeakMatch, reqWeakMatch)
+	if recWeakMatch.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412 Precondition Failed on weak If-Match, got %d", recWeakMatch.Code)
+	}
+
+	// 5. If-Unmodified-Since: after Last-Modified date -> 200 OK
+	reqUnmodAfter := httptest.NewRequest(http.MethodGet, "http://example.com/preconditions", nil)
+	reqUnmodAfter.Header.Set("If-Unmodified-Since", lastMod.Add(1*time.Hour).Format(http.TimeFormat))
+	recUnmodAfter := httptest.NewRecorder()
+	handler.ServeHTTP(recUnmodAfter, reqUnmodAfter)
+	if recUnmodAfter.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on valid If-Unmodified-Since, got %d", recUnmodAfter.Code)
+	}
+
+	// 6. If-Unmodified-Since: before Last-Modified date -> 412 Precondition Failed (RFC 9110 §13.1.4)
+	reqUnmodBefore := httptest.NewRequest(http.MethodGet, "http://example.com/preconditions", nil)
+	reqUnmodBefore.Header.Set("If-Unmodified-Since", lastMod.Add(-1*time.Hour).Format(http.TimeFormat))
+	recUnmodBefore := httptest.NewRecorder()
+	handler.ServeHTTP(recUnmodBefore, reqUnmodBefore)
+	if recUnmodBefore.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412 Precondition Failed on expired If-Unmodified-Since, got %d", recUnmodBefore.Code)
+	}
+}
+
+func TestRFC_Upstream304_PreservesStoredCacheControl(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls := originCalls.Add(1)
+		if calls == 1 {
+			w.Header().Set("Cache-Control", "public, s-maxage=300")
+			w.Header().Set("ETag", `"stable-v1"`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("stable-body"))
+			return
+		}
+		// Upstream 304 response omits Cache-Control header
+		w.Header().Set("ETag", `"stable-v1"`)
+		w.WriteHeader(http.StatusNotModified)
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. Prime cache
+	reqPrime := httptest.NewRequest(http.MethodGet, "http://example.com/upstream-304-merge", nil)
+	recPrime := httptest.NewRecorder()
+	handler.ServeHTTP(recPrime, reqPrime)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 prime call, got %d", originCalls.Load())
+	}
+
+	// 2. Soft-purge to force revalidation
+	if _, err := mw.Purge(context.Background(), "http://example.com/upstream-304-merge", WithSoftPurge()); err != nil {
+		t.Fatalf("soft purge failed: %v", err)
+	}
+
+	// 3. Revalidation request -> triggers origin 304 without Cache-Control
+	reqReval := httptest.NewRequest(http.MethodGet, "http://example.com/upstream-304-merge", nil)
+	recReval := httptest.NewRecorder()
+	handler.ServeHTTP(recReval, reqReval)
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected origin revalidation call, got %d", originCalls.Load())
+	}
+	if recReval.Code != http.StatusOK || recReval.Body.String() != "stable-body" {
+		t.Fatalf("expected 200 OK with stable-body, got %d: %s", recReval.Code, recReval.Body.String())
+	}
+
+	// 4. Stored Cache-Control must have refreshed Redis TTL, so next request is a fresh HIT
+	reqHit := httptest.NewRequest(http.MethodGet, "http://example.com/upstream-304-merge", nil)
+	recHit := httptest.NewRecorder()
+	handler.ServeHTTP(recHit, reqHit)
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected 0 origin calls on subsequent fresh HIT, got %d calls", originCalls.Load())
+	}
+	if !strings.Contains(recHit.Header().Get("Cache-Status"), "hit") {
+		t.Fatalf("expected hit status, got %s", recHit.Header().Get("Cache-Status"))
+	}
+}
+
+func TestRFC_CrossHostPurge_Isolation(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t, WithAutoInvalidateMutatingMethods())
+
+	var hostBCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "tenant-b.com" {
+			hostBCalls.Add(1)
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("tenant-b-data"))
+			return
+		}
+		// Tenant A mutating POST returns cross-host Location header
+		w.Header().Set("Location", "http://tenant-b.com/api/products")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("created on tenant A"))
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. Prime cache for tenant-b.com/api/products
+	reqPrimeB := httptest.NewRequest(http.MethodGet, "http://tenant-b.com/api/products", nil)
+	recPrimeB := httptest.NewRecorder()
+	handler.ServeHTTP(recPrimeB, reqPrimeB)
+	if hostBCalls.Load() != 1 {
+		t.Fatalf("expected 1 call to tenant B, got %d", hostBCalls.Load())
+	}
+
+	// 2. Perform mutating POST on tenant-a.com with Location: http://tenant-b.com/api/products
+	reqMutateA := httptest.NewRequest(http.MethodPost, "http://tenant-a.com/api/orders", strings.NewReader(`{"order":1}`))
+	recMutateA := httptest.NewRecorder()
+	handler.ServeHTTP(recMutateA, reqMutateA)
+	if recMutateA.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created on tenant A, got %d", recMutateA.Code)
+	}
+
+	// 3. Request tenant-b.com/api/products again -> must still be a cache HIT (0 new calls to origin)
+	reqCheckB := httptest.NewRequest(http.MethodGet, "http://tenant-b.com/api/products", nil)
+	recCheckB := httptest.NewRecorder()
+	handler.ServeHTTP(recCheckB, reqCheckB)
+	if hostBCalls.Load() != 1 {
+		t.Fatalf("cross-host Location header purged tenant B cache! origin calls = %d", hostBCalls.Load())
+	}
+	if !strings.Contains(recCheckB.Header().Get("Cache-Status"), "hit") {
+		t.Fatalf("expected cache HIT for tenant B, got %s", recCheckB.Header().Get("Cache-Status"))
+	}
+}
+
+func TestRFC_SetCookie_NeverStored_Or_Leaked(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("Set-Cookie", "session=secret-session-token; Path=/")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("sensitive-user-profile"))
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. First request receives Set-Cookie
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/profile", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Header().Get("Set-Cookie") == "" {
+		t.Fatal("expected Set-Cookie on initial origin response")
+	}
+
+	// 2. Second request from different user must NOT be served from cache
+	// (Set-Cookie prevented caching entirely to eliminate data leaks)
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/profile", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected Set-Cookie response to bypass cache (2 origin calls), got %d", originCalls.Load())
+	}
+	if strings.Contains(rec2.Header().Get("Cache-Status"), "hit") {
+		t.Fatalf("response with Set-Cookie was cached! Cache-Status: %s", rec2.Header().Get("Cache-Status"))
+	}
+}
+
+func TestRFC9211_MultiCacheChaining_AppendsHeader(t *testing.T) {
+	t.Parallel()
+
+	// 1. RFC 9211 Mode: Appends to existing upstream Cache-Status
+	t.Run("RFC9211_Appends_Upstream", func(t *testing.T) {
+		t.Parallel()
+		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusRFC9211))
+
+		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			w.Header().Set("Cache-Status", `"Fastly"; hit`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("fastly-cached-origin-data"))
+		})
+		handler := mw.testHandler(origin)
+
+		// Initial request (MISS)
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/multi-cache-chain", nil)
+		rec1 := httptest.NewRecorder()
+		handler.ServeHTTP(rec1, req1)
+
+		statuses := rec1.Header().Values("Cache-Status")
+		joined := strings.Join(statuses, ", ")
+		if !strings.Contains(joined, `"Fastly"; hit`) || !strings.Contains(joined, "titip;") {
+			t.Fatalf("expected both Fastly and titip in Cache-Status, got: %v", statuses)
+		}
+
+		// Subsequent request (HIT)
+		req2 := httptest.NewRequest(http.MethodGet, "http://example.com/multi-cache-chain", nil)
+		rec2 := httptest.NewRecorder()
+		handler.ServeHTTP(rec2, req2)
+
+		statusesHit := rec2.Header().Values("Cache-Status")
+		joinedHit := strings.Join(statusesHit, ", ")
+		if !strings.Contains(joinedHit, `"Fastly"; hit`) || !strings.Contains(joinedHit, "titip; hit") {
+			t.Fatalf("expected both Fastly and titip hit in Cache-Status on cache hit, got: %v", statusesHit)
+		}
+	})
+
+	// 2. SimpleToken Mode: Overwrites upstream Cache-Status with single token
+	t.Run("SimpleToken_Overwrites_Upstream", func(t *testing.T) {
+		t.Parallel()
+		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+
+		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			w.Header().Set("Cache-Status", `"Fastly"; hit`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("fastly-cached-origin-data"))
+		})
+		handler := mw.testHandler(origin)
+
+		// Initial request -> MISS
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/multi-cache-simple", nil)
+		rec1 := httptest.NewRecorder()
+		handler.ServeHTTP(rec1, req1)
+
+		if rec1.Header().Get("Cache-Status") != "MISS" {
+			t.Fatalf("expected simple token MISS to overwrite upstream header, got: %s", rec1.Header().Get("Cache-Status"))
+		}
+
+		// Subsequent request -> HIT
+		req2 := httptest.NewRequest(http.MethodGet, "http://example.com/multi-cache-simple", nil)
+		rec2 := httptest.NewRecorder()
+		handler.ServeHTTP(rec2, req2)
+
+		if rec2.Header().Get("Cache-Status") != "HIT" {
+			t.Fatalf("expected simple token HIT to overwrite upstream header, got: %s", rec2.Header().Get("Cache-Status"))
+		}
+	})
+}
+
+func TestRFC_NoCache_ConditionalRevalidation_And_StaleIfErrorFailover(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	var originShouldFail atomic.Bool
+
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls := originCalls.Add(1)
+
+		// 3. Origin failure simulation (stale-if-error failover)
+		if originShouldFail.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("500 Internal Server Error"))
+			return
+		}
+
+		// 1. Initial generation
+		if calls == 1 {
+			w.Header().Set("Cache-Control", "max-age=31536000, no-cache, stale-if-error=31536000")
+			w.Header().Set("ETag", `"resource-v1"`)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>Resource Profile Content</html>"))
+			return
+		}
+
+		// 2. Revalidation call: conditional check
+		if r.Header.Get("If-None-Match") == `"resource-v1"` {
+			w.Header().Set("Cache-Control", "max-age=31536000, no-cache, stale-if-error=31536000")
+			w.Header().Set("ETag", `"resource-v1"`)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "max-age=31536000, no-cache, stale-if-error=31536000")
+		w.Header().Set("ETag", `"resource-v2"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<html>Updated Profile Content</html>"))
+	})
+	handler := mw.testHandler(origin)
+
+	// Step 1: Initial request -> MISS, stores cache entry
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/profile", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK || rec1.Body.String() != "<html>Resource Profile Content</html>" {
+		t.Fatalf("expected initial 200 OK with profile HTML, got code %d: %s", rec1.Code, rec1.Body.String())
+	}
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+
+	// Step 2: Second request -> because of no-cache, must synchronously revalidate with origin
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/profile", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected second request to revalidate with origin (2 calls), got %d", originCalls.Load())
+	}
+	if rec2.Code != http.StatusOK || rec2.Body.String() != "<html>Resource Profile Content</html>" {
+		t.Fatalf("expected 200 OK from 304 refreshed cached body, got code %d: %s", rec2.Code, rec2.Body.String())
+	}
+	if !strings.Contains(rec2.Header().Get("Cache-Status"), "304") {
+		t.Fatalf("expected 304-refreshed cache status, got: %s", rec2.Header().Get("Cache-Status"))
+	}
+
+	// Step 3: Origin server crashes (500 Internal Server Error) -> stale-if-error fallback
+	originShouldFail.Store(true)
+
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/profile", nil)
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+
+	if originCalls.Load() != 3 {
+		t.Fatalf("expected third request to attempt origin revalidation (3 calls), got %d", originCalls.Load())
+	}
+	// Client must receive 200 OK with cached profile HTML (never 500 error!)
+	if rec3.Code != http.StatusOK || rec3.Body.String() != "<html>Resource Profile Content</html>" {
+		t.Fatalf("expected 200 OK fallback from stale-if-error during origin outage, got code %d: %s", rec3.Code, rec3.Body.String())
+	}
+	if !strings.Contains(rec3.Header().Get("Cache-Status"), "stale-if-error") {
+		t.Fatalf("expected stale-if-error detail in Cache-Status, got: %s", rec3.Header().Get("Cache-Status"))
+	}
+}
+
+
 

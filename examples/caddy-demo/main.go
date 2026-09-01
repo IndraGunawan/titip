@@ -144,7 +144,7 @@ func main() {
 </head>
 <body>
     <div style="margin-bottom: 20px;"><a href="/">← Back to Dashboard</a></div>
-    
+
     <!-- 1. Spliced Caddy Native Respond Fragment -->
     <esi:include src="/api/esi/caddy-static" />
 
@@ -240,6 +240,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Cache-Control", "public, max-age=600")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = fmt.Fprint(w, `<!DOCTYPE html>
 <html>
@@ -272,7 +273,7 @@ func main() {
     <div class="card" style="border-left: 4px solid #f59e0b;">
         <h2 style="margin-top:0; color:#f59e0b;">🧹 Interactive Cache Purge Console (via Caddy Admin :2019)</h2>
         <p>Send an invalidation request directly to Caddy's Admin API endpoint (<code>POST http://localhost:2019/titip/purge</code>):</p>
-        
+
         <div style="margin-bottom: 12px;">
             <label style="margin-right: 15px; font-weight: 600;">
                 <input type="radio" name="purgeType" value="urls" checked onchange="updateForm()"> URL / Path Pattern
@@ -289,7 +290,7 @@ func main() {
             <label id="targetLabel" style="font-size:0.9em; color:#94a3b8;">Target URLs/Paths (comma-separated):</label>
             <input type="text" id="targetInput" value="http://localhost:8080/api/time">
             <div style="font-size:0.8em; color:#64748b; margin-top:-6px; margin-bottom:10px;">
-                Presets: 
+                Presets:
                 <a href="javascript:void(0)" onclick="setPreset('http://localhost:8080/api/time')">/api/time</a> •
                 <a href="javascript:void(0)" onclick="setPreset('http://localhost:8080/api/products')">/api/products</a> •
                 <a href="javascript:void(0)" onclick="setPreset('http://localhost:8080/esi-demo')">/esi-demo</a> •
@@ -309,7 +310,7 @@ func main() {
         <div id="purgeResultDiv" style="display:none; margin-top: 15px;">
             <div style="font-size:0.85em; font-weight:600; color:#38bdf8;">📤 HTTP Request Sent to Caddy Admin:</div>
             <div id="reqPayloadBox" class="box-req"></div>
-            
+
             <div style="font-size:0.85em; font-weight:600; color:#10b981; margin-top:10px;">📥 Caddy Admin Response:</div>
             <div id="respPayloadBox" class="box-resp"></div>
         </div>
@@ -319,7 +320,7 @@ func main() {
     <div class="card" style="border-left: 4px solid #10b981;">
         <h3 style="margin-top:0; color:#10b981;">⚡ Live Cache Tester (Verify HIT / MISS & RFC-9211 Headers)</h3>
         <p>Click below to test live requests through Caddy (:8080) and inspect the returned <code>Cache-Status</code> headers:</p>
-        
+
         <div>
             <button class="btn-test" onclick="testFetch('/api/time')">📡 Fetch /api/time</button>
             <button class="btn-test" onclick="testFetch('/api/products')">📡 Fetch /api/products</button>
@@ -339,7 +340,7 @@ func main() {
     <div class="card" style="border-left: 4px solid #8b5cf6;">
         <h3 style="margin-top:0; color:#a78bfa;">🌐 Multi-Variant Cache Tester (<code>Vary: Accept-Language</code>)</h3>
         <p>Titip stores multiple representation variants under the <strong>same primary URL</strong> without cache collisions. Test requests with different languages:</p>
-        
+
         <div>
             <button class="btn-test" style="background:#5b21b6;" onclick="testVary('en-US')">🇺🇸 Accept-Language: en-US</button>
             <button class="btn-test" style="background:#1e40af;" onclick="testVary('fr-FR')">🇫🇷 Accept-Language: fr-FR</button>

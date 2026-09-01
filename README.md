@@ -5,9 +5,6 @@
 **High-Performance, Low-Allocation, RFC-Compliant HTTP Caching Middleware for Go**
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/indragunawan/titip.svg)](https://pkg.go.dev/github.com/indragunawan/titip)
-[![Go Report Card](https://goreportcard.com/badge/github.com/indragunawan/titip)](https://goreportcard.com/report/github.com/indragunawan/titip)
-[![CI Matrix](https://github.com/indragunawan/titip/actions/workflows/ci.yml/badge.svg)](https://github.com/indragunawan/titip/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/indragunawan/titip)](https://golang.org/)
 
 <p align="center">
@@ -85,7 +82,7 @@ Titip is organized as a multi-module workspace. Each module is versioned indepen
 | --- | --- | --- |
 | **`github.com/indragunawan/titip`** | Core caching middleware, state machine, and programmatic Purge API | [**Core Quickstart**](#-quickstart) |
 | **`github.com/indragunawan/titip/adapter/caddy`** | Native Caddy HTTP middleware directive (`titip`) & Admin Purge API | [**Caddy Adapter Guide**](adapter/caddy/README.md) |
-| **`github.com/indragunawan/titip/storage/redis`** | High-performance Redis 7+/8 distributed storage driver (`rueidis`) | [**Redis Storage Guide**](storage/redis/README.md) |
+| **`github.com/indragunawan/titip/storage/redis`** | High-performance Redis 7.4+/8 distributed storage driver (`rueidis`) | [**Redis Storage Guide**](storage/redis/README.md) |
 | **`github.com/indragunawan/titip/storage/redis/caddy`** | Guest storage module for Caddy (`titip.storage.redis`) | [**Caddy Redis Guide**](storage/redis/README.md) |
 
 ---
@@ -207,29 +204,53 @@ Titip includes a streaming **Edge Side Includes (ESI 1.0)** engine with parallel
 | :--- | :--- | :--- | :--- |
 | `Enabled` | `bool` | `false` | Master toggle for ESI parsing and fragment splicing. |
 | `HeaderRequired` | `bool` | `false` | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
-| `InternalFetcher` | `InternalFetcherFunc` | `nil` | Custom hook for in-memory virtual subrequests (e.g. `titip.ESIHandlerFetcher(r)`). |
+| `InternalFetcher` | `esi.InternalFetcherFunc` | `nil` | Custom hook for in-memory virtual subrequests (e.g. `esi.HandlerFetcher(r)`). |
 | `MaxDepth` | `uint32` | `3` | Maximum nesting depth for recursive ESI includes. |
 | `MaxTimeout` | `time.Duration` | `30s` | Maximum time budget per fragment include fetch. |
 | `MaxConcurrentRequests` | `int` | `8` | Maximum concurrent fetch goroutines per document. |
-| `BlockPrivateIPs` | `bool` | `true` | SSRF guard blocking RFC 1918 / loopback / cloud metadata CIDRs. |
+| `AllowPrivateIPs` | `bool` | `false` | SSRF guard: when false (default), blocks RFC 1918 / loopback / cloud metadata CIDRs. |
 | `AllowedHosts` | `[]string` | `[]` | Whitelist for external domain includes (empty allows all public hosts). |
-| `ForwardFragmentCookies`| `bool` | `true` | Forwards `Set-Cookie` headers from fragments to the client. |
+| `DisableForwardCookies` | `bool` | `false` | When false (default), forwards `Set-Cookie` headers from fragments to the client. |
 
 ---
 
 ## 📊 Observability & Metrics
 
-Titip exports a unified, low-cardinality Prometheus counter metric:
+Titip exports comprehensive Prometheus metrics for request traffic, cache latencies, purge invalidations, and ESI fragment processing:
+
+```go
+// Register with a Prometheus registry:
+cache, err := titip.New(
+    titip.WithStorage(store),
+    titip.WithRegisterer(prometheus.DefaultRegisterer),
+)
+```
+
+### Exported Metrics
+
+| Metric Name | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `titip_requests_total` | Counter | `status` (`hit`, `miss`, `stale_hit`, `revalidated`, `bypass`, `error`) | Total HTTP requests processed by Titip caching middleware. |
+| `titip_request_duration_seconds` | Histogram | `status` | Request latency distribution in seconds across cache statuses. |
+| `titip_purges_total` | Counter | `type` (`url`, `tag`, `all`), `mode` (`hard`, `soft`), `status` (`success`, `error`) | Total purge operations executed by type and mode. |
+| `titip_purged_entries_total` | Counter | `type` (`url`, `tag`, `all`), `mode` (`hard`, `soft`) | Total logical cache entries invalidated by purge operations. |
+| `titip_esi_fragments_total` | Counter | `status` (`success`, `fallback`, `error`) | Total ESI fragment includes processed (enabled when ESI is active). |
+| `titip_esi_duration_seconds` | Histogram | `mode` (`in_process`, `outbound`) | Latency distribution of ESI fragment fetching and document splicing. |
 
 ```prometheus
-# HELP titip_requests_total Total number of HTTP requests processed by Titip cache middleware.
-# TYPE titip_requests_total counter
-titip_requests_total{status="HIT"} 4125
-titip_requests_total{status="MISS"} 102
-titip_requests_total{status="STALE"} 18
-titip_requests_total{status="BYPASS"} 5
-titip_requests_total{status="REVALIDATED"} 12
-titip_requests_total{status="ERROR"} 0
+# Example Prometheus Scrape Output:
+titip_requests_total{status="hit"} 4125
+titip_requests_total{status="miss"} 102
+titip_requests_total{status="stale_hit"} 18
+titip_requests_total{status="revalidated"} 12
+titip_requests_total{status="bypass"} 5
+titip_requests_total{status="error"} 0
+
+titip_purges_total{mode="soft",status="success",type="url"} 45
+titip_purged_entries_total{mode="soft",type="url"} 45
+
+titip_esi_fragments_total{status="success"} 230
+titip_esi_duration_seconds_bucket{mode="in_process",le="0.005"} 225
 ```
 
 ---

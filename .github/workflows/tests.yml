@@ -1,0 +1,81 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  workspace:
+    name: Workspace Sync & Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Verify Workspace Synchronization
+        run: |
+          go work sync
+          git diff --exit-code
+
+  test:
+    name: Test (${{ matrix.module }})
+    needs: workspace
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - .
+          - adapter/caddy
+          - storage/redis
+          - storage/redis/caddy
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 2s
+          --health-retries 5
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run Go Vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: Run Unit Tests & Race Detection
+        working-directory: ${{ matrix.module }}
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Run Concurrency Race Tests
+        working-directory: ${{ matrix.module }}
+        run: go test -race -count=50 -parallel=8 ./...
+
+      - name: Run Memory Benchmarks
+        working-directory: ${{ matrix.module }}
+        run: go test -benchmem -bench=. -run=^$ ./...

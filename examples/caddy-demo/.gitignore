@@ -1,5 +1,5 @@
 # Compiled Caddy demo binary
-caddy
+/caddy
 
 # Temporary xcaddy build environments
 buildenv_*

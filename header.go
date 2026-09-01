@@ -14,24 +14,31 @@ const (
 	headerETag         = "ETag"
 	headerLastModified = "Last-Modified"
 
-	// Conditional Revalidation (RFC-7232)
-	headerIfNoneMatch     = "If-None-Match"
-	headerIfModifiedSince = "If-Modified-Since"
+	// Conditional Revalidation (RFC-7232, RFC-9110)
+	headerIfMatch           = "If-Match"
+	headerIfUnmodifiedSince = "If-Unmodified-Since"
+	headerIfNoneMatch       = "If-None-Match"
+	headerIfModifiedSince   = "If-Modified-Since"
 
 	// Protocol & Bypass Guards
 	headerUpgrade         = "Upgrade"
 	headerAccept          = "Accept"
+	headerAcceptLanguage  = "Accept-Language"
 	headerContentType     = "Content-Type"
+	headerContentLength   = "Content-Length"
 	headerRange           = "Range"
 	headerSetCookie       = "Set-Cookie"
+	headerCookie          = "Cookie"
+	headerUserAgent       = "User-Agent"
 	headerXForwardedProto = "X-Forwarded-Proto"
 	headerAuthorization   = "Authorization"
 	headerPragma          = "Pragma"
 	headerLocation        = "Location"
 	headerContentLocation = "Content-Location"
 
-	// Surrogate & Tag Invalidation
-	headerCacheTag = "Cache-Tag"
+	// Surrogate & Tag Invalidation / ESI
+	headerCacheTag         = "Cache-Tag"
+	headerSurrogateControl = "Surrogate-Control"
 
 	// Common Header Values
 	contentTypeEventStream = "text/event-stream"
@@ -43,7 +50,7 @@ func containsToken(headerVal, target string) bool {
 	if headerVal == "" {
 		return false
 	}
-	for _, tok := range strings.Split(headerVal, ",") {
+	for tok := range strings.SplitSeq(headerVal, ",") {
 		if strings.EqualFold(strings.TrimSpace(tok), target) {
 			return true
 		}

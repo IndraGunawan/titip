@@ -284,7 +284,7 @@ func buildUnsortedQueryString(r *http.Request, cfg *KeyConfig) string {
 	defer putBuffer(qsBuf)
 
 	first := true
-	for _, part := range strings.Split(r.URL.RawQuery, "&") {
+	for part := range strings.SplitSeq(r.URL.RawQuery, "&") {
 		if part == "" {
 			continue
 		}
@@ -316,6 +316,17 @@ func buildUnsortedQueryString(r *http.Request, cfg *KeyConfig) string {
 	}
 
 	return qsBuf.String()
+}
+
+// isStandardListVaryHeader reports whether name is a standard content-negotiation header
+// whose comma-separated tokens can be sorted deterministically without changing semantics.
+func isStandardListVaryHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "accept-encoding", "accept-language", "accept":
+		return true
+	default:
+		return false
+	}
 }
 
 // generateVariantKey generates a deterministic variant key based on matched Vary request headers.
@@ -352,13 +363,32 @@ func generateVariantKey(r *http.Request, varyHeaderNames []string) string {
 		buf.WriteString(canonicalName)
 		buf.WriteByte('=')
 		if len(vals) > 0 {
-			sortedVals := slices.Clone(vals)
-			slices.Sort(sortedVals)
-			for i, v := range sortedVals {
-				if i > 0 {
-					buf.WriteByte(',')
+			if isStandardListVaryHeader(canonicalName) {
+				var tokens []string
+				for _, v := range vals {
+					for tok := range strings.SplitSeq(v, ",") {
+						trimmed := strings.TrimSpace(tok)
+						if trimmed != "" {
+							tokens = append(tokens, trimmed)
+						}
+					}
 				}
-				buf.WriteString(strings.TrimSpace(v))
+				slices.Sort(tokens)
+				for i, tok := range tokens {
+					if i > 0 {
+						buf.WriteByte(',')
+					}
+					buf.WriteString(tok)
+				}
+			} else {
+				sortedVals := slices.Clone(vals)
+				slices.Sort(sortedVals)
+				for i, v := range sortedVals {
+					if i > 0 {
+						buf.WriteByte(',')
+					}
+					buf.WriteString(strings.TrimSpace(v))
+				}
 			}
 		}
 		first = false
