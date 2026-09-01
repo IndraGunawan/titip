@@ -60,13 +60,28 @@ func parseDate(dateHeader string) (time.Time, error) {
 	return time.Time{}, http.ErrServerClosed
 }
 
+// extractTieredCacheControl resolves the effective Cache-Control header string using RFC 9213 tiered precedence:
+// 1. Titip-Cache-Control (Highest Priority — specific to Titip)
+// 2. CDN-Cache-Control (RFC 9213 generic targeted header)
+// 3. Cache-Control (RFC 9111 standard header)
+func extractTieredCacheControl(respHeaders http.Header) string {
+	if titipCC := getHeaderValues(respHeaders, headerTitipCacheControl); len(titipCC) > 0 {
+		return strings.Join(titipCC, ", ")
+	}
+	if cdnCC := getHeaderValues(respHeaders, headerCDNCacheControl); len(cdnCC) > 0 {
+		return strings.Join(cdnCC, ", ")
+	}
+	if stdCC := getHeaderValues(respHeaders, headerCacheControl); len(stdCC) > 0 {
+		return strings.Join(stdCC, ", ")
+	}
+	return ""
+}
+
 // calculateFreshness computes RFC 9111 (and RFC 7234 Section 4.2.3) age and freshness values.
 func calculateFreshness(statusCode int, reqHeaders, respHeaders http.Header, reqTime, respTime, now time.Time) freshnessInfo {
 	info := freshnessInfo{}
 
-	ccValues := respHeaders.Values(headerCacheControl)
-	if len(ccValues) > 0 {
-		ccHeader := strings.Join(ccValues, ", ")
+	if ccHeader := extractTieredCacheControl(respHeaders); ccHeader != "" {
 		if d, err := cacheobject.ParseResponseCacheControl(ccHeader); err == nil {
 			info.Directives = d
 		}

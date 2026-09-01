@@ -277,7 +277,7 @@ func TestFreshnessAndKeyGenConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(id int) {
 			defer wg.Done()
 
@@ -285,7 +285,7 @@ func TestFreshnessAndKeyGenConcurrency(t *testing.T) {
 			req.Header.Set("Accept-Encoding", "gzip")
 			cfg := &KeyConfig{ExcludeMarketingParams: true}
 
-			for j := 0; j < iterations; j++ {
+			for range iterations {
 				_ = generatePrimaryKey(req, cfg)
 				_ = generateVariantKey(req, []string{"Accept-Encoding"})
 
@@ -304,7 +304,7 @@ func TestFreshnessAndKeyGenConcurrency(t *testing.T) {
 	wg.Wait()
 }
 
-// TestRFC_CacheControl_ConflictResolution verifies that conflicting Cache-Control 
+// TestRFC_CacheControl_ConflictResolution verifies that conflicting Cache-Control
 // directives are handled safely via conservative rejection gates.
 // This serves as regression protection if isResponseCacheable() implementation changes.
 func TestRFC_CacheControl_ConflictResolution(t *testing.T) {
@@ -440,4 +440,65 @@ func TestMultipleCacheControlHeaders(t *testing.T) {
 	}
 }
 
+func TestRFC9213_TieredCacheControl(t *testing.T) {
+	t.Parallel()
 
+	// 1. Titip-Cache-Control overrides both CDN-Cache-Control and Cache-Control
+	hTitipWins := http.Header{
+		"Titip-Cache-Control": []string{"public, max-age=100"},
+		"CDN-Cache-Control":   []string{"public, max-age=200"},
+		"Cache-Control":       []string{"public, max-age=300"},
+	}
+	info1 := calculateFreshness(http.StatusOK, nil, hTitipWins, time.Now(), time.Now(), time.Now())
+	if !info1.IsCacheable || info1.FreshnessLifetime != 100*time.Second {
+		t.Fatalf("expected Titip-Cache-Control to win with 100s TTL, got isCacheable=%v, lifetime=%v", info1.IsCacheable, info1.FreshnessLifetime)
+	}
+
+	// 2. CDN-Cache-Control overrides standard Cache-Control
+	hCDNWins := http.Header{
+		"CDN-Cache-Control": []string{"public, max-age=200"},
+		"Cache-Control":     []string{"public, max-age=300"},
+	}
+	info2 := calculateFreshness(http.StatusOK, nil, hCDNWins, time.Now(), time.Now(), time.Now())
+	if !info2.IsCacheable || info2.FreshnessLifetime != 200*time.Second {
+		t.Fatalf("expected CDN-Cache-Control to win with 200s TTL, got isCacheable=%v, lifetime=%v", info2.IsCacheable, info2.FreshnessLifetime)
+	}
+
+	// 3. Fallback to standard Cache-Control when targeted headers are absent
+	hStandard := http.Header{
+		"Cache-Control": []string{"public, max-age=300"},
+	}
+	info3 := calculateFreshness(http.StatusOK, nil, hStandard, time.Now(), time.Now(), time.Now())
+	if !info3.IsCacheable || info3.FreshnessLifetime != 300*time.Second {
+		t.Fatalf("expected Cache-Control fallback with 300s TTL, got isCacheable=%v, lifetime=%v", info3.IsCacheable, info3.FreshnessLifetime)
+	}
+
+	// 4. Titip-Cache-Control is cacheable while Cache-Control is private/no-store for browsers
+	hDecoupled := http.Header{
+		"Titip-Cache-Control": []string{"public, max-age=86400, stale-while-revalidate=3600"},
+		"Cache-Control":       []string{"private, no-store"},
+	}
+	info4 := calculateFreshness(http.StatusOK, nil, hDecoupled, time.Now(), time.Now(), time.Now())
+	if !info4.IsCacheable || info4.FreshnessLifetime != 86400*time.Second || info4.StaleWhileRevalidateTTL != 3600*time.Second {
+		t.Fatalf("expected Titip to cache decoupled response for 86400s, got isCacheable=%v, lifetime=%v, swr=%v", info4.IsCacheable, info4.FreshnessLifetime, info4.StaleWhileRevalidateTTL)
+	}
+
+	// 5. Titip-Cache-Control contains private -> Titip rejects caching even if Cache-Control says public
+	hTitipPrivate := http.Header{
+		"Titip-Cache-Control": []string{"private"},
+		"Cache-Control":       []string{"public, max-age=3600"},
+	}
+	info5 := calculateFreshness(http.StatusOK, nil, hTitipPrivate, time.Now(), time.Now(), time.Now())
+	if info5.IsCacheable {
+		t.Fatal("expected Titip to reject caching when Titip-Cache-Control is private")
+	}
+
+	// 6. Multi-line Titip-Cache-Control
+	hMultiTitip := http.Header{
+		"Titip-Cache-Control": []string{"public", "max-age=600"},
+	}
+	info6 := calculateFreshness(http.StatusOK, nil, hMultiTitip, time.Now(), time.Now(), time.Now())
+	if !info6.IsCacheable || info6.FreshnessLifetime != 600*time.Second {
+		t.Fatalf("expected multi-line Titip-Cache-Control to be parsed with 600s TTL, got %v", info6.FreshnessLifetime)
+	}
+}

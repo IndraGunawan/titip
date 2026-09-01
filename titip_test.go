@@ -149,7 +149,7 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 
 	// Launch remaining concurrent requests
 	responses := make([]*httptest.ResponseRecorder, concurrentRequests-1)
-	for i := 0; i < concurrentRequests-1; i++ {
+	for i := range concurrentRequests - 1 {
 		idx := i
 		go func() {
 			defer wg.Done()
@@ -250,7 +250,7 @@ func TestSoftPurge_SynchronousFreshnessAndFallback(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(concurrent)
 
-	for i := 0; i < concurrent; i++ {
+	for range concurrent {
 		go func() {
 			defer wg.Done()
 			req := httptest.NewRequest(http.MethodGet, "http://example.com/api/soft-test", nil)
@@ -842,7 +842,7 @@ func TestPrometheusMetrics(t *testing.T) {
 	handler := mw.testHandler(originHandler)
 
 	// 20 misses (different URLs)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("http://example.com/metric/%d", i), nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -850,7 +850,7 @@ func TestPrometheusMetrics(t *testing.T) {
 
 	// 80 hits (requesting the same primed URL 80 times)
 	reqPrime := httptest.NewRequest(http.MethodGet, "http://example.com/metric/0", nil)
-	for i := 0; i < 80; i++ {
+	for range 80 {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, reqPrime)
 	}
@@ -1174,7 +1174,7 @@ func TestColdMiss_ConcurrentSafety_ZeroSessionLeak(t *testing.T) {
 		w.Header().Set("Cache-Control", "private, no-cache")
 		w.Header().Set("Set-Cookie", fmt.Sprintf("session_id=user-%d; Path=/; HttpOnly", reqID))
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"user_id":%d}`, reqID)))
+		_, _ = w.Write(fmt.Appendf(nil, `{"user_id":%d}`, reqID))
 	})
 
 	handler := mw.testHandler(originHandler)
@@ -1184,7 +1184,7 @@ func TestColdMiss_ConcurrentSafety_ZeroSessionLeak(t *testing.T) {
 	wg.Add(concurrentUsers)
 	userCookies := make([]string, concurrentUsers)
 
-	for i := 0; i < concurrentUsers; i++ {
+	for i := range concurrentUsers {
 		idx := i
 		go func() {
 			defer wg.Done()
@@ -2949,5 +2949,82 @@ func TestRFC_NoCache_ConditionalRevalidation_And_StaleIfErrorFailover(t *testing
 	}
 }
 
+func TestRFC9213_TieredCacheControl_EndToEnd(t *testing.T) {
+	t.Parallel()
 
+	// 1. Titip-Cache-Control caches on server while Cache-Control remains private/no-store for browsers
+	t.Run("TitipCacheControl_DecoupledFromBrowser", func(t *testing.T) {
+		t.Parallel()
+		_, _, mw := setupTestTitip(t)
 
+		var originCalls atomic.Int64
+		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			originCalls.Add(1)
+			w.Header().Set("Titip-Cache-Control", "public, max-age=300")
+			w.Header().Set("Cache-Control", "private, no-store")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("decoupled-payload"))
+		})
+		handler := mw.testHandler(origin)
+
+		// Request 1 -> MISS, cached by Titip because of Titip-Cache-Control
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/tiered-1", nil)
+		rec1 := httptest.NewRecorder()
+		handler.ServeHTTP(rec1, req1)
+
+		if originCalls.Load() != 1 {
+			t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+		}
+		if rec1.Header().Get("Cache-Control") != "private, no-store" {
+			t.Fatalf("expected downstream client to receive private/no-store, got: %s", rec1.Header().Get("Cache-Control"))
+		}
+
+		// Request 2 -> HIT served from Titip cache
+		req2 := httptest.NewRequest(http.MethodGet, "http://example.com/tiered-1", nil)
+		rec2 := httptest.NewRecorder()
+		handler.ServeHTTP(rec2, req2)
+
+		if originCalls.Load() != 1 {
+			t.Fatalf("expected 0 additional origin calls on cache HIT, got %d", originCalls.Load())
+		}
+		if !strings.Contains(rec2.Header().Get("Cache-Status"), "hit") {
+			t.Fatalf("expected cache HIT, got: %s", rec2.Header().Get("Cache-Status"))
+		}
+		if rec2.Header().Get("Cache-Control") != "private, no-store" {
+			t.Fatalf("expected downstream client to still receive original Cache-Control on cache HIT, got: %s", rec2.Header().Get("Cache-Control"))
+		}
+	})
+
+	// 2. CDN-Cache-Control (RFC 9213 generic) takes precedence over standard Cache-Control
+	t.Run("CDNCacheControl_Overrides_Standard", func(t *testing.T) {
+		t.Parallel()
+		_, _, mw := setupTestTitip(t)
+
+		var originCalls atomic.Int64
+		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			originCalls.Add(1)
+			w.Header().Set("CDN-Cache-Control", "public, max-age=300")
+			w.Header().Set("Cache-Control", "max-age=0, must-revalidate")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("cdn-payload"))
+		})
+		handler := mw.testHandler(origin)
+
+		// Request 1 -> MISS
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/tiered-cdn", nil)
+		rec1 := httptest.NewRecorder()
+		handler.ServeHTTP(rec1, req1)
+
+		// Request 2 -> HIT (because CDN-Cache-Control max-age=300 overrides Cache-Control max-age=0)
+		req2 := httptest.NewRequest(http.MethodGet, "http://example.com/tiered-cdn", nil)
+		rec2 := httptest.NewRecorder()
+		handler.ServeHTTP(rec2, req2)
+
+		if originCalls.Load() != 1 {
+			t.Fatalf("expected 1 origin call (CDN-Cache-Control hit), got %d", originCalls.Load())
+		}
+		if !strings.Contains(rec2.Header().Get("Cache-Status"), "hit") {
+			t.Fatalf("expected cache HIT, got: %s", rec2.Header().Get("Cache-Status"))
+		}
+	})
+}
