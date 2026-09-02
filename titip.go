@@ -147,27 +147,25 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 
 // executePurge dispatches a single pattern to the appropriate storage operation.
 func (t *Titip) executePurge(ctx context.Context, pt *purgeTarget, pattern string, soft bool) (int64, error) {
-	switch pt.mode {
-	case purgeModeExact:
-		// pattern is a full primary key — use direct Purge.
+	if pt.mode == purgeModeExact && (t.cfg.keyConfig.ExcludeHost || pt.host != "") {
+		// pattern is a full exact primary key — use direct Purge.
 		n, err := t.storage.Purge(ctx, pattern, soft)
 		if err != nil {
 			return 0, fmt.Errorf("titip: purge path: %w", err)
 		}
 		return n, nil
-
-	default:
-		// Pattern-based purge requires PatternPurger capability.
-		pp, ok := t.storage.(storage.PatternPurger)
-		if !ok {
-			return 0, fmt.Errorf("titip: purge path: storage does not implement PatternPurger for pattern-based purges")
-		}
-		n, err := pp.PurgeByPattern(ctx, pattern, soft)
-		if err != nil {
-			return 0, fmt.Errorf("titip: purge path pattern: %w", err)
-		}
-		return n, nil
 	}
+
+	// Pattern-based purge requires PatternPurger capability.
+	pp, ok := t.storage.(storage.PatternPurger)
+	if !ok {
+		return 0, fmt.Errorf("titip: purge path: storage does not implement PatternPurger for pattern-based purges")
+	}
+	n, err := pp.PurgeByPattern(ctx, pattern, soft)
+	if err != nil {
+		return 0, fmt.Errorf("titip: purge path pattern: %w", err)
+	}
+	return n, nil
 }
 
 // PurgeTag invalidates all cache entries tagged with the specified tag.

@@ -143,6 +143,9 @@ func buildPurgePatterns(pt *purgeTarget, cfg *KeyConfig) []string {
 
 	switch pt.mode {
 	case purgeModeExact:
+		if !cfg.ExcludeHost && pt.host == "" {
+			return buildSweepPatterns(pt, cfg)
+		}
 		return []string{buildExactKey(pt, cfg)}
 
 	case purgeModePathSweep:
@@ -179,21 +182,25 @@ func buildExactKey(pt *purgeTarget, cfg *KeyConfig) string {
 // buildSweepPatterns returns patterns that match a path and ALL its query/method/scheme variants.
 func buildSweepPatterns(pt *purgeTarget, cfg *KeyConfig) []string {
 	base := buildPathHostBase(pt, cfg)
+	qsSuffix := ""
+	if pt.query != "" {
+		qsSuffix = ":qs=" + pt.query + "*"
+	}
 
 	if cfg.IncludeProtocol && pt.scheme == "" {
 		// Dual-protocol rule: emit patterns for both http and https.
 		return []string{
-			base + ":m=*:s=http*",
-			base + ":m=*:s=https*",
+			base + ":m=*:s=http*" + qsSuffix,
+			base + ":m=*:s=https*" + qsSuffix,
 		}
 	}
 
 	if cfg.IncludeProtocol && pt.scheme != "" {
-		return []string{base + ":m=*:s=" + pt.scheme + "*"}
+		return []string{base + ":m=*:s=" + pt.scheme + "*" + qsSuffix}
 	}
 
 	// Protocol not included in key — wildcard covers method + optional qs/he/ck suffixes.
-	return []string{base + ":m=*"}
+	return []string{base + ":m=*" + qsSuffix}
 }
 
 // buildWildcardPatterns returns patterns that match all cached paths under a directory prefix.
@@ -226,9 +233,13 @@ func buildPathHostBase(pt *purgeTarget, cfg *KeyConfig) string {
 	var sb strings.Builder
 	sb.WriteString("p=")
 	sb.WriteString(pt.path)
-	if !cfg.ExcludeHost && pt.host != "" {
-		sb.WriteString(":h=")
-		sb.WriteString(pt.host)
+	if !cfg.ExcludeHost {
+		if pt.host != "" {
+			sb.WriteString(":h=")
+			sb.WriteString(pt.host)
+		} else {
+			sb.WriteString(":h=*")
+		}
 	}
 	return sb.String()
 }

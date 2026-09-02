@@ -1,6 +1,10 @@
 package titip
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -224,6 +228,23 @@ func TestBuildPurgePatterns_ExactMode_NoHost(t *testing.T) {
 	if len(patterns) != 1 {
 		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
 	}
+	expected := "p=/api/products:h=*:m=*:qs=id=42*"
+	if patterns[0] != expected {
+		t.Errorf("expected pattern %q\n got %q", expected, patterns[0])
+	}
+}
+
+func TestBuildPurgePatterns_ExactMode_NoHost_ExcludeHostConfig(t *testing.T) {
+	pt := &purgeTarget{
+		mode:  purgeModeExact,
+		path:  "/api/products",
+		query: "id=42",
+	}
+	cfg := &KeyConfig{ExcludeHost: true}
+	patterns := buildPurgePatterns(pt, cfg)
+	if len(patterns) != 1 {
+		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
+	}
 	expected := "p=/api/products:m=GET:qs=id=42"
 	if patterns[0] != expected {
 		t.Errorf("expected pattern %q\n got %q", expected, patterns[0])
@@ -267,6 +288,22 @@ func TestBuildPurgePatterns_PathSweep_NoHost(t *testing.T) {
 		path: "/api/products",
 	}
 	cfg := &KeyConfig{}
+	patterns := buildPurgePatterns(pt, cfg)
+	if len(patterns) != 1 {
+		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
+	}
+	expected := "p=/api/products:h=*:m=*"
+	if patterns[0] != expected {
+		t.Errorf("expected %q\n got %q", expected, patterns[0])
+	}
+}
+
+func TestBuildPurgePatterns_PathSweep_NoHost_ExcludeHostConfig(t *testing.T) {
+	pt := &purgeTarget{
+		mode: purgeModePathSweep,
+		path: "/api/products",
+	}
+	cfg := &KeyConfig{ExcludeHost: true}
 	patterns := buildPurgePatterns(pt, cfg)
 	if len(patterns) != 1 {
 		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
@@ -436,4 +473,123 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// End-to-End Live Purge Integration Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestPurge_EndToEnd_MatrixOfTargets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		cachedURL     string
+		purgeTarget   string
+		expectDeleted bool
+		keyCfg        KeyConfig
+	}{
+		{
+			name:          "PathOnly_Sweep_PurgesFullHostKey",
+			cachedURL:     "http://localhost:8080/api/time",
+			purgeTarget:   "/api/time",
+			expectDeleted: true,
+		},
+		{
+			name:          "FullURL_PurgesExactHostKey",
+			cachedURL:     "http://localhost:8080/api/time",
+			purgeTarget:   "http://localhost:8080/api/time",
+			expectDeleted: true,
+		},
+		{
+			name:          "DifferentHost_DoesNotPurge",
+			cachedURL:     "http://localhost:8080/api/time",
+			purgeTarget:   "http://otherdomain.com/api/time",
+			expectDeleted: false,
+		},
+		{
+			name:          "PathSweep_PurgesAllQueryVariations",
+			cachedURL:     "http://localhost:8080/api/products?page=2&limit=50",
+			purgeTarget:   "/api/products",
+			expectDeleted: true,
+		},
+		{
+			name:          "QuerySpecificPurge_UnorderedAndMarketingStripped",
+			cachedURL:     "http://localhost:8080/api/products?a=1&b=2",
+			purgeTarget:   "/api/products?b=2&a=1&utm_source=twitter",
+			expectDeleted: true,
+			keyCfg:        KeyConfig{ExcludeMarketingParams: true},
+		},
+		{
+			name:          "WildcardDirectory_PurgesDeepChildren",
+			cachedURL:     "http://localhost:8080/assets/css/theme/dark.css",
+			purgeTarget:   "/assets/*",
+			expectDeleted: true,
+		},
+		{
+			name:          "RootWildcard_PurgesEntireNamespace",
+			cachedURL:     "http://localhost:8080/deep/nested/page",
+			purgeTarget:   "/",
+			expectDeleted: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, engine := setupTestTitip(t, WithKeyConfig(tt.keyCfg))
+
+			var originCalls atomic.Int64
+			origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				originCalls.Add(1)
+				w.Header().Set("Cache-Control", "public, max-age=300")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("payload-" + tt.name))
+			})
+			handler := engine.testHandler(origin)
+
+			// Step 1: Prime cache
+			req1 := httptest.NewRequest(http.MethodGet, tt.cachedURL, nil)
+			rec1 := httptest.NewRecorder()
+			handler.ServeHTTP(rec1, req1)
+			if originCalls.Load() != 1 {
+				t.Fatalf("expected 1 origin call to prime cache, got %d", originCalls.Load())
+			}
+
+			// Step 2: Confirm cache HIT
+			req2 := httptest.NewRequest(http.MethodGet, tt.cachedURL, nil)
+			rec2 := httptest.NewRecorder()
+			handler.ServeHTTP(rec2, req2)
+			if originCalls.Load() != 1 {
+				t.Fatalf("expected cache HIT (0 additional origin calls), got %d", originCalls.Load())
+			}
+
+			// Step 3: Execute Purge
+			count, err := engine.Purge(context.Background(), tt.purgeTarget)
+			if err != nil {
+				t.Fatalf("purge error: %v", err)
+			}
+
+			if tt.expectDeleted && count == 0 {
+				t.Errorf("expected at least 1 deleted entry, got 0")
+			} else if !tt.expectDeleted && count > 0 {
+				t.Errorf("expected 0 deleted entries for mismatched host, got %d", count)
+			}
+
+			// Step 4: Verify whether request afterwards is a MISS or still HIT
+			req3 := httptest.NewRequest(http.MethodGet, tt.cachedURL, nil)
+			rec3 := httptest.NewRecorder()
+			handler.ServeHTTP(rec3, req3)
+
+			if tt.expectDeleted {
+				if originCalls.Load() != 2 {
+					t.Errorf("expected origin call #2 (cache was purged), got %d", originCalls.Load())
+				}
+			} else {
+				if originCalls.Load() != 1 {
+					t.Errorf("expected cache to remain intact (still HIT), got %d origin calls", originCalls.Load())
+				}
+			}
+		})
+	}
 }

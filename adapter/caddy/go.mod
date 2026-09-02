@@ -5,8 +5,6 @@ go 1.26.1
 require (
 	github.com/caddyserver/caddy/v2 v2.11.4
 	github.com/indragunawan/titip v0.0.0
-	github.com/indragunawan/titip/storage/redis/caddy v0.0.0
-	github.com/redis/rueidis v1.0.77
 )
 
 require (
@@ -66,7 +64,6 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/indragunawan/titip/storage/redis v0.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.9.2 // indirect
@@ -177,8 +174,4 @@ require (
 	howett.net/plist v1.0.0 // indirect
 )
 
-replace (
-	github.com/indragunawan/titip => ../..
-	github.com/indragunawan/titip/storage/redis => ../../storage/redis
-	github.com/indragunawan/titip/storage/redis/caddy => ../../storage/redis/caddy
-)
+replace github.com/indragunawan/titip => ../..

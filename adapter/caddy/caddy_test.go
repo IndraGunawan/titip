@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,42 +20,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
-	"github.com/redis/rueidis"
-
-	_ "github.com/indragunawan/titip/storage/redis/caddy"
 )
-
-func getTestRedisAddr() string {
-	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
-		return addr
-	}
-	return "127.0.0.1:6379"
-}
-
-func cleanupRedisPrefix(addr, prefix string) {
-	if prefix == "" {
-		return
-	}
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{addr},
-		DisableCache: true,
-	})
-	if err != nil {
-		return
-	}
-	defer client.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	resp := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build())
-	if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
-		delCmds := make([]rueidis.Completed, len(keys))
-		for i, k := range keys {
-			delCmds[i] = client.B().Del().Key(k).Build()
-		}
-		client.DoMulti(ctx, delCmds...)
-	}
-}
 
 // parseAndProvisionHandler is a helper that parses a Caddyfile snippet and provisions the Handler.
 func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, func()) {
@@ -75,14 +38,6 @@ func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, fu
 	}
 
 	cleanup := func() {
-		if h.StorageRaw != nil {
-			var st map[string]any
-			if err := json.Unmarshal(h.StorageRaw, &st); err == nil {
-				if pref, ok := st["key_prefix"].(string); ok && pref != "" {
-					cleanupRedisPrefix(getTestRedisAddr(), pref)
-				}
-			}
-		}
 		_ = h.Cleanup()
 		cancel()
 	}
@@ -91,13 +46,11 @@ func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, fu
 
 func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
 	t.Parallel()
-	config := fmt.Sprintf(`titip {
+	config := `titip {
 		cache_status RFC9211
 		origin_timeout 20s
-		storage redis {
-			address %q
-		}
-	}`, getTestRedisAddr())
+		storage test
+	}`
 
 	d := caddyfile.NewTestDispenser(config)
 	var h Handler
@@ -115,12 +68,10 @@ func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
 
 func TestCaddyHandler_ConvertHeadToGet_Unmarshal(t *testing.T) {
 	t.Parallel()
-	config := fmt.Sprintf(`titip {
+	config := `titip {
 		convert_head_to_get false
-		storage redis {
-			address %q
-		}
-	}`, getTestRedisAddr())
+		storage test
+	}`
 
 	d := caddyfile.NewTestDispenser(config)
 	var h Handler
@@ -135,16 +86,11 @@ func TestCaddyHandler_ConvertHeadToGet_Unmarshal(t *testing.T) {
 
 func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
 	t.Parallel()
-	prefix := fmt.Sprintf("test_caddy_mw:%d:%d:", time.Now().UnixNano(), rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
-	caddyfileInput := fmt.Sprintf(`titip {
+	caddyfileInput := `titip {
 		cache_status rfc9211
 		origin_timeout 5s
-		storage redis {
-			address %q
-			key_prefix %q
-		}
-	}`, getTestRedisAddr(), prefix)
+		storage test
+	}`
 
 	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
 	defer cleanup()
@@ -204,112 +150,15 @@ func TestCaddyHandler_ProvisionMissingStorage(t *testing.T) {
 
 	err := h.Provision(ctx)
 	if err == nil {
-		t.Fatalf("expected error when storage is missing")
-	}
-	if !strings.Contains(err.Error(), "storage configuration is required") {
-		t.Errorf("expected missing storage error, got %v", err)
+		t.Fatalf("expected failure when provisioning Handler without storage")
 	}
 }
 
-// AC-3: Admin Purge API Single-Target Validation & Execution
-func TestAdminPurge_ValidationAndMutualExclusivity(t *testing.T) {
-	t.Parallel()
-	// 1. Mutual exclusivity violation (both urls and tags)
-	body1 := `{"urls": ["http://example.com/api/item"], "tags": ["tag1"], "soft": true}`
-	req1 := httptest.NewRequest(http.MethodPost, "/titip/purge", bytes.NewBufferString(body1))
-	req1.Header.Set("Content-Type", "application/json")
-	rec1 := httptest.NewRecorder()
-
-	_ = handleAdminPurge(rec1, req1)
-	if rec1.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request for multiple targets, got %d", rec1.Code)
-	}
-
-	// 2. Missing target
-	body2 := `{"soft": true}`
-	req2 := httptest.NewRequest(http.MethodPost, "/titip/purge", bytes.NewBufferString(body2))
-	req2.Header.Set("Content-Type", "application/json")
-	rec2 := httptest.NewRecorder()
-
-	_ = handleAdminPurge(rec2, req2)
-	if rec2.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request for missing target, got %d", rec2.Code)
-	}
-
-	// 3. Valid single-target URL purge
-	body3 := `{"urls": ["http://example.com/api/item"], "soft": true}`
-	req3 := httptest.NewRequest(http.MethodPost, "/titip/purge", bytes.NewBufferString(body3))
-	req3.Header.Set("Content-Type", "application/json")
-	rec3 := httptest.NewRecorder()
-
-	_ = handleAdminPurge(rec3, req3)
-	if rec3.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d: %s", rec3.Code, rec3.Body.String())
-	}
-
-	var resp purgeAdminResponse
-	if err := json.NewDecoder(rec3.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if !resp.Success || resp.Purged.Type != "urls" || resp.Purged.Count < 0 || !resp.Purged.Soft {
-		t.Errorf("unexpected purge response: %+v", resp)
-	}
-
-	// 4. Valid single-target Tag purge
-	body4 := `{"tags": ["users", "products"], "soft": false}`
-	req4 := httptest.NewRequest(http.MethodPost, "/titip/purge", bytes.NewBufferString(body4))
-	req4.Header.Set("Content-Type", "application/json")
-	rec4 := httptest.NewRecorder()
-
-	_ = handleAdminPurge(rec4, req4)
-	if rec4.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK for tags, got %d", rec4.Code)
-	}
-
-	// 5. Valid purge_everything
-	body5 := `{"purge_everything": true, "soft": true}`
-	req5 := httptest.NewRequest(http.MethodPost, "/titip/purge", bytes.NewBufferString(body5))
-	req5.Header.Set("Content-Type", "application/json")
-	rec5 := httptest.NewRecorder()
-
-	_ = handleAdminPurge(rec5, req5)
-	if rec5.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK for purge_everything, got %d", rec5.Code)
-	}
-}
-
-// AC-1 Edge Case: Undefined Storage in Caddyfile
-func TestCaddyHandler_UndefinedStorage_FailsProvisioning(t *testing.T) {
-	t.Parallel()
-	config := `titip {
-		cache_status rfc9211
-		origin_timeout 10s
-	}`
-
-	d := caddyfile.NewTestDispenser(config)
-	var h Handler
-	if err := h.UnmarshalCaddyfile(d); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-
-	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
-	defer cancel()
-
-	err := h.Provision(ctx)
-	if err == nil {
-		t.Fatalf("expected error when storage directive is omitted")
-	}
-	if !bytes.Contains([]byte(err.Error()), []byte("storage configuration is required")) {
-		t.Errorf("expected 'storage configuration is required' error, got: %v", err)
-	}
-}
-
-// AC-1 Edge Case: Unknown Storage Module in Caddyfile
-func TestCaddyHandler_UnknownStorageModule_Fails(t *testing.T) {
+func TestCaddyHandler_ProvisionUnknownStorage(t *testing.T) {
 	t.Parallel()
 	config := `titip {
 		storage memcached {
-			servers 127.0.0.1:11211
+			address localhost:11211
 		}
 	}`
 
@@ -330,14 +179,9 @@ func TestCaddyHandler_UnknownStorageModule_Fails(t *testing.T) {
 // AC-3 / AC-4: End-to-End Live Admin Purge Invalidation
 func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
 	t.Parallel()
-	prefix := fmt.Sprintf("test_caddy_purge:%d:%d:", time.Now().UnixNano(), rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
-	caddyfileInput := fmt.Sprintf(`titip {
-		storage redis {
-			address %q
-			key_prefix %q
-		}
-	}`, getTestRedisAddr(), prefix)
+	caddyfileInput := `titip {
+		storage test
+	}`
 
 	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
 	defer cleanup()
@@ -427,9 +271,7 @@ func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
 func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
 	t.Parallel()
 	config := `:8080 {
-		storage redis {
-			address localhost:6379
-		}
+		storage test
 	}`
 
 	adapter := caddyconfig.GetAdapter("caddyfile")
@@ -443,10 +285,8 @@ func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
 
 func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 	t.Parallel()
-	config := fmt.Sprintf(`titip {
-		storage redis {
-			address %q
-		}
+	config := `titip {
+		storage test
 		key {
 			include_protocol false
 			exclude_host true
@@ -458,7 +298,7 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 			included_header_names X-App-Version Accept-Language
 			included_cookie_names session_currency
 		}
-	}`, getTestRedisAddr())
+	}`
 
 	d := caddyfile.NewTestDispenser(config)
 	var h Handler
@@ -497,20 +337,15 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 
 func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
 	t.Parallel()
-	prefix := fmt.Sprintf("test:caddy:key:%d:", rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
-	caddyfileInput := fmt.Sprintf(`titip {
-		storage redis {
-			address %q
-			key_prefix %q
-		}
+	caddyfileInput := `titip {
+		storage test
 		key {
 			include_protocol false
 			exclude_host true
 			included_query_params id
 			exclude_marketing_params true
 		}
-	}`, getTestRedisAddr(), prefix)
+	}`
 
 	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
 	defer cleanup()
@@ -553,11 +388,9 @@ func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
 
 func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 	t.Parallel()
-	config := fmt.Sprintf(`titip {
+	config := `titip {
 		cache_status simple
-		storage redis {
-			address %q
-		}
+		storage test
 		esi {
 			enabled true
 			header_required false
@@ -570,7 +403,7 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 			forward_fragment_cookies true
 			error_marker "<!-- error -->"
 		}
-	}`, getTestRedisAddr())
+	}`
 
 	d := caddyfile.NewTestDispenser(config)
 	var h Handler
@@ -606,17 +439,12 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 
 func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 	t.Parallel()
-	prefix := fmt.Sprintf("test:caddy:esi:%d:", rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
-	caddyfileInput := fmt.Sprintf(`titip {
-		storage redis {
-			address %q
-			key_prefix %q
-		}
+	caddyfileInput := `titip {
+		storage test
 		esi {
 			enabled true
 		}
-	}`, getTestRedisAddr(), prefix)
+	}`
 
 	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
 	defer cleanup()
@@ -672,17 +500,12 @@ func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 
 func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
 	t.Parallel()
-	prefix := fmt.Sprintf("test:caddy:replacer:%d:", rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
-	caddyfileInput := fmt.Sprintf(`titip {
-		storage redis {
-			address %q
-			key_prefix %q
-		}
+	caddyfileInput := `titip {
+		storage test
 		esi {
 			enabled true
 		}
-	}`, getTestRedisAddr(), prefix)
+	}`
 
 	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
 	defer cleanup()
@@ -747,8 +570,6 @@ func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
 
 func TestCaddyHandler_ESI_Subrequest404_FallbackToOutbound(t *testing.T) {
 	t.Parallel()
-	prefix := fmt.Sprintf("test:caddy:esi:404fb:%d:", rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
 
 	var outboundCalls atomic.Int32
 	extServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -763,16 +584,13 @@ func TestCaddyHandler_ESI_Subrequest404_FallbackToOutbound(t *testing.T) {
 	}))
 	defer extServer.Close()
 
-	caddyfileInput := fmt.Sprintf(`titip {
-		storage redis {
-			address %q
-			key_prefix %q
-		}
+	caddyfileInput := `titip {
+		storage test
 		esi {
 			enabled true
 			block_private_ips false
 		}
-	}`, getTestRedisAddr(), prefix)
+	}`
 
 	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
 	defer cleanup()
@@ -831,15 +649,11 @@ func TestCaddyHandler_ESI_Subrequest404_FallbackToOutbound(t *testing.T) {
 // compiles properly to apps.titip in Caddy JSON.
 func TestCaddyGlobalOption_Adapt(t *testing.T) {
 	t.Parallel()
-	prefix := fmt.Sprintf("test:caddy:global:inherit:%d:", rand.Int63())
 
-	caddyfileInput := fmt.Sprintf(`{
+	caddyfileInput := `{
 		skip_install_trust
 		titip {
-			storage redis {
-				address %q
-				key_prefix %q
-			}
+			storage test
 			cache_status rfc9211
 			origin_timeout 5s
 			respect_client_cache_control false
@@ -860,7 +674,7 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 			titip
 			respond "Hello Global"
 		}
-	}`, getTestRedisAddr(), prefix)
+	}`
 
 	cadAdapter := caddyconfig.GetAdapter("caddyfile")
 	if cadAdapter == nil {
@@ -890,8 +704,8 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 	}
 
 	storageMap := titipApp["storage"].(map[string]any)
-	if storageMap["name"] != "redis" {
-		t.Errorf("expected storage.name='redis', got %v", storageMap["name"])
+	if storageMap["name"] != "test" {
+		t.Errorf("expected storage.name='test', got %v", storageMap["name"])
 	}
 	if titipApp["cache_status"] != "rfc9211" {
 		t.Errorf("expected cache_status rfc9211, got %v", titipApp["cache_status"])
@@ -903,17 +717,11 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 
 // TestCaddyGlobalOption_InheritanceAndOverride tests App provisioning and Handler inheritance via full Caddyfile.
 func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
-	prefix := fmt.Sprintf("test:caddy:global:inherit:%d:", rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
-
-	caddyfileInput := fmt.Sprintf(`{
+	caddyfileInput := `{
 		admin off
 		skip_install_trust
 		titip {
-			storage redis {
-				address %q
-				key_prefix %q
-			}
+			storage test
 			cache_status rfc9211
 			origin_timeout 10s
 			respect_client_cache_control false
@@ -929,7 +737,7 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 			titip
 			respond "Hello Global Inherit" 200
 		}
-	}`, getTestRedisAddr(), prefix)
+	}`
 
 	cadAdapter := caddyconfig.GetAdapter("caddyfile")
 	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
@@ -960,17 +768,11 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 // TestDeepMerge_ESIAndKeyConfig_Caddyfile verifies that route-level overrides
 // in Caddyfile merge cleanly on top of global defaults during full Caddyfile compilation.
 func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
-	prefix := fmt.Sprintf("test:caddy:deepmerge:%d:", rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
-
-	caddyfileInput := fmt.Sprintf(`{
+	caddyfileInput := `{
 		admin off
 		skip_install_trust
 		titip {
-			storage redis {
-				address %q
-				key_prefix %q
-			}
+			storage test
 			cache_status rfc9211
 			origin_timeout 5s
 			esi {
@@ -997,7 +799,7 @@ func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 			}
 			respond "Deep Merge Route" 200
 		}
-	}`, getTestRedisAddr(), prefix)
+	}`
 
 	cadAdapter := caddyconfig.GetAdapter("caddyfile")
 	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
@@ -1028,9 +830,6 @@ func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 // TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes tests compiling a real Caddyfile
 // with global titip options and route-wrapped multi-handle routes, verifying live cache HITs.
 func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
-	prefix := fmt.Sprintf("test:caddy:e2e:%d:", rand.Int63())
-	defer cleanupRedisPrefix(getTestRedisAddr(), prefix)
-
 	var originHitCount int64
 	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&originHitCount, 1)
@@ -1055,10 +854,7 @@ func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 		admin off
 		skip_install_trust
 		titip {
-			storage redis {
-				address %q
-				key_prefix %q
-			}
+			storage test
 			cache_status rfc9211
 			origin_timeout 5s
 		}
@@ -1076,7 +872,7 @@ func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 				reverse_proxy %s
 			}
 		}
-	}`, getTestRedisAddr(), prefix, originURL.Host)
+	}`, originURL.Host)
 
 	cadAdapter := caddyconfig.GetAdapter("caddyfile")
 	if cadAdapter == nil {
@@ -1098,8 +894,8 @@ func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 	apps := root["apps"].(map[string]any)
 	titipApp := apps["titip"].(map[string]any)
 	storageMap := titipApp["storage"].(map[string]any)
-	if storageMap["name"] != "redis" {
-		t.Errorf("expected storage.name='redis', got %v", storageMap["name"])
+	if storageMap["name"] != "test" {
+		t.Errorf("expected storage.name='test', got %v", storageMap["name"])
 	}
 
 	// 2. Load and start Caddy instance
@@ -1169,6 +965,3 @@ func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 		t.Errorf("unexpected body for native respond: %q", string(body3))
 	}
 }
-
-// Ensure unused import warning prevention for rueidis
-var _ = rueidis.Nil

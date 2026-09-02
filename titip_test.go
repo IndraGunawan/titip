@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,35 +15,14 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/rueidis"
 
+	"github.com/indragunawan/titip/internal/teststore"
+	pb "github.com/indragunawan/titip/proto"
 	"github.com/indragunawan/titip/storage"
-	storageRedis "github.com/indragunawan/titip/storage/redis"
 )
 
-func getTestRedisAddr() string {
-	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
-		return addr
-	}
-	return "127.0.0.1:6379"
-}
-
-func setupTestTitip(t testing.TB, opts ...Option) (rueidis.Client, storage.Storage, *Titip) {
-	addr := getTestRedisAddr()
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{addr},
-		DisableCache: true,
-	})
-	if err != nil {
-		t.Fatalf("failed to connect to test Redis at %s: %v", addr, err)
-	}
-
-	prefix := fmt.Sprintf("test_mw:%d:%d:", time.Now().UnixNano(), rand.Int63())
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix(prefix))
-	if err != nil {
-		client.Close()
-		t.Fatalf("failed to create RedisStorage: %v", err)
-	}
+func setupTestTitip(t testing.TB, opts ...Option) (*teststore.Store, storage.Storage, *Titip) {
+	store := teststore.New()
 
 	defaultOpts := []Option{
 		WithStorage(store),
@@ -63,27 +40,10 @@ func setupTestTitip(t testing.TB, opts ...Option) (rueidis.Client, storage.Stora
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
 		_ = mw.Close(ctx)
-
-		cleanupClient, err := rueidis.NewClient(rueidis.ClientOption{
-			InitAddress:  []string{addr},
-			DisableCache: true,
-		})
-		if err == nil {
-			resp := cleanupClient.Do(ctx, cleanupClient.B().Keys().Pattern(prefix+"*").Build())
-			if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
-				delCmds := make([]rueidis.Completed, len(keys))
-				for i, k := range keys {
-					delCmds[i] = cleanupClient.B().Del().Key(k).Build()
-				}
-				cleanupClient.DoMulti(ctx, delCmds...)
-			}
-			cleanupClient.Close()
-		}
 	})
 
-	return client, store, mw
+	return store, store, mw
 }
 
 func (t *Titip) testHandler(next http.Handler) http.Handler {
@@ -272,10 +232,10 @@ func TestSoftPurge_SynchronousFreshnessAndFallback(t *testing.T) {
 	wg.Wait()
 }
 
-// AC-3: Fail-Open on Redis Outage
-func TestFailOpen_OnRedisOutage(t *testing.T) {
+// AC-3: Fail-Open on Storage Outage
+func TestFailOpen_OnStorageOutage(t *testing.T) {
 	t.Parallel()
-	mr, _, mw := setupTestTitip(t, WithStorageTimeout(100*time.Millisecond))
+	store, _, mw := setupTestTitip(t, WithStorageTimeout(100*time.Millisecond))
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -285,8 +245,8 @@ func TestFailOpen_OnRedisOutage(t *testing.T) {
 
 	handler := mw.testHandler(originHandler)
 
-	// Close Redis / miniredis to simulate outage
-	mr.Close()
+	// Close storage to simulate outage
+	store.SetClosed(true)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/fail-open", nil)
 	rec := httptest.NewRecorder()
@@ -1461,12 +1421,12 @@ func TestRFC_MandatoryCachedResponseHeaders(t *testing.T) {
 	}
 }
 
-// TestFailOpen_MetadataExists_BodyEvictedGlitch verifies that if metadata exists in Redis
+// TestFailOpen_MetadataExists_BodyEvictedGlitch verifies that if metadata exists in storage
 // but the variant body key was expired/evicted in a microsecond race, Titip seamlessly fails open
 // to origin without crashing, returning 500, or dropping the response.
 func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 	t.Parallel()
-	client, store, mw := setupTestTitip(t)
+	store, _, mw := setupTestTitip(t)
 
 	var originExecutions atomic.Int32
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1493,42 +1453,16 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 		t.Fatalf("expected 1 origin execution, got %d", originExecutions.Load())
 	}
 
-	// 2. Simulate microsecond glitch: Metadata hash is present in Redis, but Body key was evicted/expired
+	// 2. Simulate microsecond glitch: Metadata is present, but GetVariant returns nil (body evicted)
 	primaryKey := generatePrimaryKey(req1, &KeyConfig{})
 	meta, _, err := store.GetMeta(context.Background(), primaryKey)
 	if err != nil || meta == nil {
-		t.Fatalf("expected metadata in Redis, got err=%v meta=%v", err, meta)
+		t.Fatalf("expected metadata in storage, got err=%v meta=%v", err, meta)
 	}
 
-	// Find the exact Redis body key and delete it from Redis
-	varInfo, body, err := store.GetVariant(context.Background(), primaryKey, defaultVariantKey)
-	if err != nil || varInfo == nil || len(body) == 0 {
-		t.Fatalf("expected body in Redis before eviction simulation")
-	}
-
-	// Delete ONLY the body key directly from Redis (leaving metadata hash intact).
-	// bodyKey format: titip:body:<primaryKey-without-meta:>:default
-	bodyKeyFragment := strings.TrimPrefix(primaryKey, "meta:")
-	resp := client.Do(context.Background(), client.B().Keys().Pattern("*body*"+bodyKeyFragment+"*").Build())
-	keys, err := resp.AsStrSlice()
-	if err != nil || len(keys) == 0 {
-		t.Fatalf("expected to find body key in Redis")
-	}
-	for _, k := range keys {
-		if err := client.Do(context.Background(), client.B().Del().Key(k).Build()).Error(); err != nil {
-			t.Fatalf("failed to delete body key: %v", err)
-		}
-	}
-
-	// Verify body is gone but metadata is still present in Redis
-	_, missingBody, _ := store.GetVariant(context.Background(), primaryKey, defaultVariantKey)
-	if len(missingBody) != 0 {
-		t.Fatalf("expected body to be deleted from Redis")
-	}
-	metaStillThere, _, _ := store.GetMeta(context.Background(), primaryKey)
-	if metaStillThere == nil {
-		t.Fatalf("expected metadata hash to still exist in Redis")
-	}
+	store.SetGetVariantHook(func(ctx context.Context, pk, vk string) (*pb.VariantInfo, []byte, error) {
+		return nil, nil, nil
+	})
 
 	// 3. Second request arrives during this glitch:
 	// Titip should discover the missing body, fail open to origin, re-populate cache, and return 200 OK!
@@ -1545,6 +1479,9 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 	if !strings.Contains(rec2.Body.String(), `"version":2`) {
 		t.Fatalf("expected response body with version 2, got: %s", rec2.Body.String())
 	}
+
+	// Reset hook so subsequent normal variant retrievals succeed
+	store.SetGetVariantHook(nil)
 
 	// 4. Third request: Cache should now be fully restored and hit cleanly!
 	req3 := httptest.NewRequest(http.MethodGet, targetURL, nil)
@@ -1816,21 +1753,7 @@ func TestNew_MissingStorage(t *testing.T) {
 
 func TestNew_MinimalOptions(t *testing.T) {
 	t.Parallel()
-	addr := getTestRedisAddr()
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{addr},
-		DisableCache: true,
-	})
-	if err != nil {
-		t.Fatalf("failed to connect to test Redis: %v", err)
-	}
-	defer client.Close()
-
-	prefix := fmt.Sprintf("test_min:%d:%d:", time.Now().UnixNano(), rand.Int63())
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix(prefix))
-	if err != nil {
-		t.Fatalf("failed to create RedisStorage: %v", err)
-	}
+	store := teststore.New()
 
 	// Initialize with ONLY the single required option
 	mw, err := New(WithStorage(store))
@@ -1842,22 +1765,6 @@ func TestNew_MinimalOptions(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = mw.Close(ctx)
-
-		cleanupClient, err := rueidis.NewClient(rueidis.ClientOption{
-			InitAddress:  []string{getTestRedisAddr()},
-			DisableCache: true,
-		})
-		if err == nil {
-			resp := cleanupClient.Do(ctx, cleanupClient.B().Keys().Pattern(prefix+"*").Build())
-			if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
-				delCmds := make([]rueidis.Completed, len(keys))
-				for i, k := range keys {
-					delCmds[i] = cleanupClient.B().Del().Key(k).Build()
-				}
-				cleanupClient.DoMulti(ctx, delCmds...)
-			}
-			cleanupClient.Close()
-		}
 	})
 
 	// 1. Verify default configuration values
@@ -1943,21 +1850,7 @@ func TestNew_MinimalOptions(t *testing.T) {
 
 func TestNew_NilOptionGuards(t *testing.T) {
 	t.Parallel()
-	addr := getTestRedisAddr()
-	client, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress:  []string{addr},
-		DisableCache: true,
-	})
-	if err != nil {
-		t.Fatalf("failed to connect to test Redis: %v", err)
-	}
-	defer client.Close()
-
-	prefix := fmt.Sprintf("test_nil_opts:%d:%d:", time.Now().UnixNano(), rand.Int63())
-	store, err := storageRedis.New(client, storageRedis.WithKeyPrefix(prefix))
-	if err != nil {
-		t.Fatalf("failed to create RedisStorage: %v", err)
-	}
+	store := teststore.New()
 
 	// Initialize with explicit nil pointers
 	mw, err := New(
@@ -1973,22 +1866,6 @@ func TestNew_NilOptionGuards(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = mw.Close(ctx)
-
-		cleanupClient, err := rueidis.NewClient(rueidis.ClientOption{
-			InitAddress:  []string{getTestRedisAddr()},
-			DisableCache: true,
-		})
-		if err == nil {
-			resp := cleanupClient.Do(ctx, cleanupClient.B().Keys().Pattern(prefix+"*").Build())
-			if keys, err := resp.AsStrSlice(); err == nil && len(keys) > 0 {
-				delCmds := make([]rueidis.Completed, len(keys))
-				for i, k := range keys {
-					delCmds[i] = cleanupClient.B().Del().Key(k).Build()
-				}
-				cleanupClient.DoMulti(ctx, delCmds...)
-			}
-			cleanupClient.Close()
-		}
 	})
 	if mw.logger == nil {
 		t.Fatal("expected mw.logger to fallback to slog.Default() when passed nil")
@@ -3027,4 +2904,51 @@ func TestRFC9213_TieredCacheControl_EndToEnd(t *testing.T) {
 			t.Fatalf("expected cache HIT, got: %s", rec2.Header().Get("Cache-Status"))
 		}
 	})
+}
+
+func TestPurge_PathOnly_PurgesCachedKeysWithHost(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("cached-payload"))
+	})
+	handler := mw.testHandler(origin)
+
+	// Step 1: Prime cache for http://localhost:8080/api/time
+	req1 := httptest.NewRequest(http.MethodGet, "http://localhost:8080/api/time", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+
+	// Step 2: Confirm it is a cache HIT
+	req2 := httptest.NewRequest(http.MethodGet, "http://localhost:8080/api/time", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 0 additional origin calls (HIT), got %d", originCalls.Load())
+	}
+
+	// Step 3: Purge using pure path "/api/time" (without host)
+	n, err := mw.Purge(context.Background(), "/api/time")
+	if err != nil {
+		t.Fatalf("purge failed: %v", err)
+	}
+	if n == 0 {
+		t.Fatalf("expected at least 1 key purged, got %d", n)
+	}
+
+	// Step 4: Request after purge -> MISS (calls origin)
+	req3 := httptest.NewRequest(http.MethodGet, "http://localhost:8080/api/time", nil)
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected 2 origin calls after purge (MISS), got %d", originCalls.Load())
+	}
 }

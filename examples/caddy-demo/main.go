@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -236,10 +235,11 @@ func main() {
 
 	// Root overview
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api") {
+		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
+
 		w.Header().Set("Cache-Control", "public, max-age=30")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = fmt.Fprint(w, `<!DOCTYPE html>
