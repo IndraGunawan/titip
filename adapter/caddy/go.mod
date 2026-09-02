@@ -7,6 +7,8 @@ require (
 	github.com/indragunawan/titip v0.0.0
 )
 
+replace github.com/indragunawan/titip => ../..
+
 require (
 	cel.dev/expr v0.25.1 // indirect
 	cloud.google.com/go/auth v0.20.0 // indirect
@@ -173,5 +175,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.0 // indirect
 )
-
-replace github.com/indragunawan/titip => ../..

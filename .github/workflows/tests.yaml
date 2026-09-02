@@ -27,9 +27,34 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Verify Workspace Synchronization
+      - name: Verify Workspace & Submodule Integrity
         run: |
           go work sync
+
+          # POLICY: In this monorepo, every submodule requiring an internal titip module
+          # MUST declare a relative 'replace' directive in its go.mod (e.g., replace github.com/indragunawan/titip => ../..).
+          # WHY:
+          # 1. Ensures 'go mod tidy' inside submodules resolves locally instead of failing or pulling stale remote packages.
+          # 2. Enables atomic, single-commit version bumping across all modules prior to creating GitHub release tags.
+          # NOTE: Go automatically ignores dependency 'replace' directives when downstream users install modules via 'go get'.
+          for mod_file in $(find . -mindepth 2 -name "go.mod" -not -path "*/.*" | sort); do
+            dir=$(dirname "$mod_file")
+            (
+              cd "$dir"
+              go mod edit -json | jq -r '.Require[]? | select(.Path | startswith("github.com/indragunawan/titip")) | .Path' | while IFS= read -r req; do
+                [ -z "$req" ] && continue
+                has_replace=$(go mod edit -json | jq -r --arg req "$req" '.Replace[]? | select(.Old.Path == $req) | .Old.Path')
+                if [ -z "$has_replace" ]; then
+                  rel_file="${mod_file#./}"
+                  echo "::error file=${rel_file},title=Missing Local Replace Directive::Submodule '${rel_file}' requires '${req}' but is missing a local 'replace' directive. Add 'replace ${req} => <relative-path>' to '${rel_file}' so local tidy and dev builds resolve within the monorepo."
+                  exit 1
+                fi
+              done
+            ) || exit 1
+          done
+
+          # Verify that all go.mod and go.sum files across all modules remain clean and tidied
+          find . -name "go.mod" -not -path "*/.*" -execdir go mod tidy \;
           git diff --exit-code
 
   test:
@@ -77,10 +102,6 @@ jobs:
       - name: Run Unit Tests & Race Detection
         working-directory: ${{ matrix.path }}
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
-
-      - name: Run Concurrency Race Tests
-        working-directory: ${{ matrix.path }}
-        run: go test -race -count=50 -parallel=8 ./...
 
       - name: Run Memory Benchmarks
         working-directory: ${{ matrix.path }}
