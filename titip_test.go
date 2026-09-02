@@ -607,6 +607,60 @@ func TestSWR_AsyncRevalidation_OnHead(t *testing.T) {
 	}
 }
 
+// TestSWR_PreservesRequestContextValues verifies that custom context values (e.g. tracing IDs, replacers)
+// attached to the original HTTP request are preserved and accessible during async SWR revalidation.
+func TestSWR_PreservesRequestContextValues(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	type traceCtxKey struct{}
+	var receivedTraceVal atomic.Value
+
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if val := r.Context().Value(traceCtxKey{}); val != nil {
+			receivedTraceVal.Store(val.(string))
+		}
+		w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=10")
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("swr trace payload"))
+	})
+
+	handler := mw.testHandler(originHandler)
+
+	// 1. Prime cache with request containing context value
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/api/test-swr-ctx", nil)
+	ctx1 := context.WithValue(req1.Context(), traceCtxKey{}, "trace-id-init")
+	req1 = req1.WithContext(ctx1)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	// Wait for entry to enter SWR window
+	time.Sleep(1100 * time.Millisecond)
+
+	// 2. Stale request with a new trace context value
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/api/test-swr-ctx", nil)
+	ctx2 := context.WithValue(req2.Context(), traceCtxKey{}, "trace-id-swr-reval")
+	req2 = req2.WithContext(ctx2)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 on stale hit, got %d", rec2.Code)
+	}
+
+	// Close mw to ensure background SWR goroutine completes
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := mw.Close(closeCtx); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	if got := receivedTraceVal.Load(); got != "trace-id-swr-reval" {
+		t.Fatalf("expected background SWR to receive trace value %q, got %v", "trace-id-swr-reval", got)
+	}
+}
+
 // Unsafe HTTP method auto-invalidation
 func TestUnsafeMethodAutoInvalidation_DefaultDisabled(t *testing.T) {
 	t.Parallel()
@@ -1938,13 +1992,13 @@ func TestRFC_Authorization_Guards(t *testing.T) {
 		switch r.URL.Path {
 		case "/auth-private":
 			w.Header().Set("Cache-Control", "max-age=60")
-			w.Write([]byte("auth-secret-payload"))
+			_, _ = w.Write([]byte("auth-secret-payload"))
 		case "/auth-public":
 			w.Header().Set("Cache-Control", "public, max-age=60")
-			w.Write([]byte("auth-public-payload"))
+			_, _ = w.Write([]byte("auth-public-payload"))
 		case "/auth-s-maxage":
 			w.Header().Set("Cache-Control", "s-maxage=60")
-			w.Write([]byte("auth-s-maxage-payload"))
+			_, _ = w.Write([]byte("auth-s-maxage-payload"))
 		}
 	})
 	handler := mw.testHandler(origin)
@@ -1993,7 +2047,7 @@ func TestRFC_MustRevalidate_DisallowsSWR(t *testing.T) {
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		originCalls.Add(1)
 		w.Header().Set("Cache-Control", "public, max-age=1, must-revalidate, stale-while-revalidate=60")
-		w.Write([]byte("revalidate-data"))
+		_, _ = w.Write([]byte("revalidate-data"))
 	})
 	handler := mw.testHandler(origin)
 
@@ -2027,7 +2081,7 @@ func TestRFC_VaryStar_NoSubsequentMatch(t *testing.T) {
 		originCalls.Add(1)
 		w.Header().Set("Cache-Control", "public, max-age=60")
 		w.Header().Set("Vary", "*")
-		w.Write([]byte("vary-star-data"))
+		_, _ = w.Write([]byte("vary-star-data"))
 	})
 	handler := mw.testHandler(origin)
 
@@ -2056,7 +2110,7 @@ func TestRFC_ServedAge_PreservesUpstreamAge(t *testing.T) {
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=300")
 		w.Header().Set("Age", "45")
-		w.Write([]byte("upstream-age-data"))
+		_, _ = w.Write([]byte("upstream-age-data"))
 	})
 	handler := mw.testHandler(origin)
 
@@ -2090,7 +2144,7 @@ func TestRFC_ClientDirectives_PragmaAndOnlyIfCached(t *testing.T) {
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		originCalls.Add(1)
 		w.Header().Set("Cache-Control", "public, max-age=60")
-		w.Write([]byte("client-cc-data"))
+		_, _ = w.Write([]byte("client-cc-data"))
 	})
 	handler := mw.testHandler(origin)
 
@@ -2145,13 +2199,13 @@ func TestRFC_MutatingMethod_InvalidatesLocation(t *testing.T) {
 		if r.Method == http.MethodGet && r.URL.Path == "/resource/1" {
 			getCalls.Add(1)
 			w.Header().Set("Cache-Control", "public, max-age=300")
-			w.Write([]byte("resource-1-data"))
+			_, _ = w.Write([]byte("resource-1-data"))
 			return
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/resource/update" {
 			w.Header().Set("Location", "http://example.com/resource/1")
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte("created"))
+			_, _ = w.Write([]byte("created"))
 			return
 		}
 	})
@@ -2201,7 +2255,7 @@ func TestRFC_IfModifiedSince_SecondsPrecision(t *testing.T) {
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=300")
 		w.Header().Set("Last-Modified", lmTime.Format(http.TimeFormat))
-		w.Write([]byte("ims-data"))
+		_, _ = w.Write([]byte("ims-data"))
 	})
 	handler := mw.testHandler(origin)
 
@@ -2232,7 +2286,7 @@ func TestRFC_Expires_Alone_Cacheable(t *testing.T) {
 		originCalls.Add(1)
 		w.Header().Set("Date", time.Now().Format(http.TimeFormat))
 		w.Header().Set("Expires", time.Now().Add(60*time.Second).Format(http.TimeFormat))
-		w.Write([]byte("expires-only-data"))
+		_, _ = w.Write([]byte("expires-only-data"))
 	})
 	handler := mw.testHandler(origin)
 
@@ -2266,7 +2320,7 @@ func TestMultipleVaryHeaders_EndToEnd(t *testing.T) {
 		w.Header().Add("Vary", "Accept-Encoding")
 		lang := r.Header.Get("Accept-Language")
 		enc := r.Header.Get("Accept-Encoding")
-		w.Write([]byte("lang=" + lang + ",enc=" + enc))
+		_, _ = w.Write([]byte("lang=" + lang + ",enc=" + enc))
 	})
 	handler := mw.testHandler(origin)
 
@@ -2332,7 +2386,7 @@ func TestMultipleCacheControlHeaders_EndToEnd(t *testing.T) {
 			originCalls.Add(1)
 			w.Header().Add("Cache-Control", "public")
 			w.Header().Add("Cache-Control", "max-age=60")
-			w.Write([]byte("multi-cc-hit-data"))
+			_, _ = w.Write([]byte("multi-cc-hit-data"))
 		})
 		handler := mw.testHandler(origin)
 
@@ -2364,7 +2418,7 @@ func TestMultipleCacheControlHeaders_EndToEnd(t *testing.T) {
 			originCalls.Add(1)
 			w.Header().Add("Cache-Control", "s-maxage=60, public")
 			w.Header().Add("Cache-Control", "private")
-			w.Write([]byte("multi-cc-private-data"))
+			_, _ = w.Write([]byte("multi-cc-private-data"))
 		})
 		handler := mw.testHandler(origin)
 

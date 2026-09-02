@@ -51,10 +51,10 @@ func TestESI_InProcessVirtualSubrequests(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-			MaxTimeout:      5 * time.Second,
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithMaxTimeout(5*time.Second),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -138,9 +138,9 @@ func TestESI_SamePageDeduplication(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -174,9 +174,9 @@ func TestESI_SSRFProtection(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -190,40 +190,44 @@ func TestESI_SSRFProtection(t *testing.T) {
 
 	body := rec.Body.String()
 	if !strings.Contains(body, "Cloud Metadata Blocked") {
-		t.Errorf("expected cloud metadata SSRF fallback, got: %s", body)
+		t.Errorf("expected SSRF block fallback for cloud metadata IP, got: %s", body)
 	}
 	if !strings.Contains(body, "File Scheme Blocked") {
-		t.Errorf("expected file scheme fallback, got: %s", body)
+		t.Errorf("expected scheme validation fallback for file:///, got: %s", body)
 	}
 }
 
-func TestESI_FailOpenFallbackAndAlt(t *testing.T) {
+func TestESI_FallbackOnErrorAndAlt(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fail-test", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<div><esi:include src="/api/broken" alt="/api/backup" /> | <esi:include src="/api/broken2"><span>Inline Fallback</span></esi:include> | <esi:include src="/api/broken3" onerror="continue" /></div>`))
+		_, _ = w.Write([]byte(`<div><esi:include src="/api/broken1" alt="/api/backup" /> | <esi:include src="/api/broken2"><span>Inline Fallback</span></esi:include> | <esi:include src="/api/broken3" onerror="continue"><span>Omit Me</span></esi:include></div>`))
 	})
 
-	mux.HandleFunc("/api/broken", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/broken1", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server error", http.StatusInternalServerError)
 	})
+
 	mux.HandleFunc("/api/broken2", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server error", http.StatusInternalServerError)
 	})
+
 	mux.HandleFunc("/api/broken3", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server error", http.StatusInternalServerError)
 	})
+
 	mux.HandleFunc("/api/backup", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<span>Backup Success</span>`))
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -265,10 +269,10 @@ func TestESI_MaxDepthAndCircularLoop(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-			MaxDepth:        3,
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithMaxDepth(3),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -300,9 +304,9 @@ func TestESI_WorkerPanicRecovery(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -378,9 +382,9 @@ func TestESI_FullDocument_ColdMissAndCacheHitIdentical(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -466,9 +470,9 @@ func TestESI_ConcurrentFetchDuration_MaxOfFragments(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -554,9 +558,9 @@ func TestESI_LargePayloadSplicing_PositionOffsetsExact(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -596,7 +600,7 @@ func TestESI_LargePayloadSplicing_PositionOffsetsExact(t *testing.T) {
 	idx1 := strings.Index(hitBody, "--- SECTION 1 DIVIDER ---")
 	idx2 := strings.Index(hitBody, "--- SECTION 2 DIVIDER ---")
 	idx3 := strings.Index(hitBody, "--- FOOTER END ---")
-	if idx1 == -1 || idx2 == -1 || idx3 == -1 || !(idx1 < idx2 && idx2 < idx3) {
+	if idx1 == -1 || idx2 == -1 || idx3 == -1 || idx1 >= idx2 || idx2 >= idx3 {
 		t.Fatalf("intermediate static sections not in expected sequence: idx1=%d, idx2=%d, idx3=%d", idx1, idx2, idx3)
 	}
 }
@@ -633,9 +637,9 @@ func TestESI_ContentLengthHeaderPreservation(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 	handler := mw.testHandler(mux)
 
@@ -770,10 +774,10 @@ func TestESI_RootIndex_AllAttributeCombinations(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-			MaxTimeout:      5 * time.Second,
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithMaxTimeout(5*time.Second),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -839,7 +843,7 @@ func TestESI_SameHostAndExternalDomainIncludes(t *testing.T) {
 		// 1. Relative include: src="/frag/relative"
 		// 2. Absolute URL with same host: src="http://example.com/frag/same-host"
 		// 3. External domain URL: src="http://127.0.0.1:PORT/widget"
-		fmt.Fprintf(w, `<main><esi:include src="/frag/relative" /><esi:include src="http://example.com/frag/same-host" /><esi:include src="%s/widget" /></main>`, externalSrv.URL)
+		_, _ = fmt.Fprintf(w, `<main><esi:include src="/frag/relative" /><esi:include src="http://example.com/frag/same-host" /><esi:include src="%s/widget" /></main>`, externalSrv.URL)
 	})
 
 	mux.HandleFunc("/frag/relative", func(w http.ResponseWriter, r *http.Request) {
@@ -855,10 +859,10 @@ func TestESI_SameHostAndExternalDomainIncludes(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-			AllowPrivateIPs: true, // allow 127.0.0.1 httptest server
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithAllowPrivateIPs(true), // allow 127.0.0.1 httptest server
+		),
 	)
 
 	h := mw.testHandler(mux)
@@ -900,9 +904,9 @@ func BenchmarkESI_ColdMiss(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 	handler := mw.testHandler(mux)
 
@@ -936,9 +940,9 @@ func BenchmarkESI_CacheHit(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 	handler := mw.testHandler(mux)
 
@@ -974,9 +978,9 @@ func TestESI_CustomInternalFetcher(t *testing.T) {
 	}
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: customFetcher,
-		}),
+		WithESI(
+			esi.WithInternalFetcher(customFetcher),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -1042,11 +1046,11 @@ func TestESI_InternalFetcher_FallbackToOutboundHTTP_On404(t *testing.T) {
 	}
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: localFetcher,
-			AllowPrivateIPs: true, // allow loopback httptest.Server
-			MaxTimeout:      5 * time.Second,
-		}),
+		WithESI(
+			esi.WithInternalFetcher(localFetcher),
+			esi.WithAllowPrivateIPs(true), // allow loopback httptest.Server
+			esi.WithMaxTimeout(5*time.Second),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -1093,11 +1097,11 @@ func TestESI_InternalFetcher_Non404Error_DoesNotFallback(t *testing.T) {
 	}
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: errFetcher,
-			AllowPrivateIPs: true,
-			MaxTimeout:      5 * time.Second,
-		}),
+		WithESI(
+			esi.WithInternalFetcher(errFetcher),
+			esi.WithAllowPrivateIPs(true),
+			esi.WithMaxTimeout(5*time.Second),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -1152,11 +1156,11 @@ func TestESI_ESIHandlerFetcher_404_FallbackToOutbound(t *testing.T) {
 
 	// Wrap mux with ESIHandlerFetcher which returns esi.ErrFallbackToHTTP on 404
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-			AllowPrivateIPs: true,
-			MaxTimeout:      5 * time.Second,
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithAllowPrivateIPs(true),
+			esi.WithMaxTimeout(5*time.Second),
+		),
 	)
 
 	handler := mw.testHandler(mux)
@@ -1223,11 +1227,11 @@ func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T)
 
 	// Wrap parentMux with ESIHandlerFetcher that falls back to HTTP on 404
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(parentMux),
-			AllowPrivateIPs: true,
-			MaxTimeout:      5 * time.Second,
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(parentMux)),
+			esi.WithAllowPrivateIPs(true),
+			esi.WithMaxTimeout(5*time.Second),
+		),
 	)
 
 	handler := mw.testHandler(parentMux)
@@ -1263,6 +1267,39 @@ func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T)
 	}
 	if auth, _ := crossHostReceivedAuth.Load().(string); auth != "" {
 		t.Errorf("expected cross-host to NOT receive client authorization, got %q", auth)
+	}
+}
+
+func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithHeaderRequired(true),
+		),
+	)
+
+	if !mw.cfg.esi.Enabled {
+		t.Errorf("expected ESI to be enabled")
+	}
+	if !mw.cfg.esi.HeaderRequired {
+		t.Errorf("expected HeaderRequired to be true")
+	}
+	if mw.cfg.esi.MaxDepth != 3 {
+		t.Errorf("expected default MaxDepth=3, got %d", mw.cfg.esi.MaxDepth)
+	}
+	if mw.cfg.esi.MaxTimeout != 30*time.Second {
+		t.Errorf("expected default MaxTimeout=30s, got %v", mw.cfg.esi.MaxTimeout)
+	}
+	if mw.cfg.esi.MaxConcurrentRequests != 8 {
+		t.Errorf("expected default MaxConcurrentRequests=8, got %d", mw.cfg.esi.MaxConcurrentRequests)
+	}
+	if mw.cfg.esi.MaxResponseSize != 10*1024*1024 {
+		t.Errorf("expected default MaxResponseSize=10MB, got %d", mw.cfg.esi.MaxResponseSize)
+	}
+	if mw.cfg.esi.AllowPrivateIPs != false {
+		t.Errorf("expected default AllowPrivateIPs=false, got true")
+	}
+	if mw.cfg.esi.DisableForwardCookies != false {
+		t.Errorf("expected default DisableForwardCookies=false, got true")
 	}
 }
 

@@ -118,7 +118,7 @@ func TestResponseRecorderImplicitStatus200(t *testing.T) {
 	rec = getResponseRecorder()
 	rec.Header().Set("X-Test", "123")
 	rec.WriteHeader(http.StatusAccepted)
-	rec.Write([]byte("temp"))
+	_, _ = rec.Write([]byte("temp"))
 	putResponseRecorder(rec)
 
 	rec2 := getResponseRecorder()
@@ -288,7 +288,7 @@ func TestPoolConcurrencyAndRaces(t *testing.T) {
 				rec := getResponseRecorder()
 				rec.Header().Set("X-Goroutine", "test")
 				rec.WriteHeader(http.StatusOK)
-				rec.Write([]byte("response body test"))
+				_, _ = rec.Write([]byte("response body test"))
 				putResponseRecorder(rec)
 
 				// Protobuf pool test
@@ -338,7 +338,7 @@ func BenchmarkResponseRecorderPool(b *testing.B) {
 	for b.Loop() {
 		rec := getResponseRecorder()
 		rec.WriteHeader(http.StatusOK)
-		rec.Write(payload)
+		_, _ = rec.Write(payload)
 		putResponseRecorder(rec)
 	}
 }
@@ -396,9 +396,9 @@ func TestESIMemoryPoolRecycling(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 	handler := mw.testHandler(mux)
 
@@ -447,9 +447,9 @@ func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
 	})
 
 	_, _, mw := setupTestTitip(b,
-		WithESI(esi.Config{
-			InternalFetcher: esi.HandlerFetcher(mux),
-		}),
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
 	)
 	handler := mw.testHandler(mux)
 

@@ -49,6 +49,7 @@ func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
 	config := `titip {
 		cache_status RFC9211
 		origin_timeout 20s
+		storage_timeout 5s
 		storage test
 	}`
 
@@ -63,6 +64,9 @@ func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
 	}
 	if h.OriginTimeout != "20s" {
 		t.Errorf("expected origin_timeout 20s, got %s", h.OriginTimeout)
+	}
+	if h.StorageTimeout != "5s" {
+		t.Errorf("expected storage_timeout 5s, got %s", h.StorageTimeout)
 	}
 }
 
@@ -965,3 +969,61 @@ func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 		t.Errorf("unexpected body for native respond: %q", string(body3))
 	}
 }
+
+func TestCaddyHandler_SWR_PreservesReplacerContext(t *testing.T) {
+	t.Parallel()
+	h, cleanup := parseAndProvisionHandler(t, "titip { storage test }")
+	defer cleanup()
+
+	var replacerFound atomic.Bool
+	var currentPayload atomic.Value
+	currentPayload.Store("v1")
+
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		if repl, ok := r.Context().Value(caddymain.ReplacerCtxKey).(*caddymain.Replacer); ok && repl != nil {
+			replacerFound.Store(true)
+		}
+		w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=10")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(currentPayload.Load().(string)))
+		return nil
+	})
+
+	// 1. Prime cache
+	req1 := httptest.NewRequest(http.MethodGet, "http://localhost:8080/swr-caddy-replacer", nil)
+	repl1 := caddymain.NewReplacer()
+	req1 = req1.WithContext(context.WithValue(req1.Context(), caddymain.ReplacerCtxKey, repl1))
+	rec1 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec1, req1, downstream)
+
+	// Wait to enter SWR window
+	time.Sleep(1100 * time.Millisecond)
+	currentPayload.Store("v2")
+	replacerFound.Store(false)
+
+	// 2. Trigger SWR stale hit + async revalidation
+	req2 := httptest.NewRequest(http.MethodGet, "http://localhost:8080/swr-caddy-replacer", nil)
+	repl2 := caddymain.NewReplacer()
+	req2 = req2.WithContext(context.WithValue(req2.Context(), caddymain.ReplacerCtxKey, repl2))
+	rec2 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec2, req2, downstream)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 on stale hit, got %d", rec2.Code)
+	}
+	if rec2.Body.String() != "v1" {
+		t.Fatalf("expected stale v1 body, got %q", rec2.Body.String())
+	}
+
+	// Drain SWR
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.engine.Close(closeCtx); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	if !replacerFound.Load() {
+		t.Fatal("expected background SWR goroutine to have caddymain.Replacer in request context")
+	}
+}
+

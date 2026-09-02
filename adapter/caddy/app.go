@@ -39,6 +39,9 @@ type App struct {
 	// OriginTimeout specifies the default timeout for fetching from upstream.
 	OriginTimeout string `json:"origin_timeout,omitempty"`
 
+	// StorageTimeout specifies the default timeout for storage operations.
+	StorageTimeout string `json:"storage_timeout,omitempty"`
+
 	// KeyConfig defines default cache key generation rules.
 	KeyConfig *KeyConfig `json:"key_config,omitempty"`
 
@@ -149,6 +152,12 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 					return nil, d.ArgErr()
 				}
 				app.OriginTimeout = d.Val()
+
+			case "storage_timeout":
+				if !d.NextArg() {
+					return nil, d.ArgErr()
+				}
+				app.StorageTimeout = d.Val()
 
 			case "key", "key_config":
 				kc := new(KeyConfig)

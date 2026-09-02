@@ -692,7 +692,7 @@ func TestGeneratePrimaryKey_MultipleQueryValues(t *testing.T) {
 	if aPos == -1 || bPos == -1 || cPos == -1 {
 		t.Fatalf("all tag values must appear, got: %s", key)
 	}
-	if !(aPos < bPos && bPos < cPos) {
+	if aPos >= bPos || bPos >= cPos {
 		t.Fatalf("tag values must be sorted a<b<c, got: %s", key)
 	}
 }

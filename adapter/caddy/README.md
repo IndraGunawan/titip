@@ -2,8 +2,6 @@
 
 High-performance, RFC-compliant HTTP caching middleware module for the [Caddy Web Server](https://caddyserver.com/).
 
----
-
 ## 1. Installation & Building with `xcaddy`
 
 Because Titip decouples storage from the core handler, build Caddy with both the Caddy adapter and your desired storage module (e.g. Redis):
@@ -13,8 +11,6 @@ xcaddy build \
   --with github.com/indragunawan/titip/adapter/caddy \
   --with github.com/indragunawan/titip/storage/redis/caddy
 ```
-
----
 
 ## 2. Caddyfile Syntax & Configuration
 
@@ -90,8 +86,6 @@ You can also configure `titip` locally or override specific settings per route:
 | `allowed_hosts <hosts...>` | `(all)` | Whitelist of allowed external hosts for ESI includes. |
 | `forward_fragment_cookies <bool>` | `true` | Forward `Set-Cookie` headers from fragments to downstream client. |
 
----
-
 ## 3. Caddy Admin Purge API (`POST /titip/purge`)
 
 Titip exposes an Admin API endpoint on Caddy's private admin port (default `:2019`) to invalidate cache entries across all active instances.
@@ -133,8 +127,6 @@ curl -X POST http://localhost:2019/titip/purge \
 
 * `"soft": true` (default): Marks cache entries as stale, allowing backend revalidation in the background without causing origin stampedes.
 * `"soft": false`: Hard-purges and evicts entries immediately from storage.
-
----
 
 ## 4. Multi-Site & Graceful Reloads
 

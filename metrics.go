@@ -44,7 +44,7 @@ func newMetrics(reg prometheus.Registerer, enableESI bool) *metrics {
 			prometheus.HistogramOpts{
 				Name:    "titip_request_duration_seconds",
 				Help:    "Latency distribution of HTTP requests processed by Titip caching middleware in seconds.",
-				Buckets: []float64{.00025, .0005, .001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+				Buckets: prometheus.DefBuckets,
 			},
 			[]string{"status"},
 		),

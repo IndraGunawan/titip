@@ -151,11 +151,16 @@ func WithOriginTimeout(d time.Duration) Option {
 	}
 }
 
-// WithESI enables ESI processing with the provided ESI configuration.
-func WithESI(cfg esi.Config) Option {
+// WithESI enables ESI processing with the provided ESI options.
+// If no options are provided, ESI is enabled with safe production defaults.
+func WithESI(opts ...esi.Option) Option {
 	return func(c *config) {
-		c.esi = cfg
 		c.esi.Enabled = true
+		for _, opt := range opts {
+			if opt != nil {
+				opt(&c.esi)
+			}
+		}
 	}
 }
 

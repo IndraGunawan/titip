@@ -33,7 +33,7 @@ var defaultPorts = map[string]string{
 
 // KeyConfig defines the configuration for assembling zero-hash canonical cache keys.
 type KeyConfig struct {
-	// IncludeProtocol includes the request scheme ("http" or "https") in the cache key as s=<scheme>.
+	// IncludeProtocol includes the request scheme ("http" or "https") in the cache key.
 	// When true, HTTP and HTTPS requests reference distinct cache entries.
 	IncludeProtocol bool
 

@@ -22,6 +22,7 @@ func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 		username testuser
 		password testpass
 		db 2
+		pipeline_multiplex 4
 	}`
 
 	d := caddyfile.NewTestDispenser(config)
@@ -51,6 +52,9 @@ func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 	}
 	if r.DB != 2 {
 		t.Errorf("expected db 2, got %d", r.DB)
+	}
+	if r.PipelineMultiplex != 4 {
+		t.Errorf("expected pipeline_multiplex 4, got %d", r.PipelineMultiplex)
 	}
 }
 

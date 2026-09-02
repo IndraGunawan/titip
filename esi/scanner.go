@@ -345,7 +345,7 @@ func extractAttribute(tagHeader []byte, attrName []byte) string {
 }
 
 // parseTimeoutBytes parses timeout strings like "0.5", "2.5s", "500ms" into milliseconds.
-// ponytail: stdlib time.ParseDuration covers this; fallback bare seconds → ms.
+// stdlib time.ParseDuration covers this; fallback bare seconds → ms.
 func parseTimeoutBytes(b []byte) uint32 {
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 {

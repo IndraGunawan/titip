@@ -60,19 +60,6 @@ func New(opts ...Option) (*Titip, error) {
 		cfg.logger = slog.Default()
 	}
 
-	if cfg.esi.MaxDepth == 0 {
-		cfg.esi.MaxDepth = 3
-	}
-	if cfg.esi.MaxTimeout <= 0 {
-		cfg.esi.MaxTimeout = 30 * time.Second
-	}
-	if cfg.esi.MaxConcurrentRequests <= 0 {
-		cfg.esi.MaxConcurrentRequests = 8
-	}
-	if cfg.esi.MaxResponseSize <= 0 {
-		cfg.esi.MaxResponseSize = 10 * 1024 * 1024 // 10MB
-	}
-
 	ssrfCfg := esi.SSRFConfig{
 		BlockPrivateIPs:                !cfg.esi.AllowPrivateIPs,
 		AllowedHosts:                   cfg.esi.AllowedHosts,

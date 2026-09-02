@@ -1,0 +1,62 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    # Standard Default Linters
+    - govet        # Official Go vet tool for reporting suspicious constructs
+    - staticcheck  # Advanced static analysis & bug detection
+    - errcheck     # Ensures all returned errors are explicitly handled
+    - ineffassign  # Detects unused assignments to variables
+    - unused       # Finds unused constants, variables, functions, and types
+
+    # Additional Quality & Security Linters
+    - gosec        # Security auditor for memory safety, SSRF, crypto, and network issues
+    - revive       # Fast, idiomatic Go linter (naming conventions, doc comments)
+    - misspell     # Corrects spelling mistakes in comments, strings, and docs
+    - unconvert    # Removes unnecessary and redundant type conversions
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # fieldalignment forces struct fields to be rearranged solely for CPU memory padding.
+        # Disabled to preserve readable, logical grouping of struct fields (e.g. host, port, auth together).
+        - fieldalignment
+        # shadow warns whenever an inner variable has the same name as an outer variable.
+        # Disabled because shadowing err (e.g. `if err := fn(); err != nil`) is standard idiomatic Go.
+        - shadow
+
+    gosec:
+      excludes:
+        # G104: Audit errors not checked. Excluded because `errcheck` linter already handles this with fewer false positives.
+        - G104
+        # G115: Integer overflow conversion warning. Excluded because converting status codes, sizes, and array lengths (e.g. uint32(len(b))) is safe and intentional in HTTP buffers.
+        - G115
+        # G404: Weak random generator warning in tests / non-cryptographic keys.
+        - G404
+        # G124: Insecure cookie attributes in test mock requests.
+        - G124
+        # G705: Taint analysis in test mock response echoes.
+        - G705
+
+    revive:
+      rules:
+        # exported: Enforces that all public exported functions, structs, and interfaces have clear GoDoc comments starting with their name.
+        - name: exported
+          disabled: false
+
+  exclusions:
+    rules:
+      - path: storage/redis/redis.go
+        linters:
+          - revive
+        text: "stutters"
+
+issues:
+  # Print all detected issues without artificial truncation
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -2,8 +2,6 @@
 
 Demonstrates native Caddy HTTP reverse proxy caching with dynamic Redis storage and the Caddy Admin Purge API (`POST /titip/purge`).
 
----
-
 ## 1. Quick Start (Single Command)
 
 ```bash
@@ -44,8 +42,6 @@ make origin
 # In Terminal 2:
 ./caddy run --config Caddyfile
 ```
-
----
 
 ## 2. Testing HTTP Caching & ESI
 
@@ -157,3 +153,13 @@ Inspect live cache and ESI telemetry in your browser or with `curl`:
 - `titip_storage_duration_seconds{operation="...", backend="redis"}`
 - `titip_esi_fragments_total{status="success|fallback|error|ssrf_blocked"}`
 - `titip_esi_duration_seconds{mode="in_process|http"}`
+
+---
+
+### F. Running Load Tests (k6)
+
+Simulate high-concurrency traffic across cached endpoints, multi-language `Vary` variants, ESI splicing, and background purges:
+
+```bash
+k6 run loadtest.js
+```

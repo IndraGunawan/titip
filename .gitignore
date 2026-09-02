@@ -7,6 +7,8 @@ dist/
 *.so
 *.dylib
 *.test
+/caddy
+/examples/caddy-demo/caddy
 
 # Test and coverage output
 *.out

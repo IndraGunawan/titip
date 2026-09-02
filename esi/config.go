@@ -24,7 +24,7 @@ type Config struct {
 	// Enabled is the master switch for ESI parsing and fragment splicing (default: false).
 	Enabled bool
 
-	// HeaderRequired processes ESI only when the origin returns Surrogate-Control or Edge-Control (default: false).
+	// HeaderRequired processes ESI only when the origin returns Surrogate-Control (default: false).
 	HeaderRequired bool
 
 	// InternalFetcher provides a custom hook to resolve internal/same-host ESI includes in-process.
@@ -56,6 +56,94 @@ type Config struct {
 
 	// IncludeErrorMarker is the HTML placeholder rendered on unhandled fetch errors (default: "").
 	IncludeErrorMarker string
+}
+
+// Option configures ESI engine parameters.
+type Option func(*Config)
+
+// WithHeaderRequired configures whether ESI is processed only when Surrogate-Control is present.
+func WithHeaderRequired(required bool) Option {
+	return func(c *Config) {
+		c.HeaderRequired = required
+	}
+}
+
+// WithInternalFetcher configures a custom in-process handler for resolving local fragment subrequests.
+func WithInternalFetcher(fetcher InternalFetcherFunc) Option {
+	return func(c *Config) {
+		c.InternalFetcher = fetcher
+	}
+}
+
+// WithMaxDepth configures the maximum global recursion depth for nested includes (default: 3).
+func WithMaxDepth(depth uint32) Option {
+	return func(c *Config) {
+		if depth > 0 {
+			c.MaxDepth = depth
+		}
+	}
+}
+
+// WithMaxTimeout configures the maximum fetch timeout for resolving an include fragment (default: 30s).
+func WithMaxTimeout(timeout time.Duration) Option {
+	return func(c *Config) {
+		if timeout > 0 {
+			c.MaxTimeout = timeout
+		}
+	}
+}
+
+// WithMaxConcurrentRequests caps concurrent fragment fetch goroutines per document (default: 8).
+func WithMaxConcurrentRequests(limit int) Option {
+	return func(c *Config) {
+		if limit > 0 {
+			c.MaxConcurrentRequests = limit
+		}
+	}
+}
+
+// WithAllowPrivateIPs configures whether SSRF blocking permits dials to private/loopback CIDRs (default: false = blocked).
+func WithAllowPrivateIPs(allow bool) Option {
+	return func(c *Config) {
+		c.AllowPrivateIPs = allow
+	}
+}
+
+// WithAllowedHosts restricts external HTTP includes to matching domain patterns (default: empty = all public).
+func WithAllowedHosts(hosts ...string) Option {
+	return func(c *Config) {
+		c.AllowedHosts = hosts
+	}
+}
+
+// WithAllowPrivateIPsForAllowedHosts permits private IPs specifically for explicitly allowed hosts.
+func WithAllowPrivateIPsForAllowedHosts(allow bool) Option {
+	return func(c *Config) {
+		c.AllowPrivateIPsForAllowedHosts = allow
+	}
+}
+
+// WithMaxResponseSize caps the maximum allowed fragment body size in bytes (default: 10MB).
+func WithMaxResponseSize(size int64) Option {
+	return func(c *Config) {
+		if size > 0 {
+			c.MaxResponseSize = size
+		}
+	}
+}
+
+// WithDisableForwardCookies configures whether Set-Cookie headers from subrequests are forwarded to the client (default: false = forwarded).
+func WithDisableForwardCookies(disable bool) Option {
+	return func(c *Config) {
+		c.DisableForwardCookies = disable
+	}
+}
+
+// WithIncludeErrorMarker configures an HTML placeholder rendered on unhandled fetch errors.
+func WithIncludeErrorMarker(marker string) Option {
+	return func(c *Config) {
+		c.IncludeErrorMarker = marker
+	}
 }
 
 // HandlerFetcher adapts any standard http.Handler into an InternalFetcherFunc for in-process subrequests.

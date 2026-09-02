@@ -19,11 +19,12 @@ func init() {
 
 // RedisStorage implements a Caddy storage guest module under the "titip.storage.redis" namespace.
 type RedisStorage struct {
-	Addresses []string `json:"addresses,omitempty"`
-	KeyPrefix string   `json:"key_prefix,omitempty"`
-	Username  string   `json:"username,omitempty"`
-	Password  string   `json:"password,omitempty"`
-	DB        int      `json:"db,omitempty"`
+	Addresses         []string `json:"addresses,omitempty"`
+	KeyPrefix         string   `json:"key_prefix,omitempty"`
+	Username          string   `json:"username,omitempty"`
+	Password          string   `json:"password,omitempty"`
+	DB                int      `json:"db,omitempty"`
+	PipelineMultiplex int      `json:"pipeline_multiplex,omitempty"`
 
 	store  storage.Storage
 	client rueidis.Client
@@ -62,10 +63,11 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	password := repl.ReplaceKnown(r.Password, "")
 
 	opt := rueidis.ClientOption{
-		InitAddress: addrs,
-		Username:    username,
-		Password:    password,
-		SelectDB:    r.DB,
+		InitAddress:       addrs,
+		Username:          username,
+		Password:          password,
+		SelectDB:          r.DB,
+		PipelineMultiplex: r.PipelineMultiplex,
 	}
 
 	client, err := rueidis.NewClient(opt)
@@ -146,6 +148,15 @@ func (r *RedisStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid db number %q: %v", d.Val(), err)
 				}
 				r.DB = db
+			case "pipeline_multiplex":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				pm, err := strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("invalid pipeline_multiplex number %q: %v", d.Val(), err)
+				}
+				r.PipelineMultiplex = pm
 			default:
 				return d.Errf("unknown subdirective %q", d.Val())
 			}

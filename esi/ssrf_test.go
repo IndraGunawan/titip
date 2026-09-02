@@ -103,7 +103,7 @@ func TestSSRF_MatchHost(t *testing.T) {
 func TestSSRF_TransportDialBlocked(t *testing.T) {
 	// Start local test server on 127.0.0.1
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 	defer srv.Close()
 

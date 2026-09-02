@@ -53,7 +53,7 @@ type fetchTarget struct {
 	fallback  []byte
 }
 
-// ponytail: shared helpers to avoid duplicating ESI collect/fetch/assemble across processESI and processNestedESI
+// shared helpers to avoid duplicating ESI collect/fetch/assemble across processESI and processNestedESI
 func collectTargets(fragments []*pb.EsiFragment) map[string]fetchTarget {
 	m := make(map[string]fetchTarget, len(fragments))
 	for _, frag := range fragments {
@@ -594,7 +594,7 @@ func (t *Titip) fetchOutboundHTTP(
 	if err != nil {
 		return nil, nil, "http", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		return nil, nil, "http", fmt.Errorf("http fragment returned status %d", resp.StatusCode)

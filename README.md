@@ -1,31 +1,11 @@
-<div align="center">
-
 # Titip
-
-**High-Performance, Low-Allocation, RFC-Compliant HTTP Caching Middleware for Go**
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/indragunawan/titip.svg)](https://pkg.go.dev/github.com/indragunawan/titip)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/indragunawan/titip)](https://golang.org/)
 
-<p align="center">
-  <a href="#key-features">Key Features</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#modules--ecosystem">Modules</a> •
-  <a href="#quickstart">Quickstart</a> •
-  <a href="#cache-invalidation--purge-api">Purge API</a>
-</p>
-
-</div>
-
----
-
-## Overview
-
 **Titip** is a high-throughput, low-allocation HTTP caching middleware for Go applications and API gateways.
 
 Designed for high-concurrency services, Titip reduces backend load by serving cached responses with minimal memory allocation, atomic Redis Hash multi-variant negotiation, RFC-compliant freshness calculations, and fail-open resilience.
-
----
 
 ## Key Features
 
@@ -37,8 +17,6 @@ Designed for high-concurrency services, Titip reduces backend load by serving ca
 * **RFC-9211 `Cache-Status` Observability**: Structured diagnostics (`Cache-Status: titip; hit; ttl=295`, `fwd=stale`, `fwd=bypass`) with multi-tier cache chaining.
 * **Granular Cache Purge API**: Invalidation via programmatic Go API (exact URL, wildcard prefixes, surrogate `Cache-Tag`, soft-purge, or namespace purge).
 * **Pluggable Architecture**: Standard `net/http` middleware with modular framework adapters and decoupled storage engines.
-
----
 
 ## Architecture
 
@@ -72,8 +50,6 @@ Titip separates metadata from variant payloads to enable atomic multi-variant ne
                                   └──────────────────────────────┘
 ```
 
----
-
 ## Modules & Ecosystem
 
 Titip is organized as a multi-module workspace. Each module is versioned independently:
@@ -84,8 +60,6 @@ Titip is organized as a multi-module workspace. Each module is versioned indepen
 | **`github.com/indragunawan/titip/adapter/caddy`** | Native Caddy HTTP middleware directive (`titip`) & Admin Purge API | [**Caddy Adapter Guide**](adapter/caddy/README.md) |
 | **`github.com/indragunawan/titip/storage/redis`** | High-performance Redis 7.4+/8 distributed storage driver (`rueidis`) | [**Redis Storage Guide**](storage/redis/README.md) |
 | **`github.com/indragunawan/titip/storage/redis/caddy`** | Guest storage module for Caddy (`titip.storage.redis`) | [**Caddy Redis Guide**](storage/redis/README.md#caddy-integration) |
-
----
 
 ## Quickstart
 
@@ -156,8 +130,6 @@ func main() {
 }
 ```
 
----
-
 ## Configuration Reference
 
 Pass any of the following functional options to `titip.New(...)`:
@@ -175,9 +147,7 @@ Pass any of the following functional options to `titip.New(...)`:
 | `WithAutoInvalidateMutatingMethods()` | `bool` | `false` | RFC 9111 §4.4: Auto-purges URI cache when mutating requests (`POST`/`PUT`/`DELETE`) succeed. |
 | `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Structured logger instance for diagnostic events. |
 | `WithMetrics(reg)` | `prometheus.Registerer` | `nil` | Prometheus registry for cache and ESI telemetry. |
-| `WithESI(cfg)` | `esi.Config` | `disabled` | Edge Side Includes processing configuration. |
-
----
+| `WithESI(opts...)` | `...esi.Option` | `disabled` | Edge Side Includes processing configuration and options. |
 
 ## Cache Key & Query Parameter Normalization
 
@@ -194,8 +164,6 @@ cache, err := titip.New(
     }),
 )
 ```
-
----
 
 ## Cache-Status Diagnostics
 
@@ -229,8 +197,6 @@ Emits a concise single-token status header:
 
 Disables the `Cache-Status` response header completely.
 
----
-
 ## Cache Invalidation & Purge API
 
 Titip provides a programmatic Go API for **Hierarchical Path Purging**, **Surrogate Tag Purging**, and **Namespace Invalidation**.
@@ -254,8 +220,6 @@ err := cache.PurgeTag(ctx, "catalog")
 err := cache.PurgeAll(ctx)
 ```
 
----
-
 ## Tiered & Targeted Cache-Control (RFC 9213)
 
 Titip supports **RFC 9213 Targeted Cache-Control**, allowing backend origins to define separate caching rules for the edge/proxy layer versus end-user browsers.
@@ -273,11 +237,20 @@ Cache-Control: private, no-store
 * **Titip (Intermediary)**: Caches the response in Redis for 24 hours (`max-age=86400`), shielding the origin from load.
 * **Client (Browser)**: Receives `Cache-Control: private, no-store`, preventing sensitive data from persisting in local browser history.
 
----
-
 ## Edge Side Includes (ESI)
 
 Titip includes a streaming **Edge Side Includes (ESI 1.0)** engine with parallel fragment fetching, circular loop protection, and SSRF prevention.
+
+```go
+cache, err := titip.New(
+    titip.WithStorage(store),
+    titip.WithESI(
+        esi.WithInternalFetcher(esi.HandlerFetcher(router)),
+        esi.WithMaxDepth(3),
+        esi.WithMaxTimeout(5 * time.Second),
+    ),
+)
+```
 
 ### Supported ESI Tags & Syntax
 
@@ -290,21 +263,21 @@ Titip includes a streaming **Edge Side Includes (ESI 1.0)** engine with parallel
 | `<esi:remove><p>Placeholder</p></esi:remove>` | Strips placeholder content intended for non-ESI clients. |
 | `<!--esi-comment text="..." -->` | Strips internal comments without emitting bytes. |
 
-### ESI Configuration Options
+### ESI Functional Options (`esi.Option`)
 
-| Option | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `Enabled` | `bool` | `false` | Master toggle for ESI parsing and fragment splicing. |
-| `HeaderRequired` | `bool` | `false` | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
-| `InternalFetcher` | `esi.InternalFetcherFunc` | `nil` | Custom hook for in-memory virtual subrequests (e.g. `esi.HandlerFetcher(r)`). |
-| `MaxDepth` | `uint32` | `3` | Maximum nesting depth for recursive ESI includes. |
-| `MaxTimeout` | `time.Duration` | `30s` | Maximum time budget per fragment include fetch. |
-| `MaxConcurrentRequests` | `int` | `8` | Maximum concurrent fetch goroutines per document. |
-| `AllowPrivateIPs` | `bool` | `false` | SSRF guard: when false (default), blocks RFC 1918 / loopback / cloud metadata CIDRs. |
-| `AllowedHosts` | `[]string` | `[]` | Whitelist for external domain includes (empty allows all public hosts). |
-| `DisableForwardCookies` | `bool` | `false` | When false (default), forwards `Set-Cookie` headers from fragments to the client. |
-
----
+| Option Builder | Default | Description |
+| :--- | :--- | :--- |
+| `esi.WithHeaderRequired(bool)` | `false` | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
+| `esi.WithInternalFetcher(fn)` | `nil` | Custom hook for in-memory virtual subrequests (e.g. `esi.HandlerFetcher(r)`). |
+| `esi.WithMaxDepth(uint32)` | `3` | Maximum nesting depth for recursive ESI includes. |
+| `esi.WithMaxTimeout(duration)` | `30s` | Maximum time budget per fragment include fetch. |
+| `esi.WithMaxConcurrentRequests(int)` | `8` | Maximum concurrent fetch goroutines per document. |
+| `esi.WithAllowPrivateIPs(bool)` | `false` | SSRF guard: when false (default), blocks RFC 1918 / loopback / cloud metadata CIDRs. |
+| `esi.WithAllowedHosts(...string)` | `[]` | Whitelist for external domain includes (empty allows all public hosts). |
+| `esi.WithAllowPrivateIPsForAllowedHosts(bool)` | `false` | Permits private IPs specifically for explicitly allowed hosts. |
+| `esi.WithMaxResponseSize(int64)` | `10MB` | Maximum allowed fragment body size in bytes. |
+| `esi.WithDisableForwardCookies(bool)` | `false` | When false (default), forwards `Set-Cookie` headers from fragments to the client. |
+| `esi.WithIncludeErrorMarker(string)` | `""` | HTML placeholder rendered on unhandled fetch errors. |
 
 ## Observability & Metrics
 
@@ -345,8 +318,6 @@ titip_esi_fragments_total{status="success"} 230
 titip_esi_duration_seconds_bucket{mode="in_process",le="0.005"} 225
 ```
 
----
-
 ## Testing & Concurrency Standards
 
 Titip enforces continuous race detection and zero-leak concurrency standards:
@@ -356,15 +327,11 @@ Titip enforces continuous race detection and zero-leak concurrency standards:
 go test -race -count=50 -v ./...
 ```
 
----
-
 ## Contributing
 
 We welcome contributions for new framework adapters and storage drivers.
 
 Please read our [Contributing Guide](CONTRIBUTING.md) for architectural guidelines, interface contracts, and testing standards.
-
----
 
 ## License
 

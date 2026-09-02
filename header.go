@@ -76,16 +76,3 @@ func getHeaderValues(h http.Header, key string) []string {
 	}
 	return nil
 }
-
-// getHeaderValue retrieves the first value for a header key, with case-insensitive fallback.
-func getHeaderValue(h http.Header, key string) string {
-	if val := h.Get(key); val != "" {
-		return val
-	}
-	for k, vv := range h {
-		if strings.EqualFold(k, key) && len(vv) > 0 {
-			return vv[0]
-		}
-	}
-	return ""
-}

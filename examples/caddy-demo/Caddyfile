@@ -1,22 +1,23 @@
 {
 	skip_install_trust
-	admin localhost:2019 {
-		origins localhost:2019 127.0.0.1:2019
-	}
+	admin localhost:2019
 
 	log {
 		level DEBUG
 	}
 
+	metrics
+
 	# 🌐 Global Titip Cache Configuration (Shared Redis Storage & Default Policies)
 	titip {
 		storage redis {
-			address localhost:6379
+			address 127.0.0.1:6379
 			key_prefix caddy_demo:
 		}
 		cache_status rfc9211
 		respect_client_cache_control false
 		origin_timeout 15s
+		storage_timeout 1s
 		esi {
 			enabled true
 			max_depth 3
@@ -29,8 +30,6 @@
 }
 
 :8080 {
-	metrics /metrics
-
 	route {
 		# 🚀 Inherits all global Titip settings & shared storage automatically!
 		titip

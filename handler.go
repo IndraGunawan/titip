@@ -876,7 +876,7 @@ func (t *Titip) saveVariantToStorage(
 	}
 }
 
-func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primaryKey string, meta *pb.CacheMetadata, variantKey string) {
+func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primaryKey string, variantKey string) {
 	defer func() {
 		if p := recover(); p != nil {
 			if t.logger.Enabled(context.Background(), slog.LevelError) {
@@ -885,7 +885,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 		}
 	}()
 
-	bgCtx, cancel := context.WithTimeout(context.Background(), t.cfg.originTimeout)
+	bgCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), t.cfg.originTimeout)
 	defer cancel()
 
 	rec := getResponseRecorder()
@@ -1233,12 +1233,12 @@ func (t *Titip) spawnSWR(ctx *requestContext) {
 		return
 	}
 	t.swrWG.Add(1)
-	reqClone := ctx.r.Clone(context.Background())
+	reqClone := ctx.r.Clone(context.WithoutCancel(ctx.r.Context()))
 	next := ctx.next
-	pk, m, vk := ctx.primaryKey, ctx.meta, ctx.variantKey
+	pk, vk := ctx.primaryKey, ctx.variantKey
 	go func() {
 		defer t.swrWG.Done()
-		t.revalidateOriginAsync(reqClone, next, pk, m, vk)
+		t.revalidateOriginAsync(reqClone, next, pk, vk)
 	}()
 }
 

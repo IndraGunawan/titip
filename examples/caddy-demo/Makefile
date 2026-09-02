@@ -5,7 +5,7 @@ help: ## Show help
 
 redis-up: ## Start local Redis 8 Docker container
 	@echo "Checking Redis status..."
-	@docker compose -f ../../docker-compose.yml up -d redis
+	@docker compose -f ../../docker-compose.yaml up -d redis
 	@until docker exec titip-redis8 redis-cli ping > /dev/null 2>&1; do \
 		echo "Waiting for Redis to be ready..."; \
 		sleep 0.5; \
@@ -38,4 +38,3 @@ test-curl: ## Run automated smoke test curl against ESI endpoint
 clean: ## Remove compiled local Caddy binary and clean ports
 	@lsof -ti:9000 | xargs kill -9 2>/dev/null || true
 	@rm -f ./caddy .origin.pid
-

@@ -33,17 +33,18 @@ jobs:
           git diff --exit-code
 
   test:
-    name: Test (${{ matrix.module }})
+    name: Test (${{ matrix.name || matrix.path }})
     needs: workspace
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        module:
-          - .
-          - adapter/caddy
-          - storage/redis
-          - storage/redis/caddy
+        include:
+          - name: core
+            path: .
+          - path: adapter/caddy
+          - path: storage/redis
+          - path: storage/redis/caddy
     services:
       redis:
         image: redis:8-alpine
@@ -64,18 +65,23 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Run GolangCI-Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          working-directory: ${{ matrix.path }}
+
       - name: Run Go Vet
-        working-directory: ${{ matrix.module }}
+        working-directory: ${{ matrix.path }}
         run: go vet ./...
 
       - name: Run Unit Tests & Race Detection
-        working-directory: ${{ matrix.module }}
+        working-directory: ${{ matrix.path }}
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Run Concurrency Race Tests
-        working-directory: ${{ matrix.module }}
+        working-directory: ${{ matrix.path }}
         run: go test -race -count=50 -parallel=8 ./...
 
       - name: Run Memory Benchmarks
-        working-directory: ${{ matrix.module }}
+        working-directory: ${{ matrix.path }}
         run: go test -benchmem -bench=. -run=^$ ./...

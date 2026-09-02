@@ -131,6 +131,7 @@ type Handler struct {
 	AutoInvalidateMutatingMethods *bool           `json:"auto_invalidate_mutating_methods,omitempty"`
 	ConvertHeadToGet              *bool           `json:"convert_head_to_get,omitempty"`
 	OriginTimeout                 string          `json:"origin_timeout,omitempty"`
+	StorageTimeout                string          `json:"storage_timeout,omitempty"`
 	TagHeader                     string          `json:"tag_header,omitempty"`
 	Key                           *KeyConfig      `json:"key,omitempty"`
 	ESI                           *ESIConfig      `json:"esi,omitempty"`
@@ -257,6 +258,19 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithOriginTimeout(d))
 	}
 
+	// StorageTimeout (inherit from app if not set)
+	storageTimeout := h.StorageTimeout
+	if storageTimeout == "" && app != nil {
+		storageTimeout = app.StorageTimeout
+	}
+	if storageTimeout != "" {
+		d, err := caddy.ParseDuration(storageTimeout)
+		if err != nil {
+			return fmt.Errorf("titip: invalid storage_timeout duration %q: %w", storageTimeout, err)
+		}
+		opts = append(opts, titip.WithStorageTimeout(d))
+	}
+
 	if h.TagHeader != "" {
 		opts = append(opts, titip.WithTagHeaderName(h.TagHeader))
 	}
@@ -279,17 +293,17 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 	// ESI configuration: default -> global App defaults -> route overrides
 	if (app != nil && app.ESI != nil) || h.ESI != nil {
-		var esiCfg esi.Config
+		var esiOpts []esi.Option
 		if app != nil && app.ESI != nil {
-			_ = applyESIConfig(&esiCfg, app.ESI)
+			_ = applyESIConfig(&esiOpts, app.ESI)
 		}
 		if h.ESI != nil {
-			_ = applyESIConfig(&esiCfg, h.ESI)
+			_ = applyESIConfig(&esiOpts, h.ESI)
 		}
 
 		// In-process virtual subrequest fetcher adapted from Caddy funcHTTPInclude:
 		// https://github.com/caddyserver/caddy/blob/e2eee6a/modules/caddyhttp/templates/tplcontext.go#L169-L217
-		esiCfg.InternalFetcher = func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
+		internalFetcher := func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
 			parsedURL, err := url.Parse(targetPath)
 			if err != nil {
 				return nil, nil, err
@@ -332,8 +346,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 			return bytes.Clone(rec.Body.Bytes()), rec.Header().Clone(), nil
 		}
+		esiOpts = append(esiOpts, esi.WithInternalFetcher(internalFetcher))
 
-		opts = append(opts, titip.WithESI(esiCfg))
+		opts = append(opts, titip.WithESI(esiOpts...))
 	}
 
 	engine, err := titip.New(opts...)
@@ -434,6 +449,11 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				h.OriginTimeout = d.Val()
+			case "storage_timeout":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				h.StorageTimeout = d.Val()
 			case "tag_header":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -716,50 +736,47 @@ func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
 	return nil
 }
 
-func applyESIConfig(target *esi.Config, src *ESIConfig) error {
+func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	if src == nil {
 		return nil
 	}
-	if src.Enabled != nil {
-		target.Enabled = *src.Enabled
-	}
 	if src.HeaderRequired != nil {
-		target.HeaderRequired = *src.HeaderRequired
+		*opts = append(*opts, esi.WithHeaderRequired(*src.HeaderRequired))
 	}
 	if src.MaxDepth != nil {
-		target.MaxDepth = *src.MaxDepth
+		*opts = append(*opts, esi.WithMaxDepth(*src.MaxDepth))
 	}
 	if src.MaxTimeout != "" {
 		d, err := caddy.ParseDuration(src.MaxTimeout)
 		if err != nil {
 			return fmt.Errorf("titip: invalid esi max_timeout duration %q: %w", src.MaxTimeout, err)
 		}
-		target.MaxTimeout = d
+		*opts = append(*opts, esi.WithMaxTimeout(d))
 	}
 	if src.MaxConcurrentRequests != nil {
-		target.MaxConcurrentRequests = *src.MaxConcurrentRequests
+		*opts = append(*opts, esi.WithMaxConcurrentRequests(*src.MaxConcurrentRequests))
 	}
 	if src.BlockPrivateIPs != nil {
-		target.AllowPrivateIPs = !*src.BlockPrivateIPs
+		*opts = append(*opts, esi.WithAllowPrivateIPs(!*src.BlockPrivateIPs))
 	}
 	if len(src.AllowedHosts) > 0 {
-		target.AllowedHosts = src.AllowedHosts
+		*opts = append(*opts, esi.WithAllowedHosts(src.AllowedHosts...))
 	}
 	if src.AllowPrivateIPsForAllowedHosts != nil {
-		target.AllowPrivateIPsForAllowedHosts = *src.AllowPrivateIPsForAllowedHosts
+		*opts = append(*opts, esi.WithAllowPrivateIPsForAllowedHosts(*src.AllowPrivateIPsForAllowedHosts))
 	}
 	if src.MaxResponseSize != "" {
 		size, err := parseByteSize(src.MaxResponseSize)
 		if err != nil {
 			return fmt.Errorf("titip: invalid esi max_response_size %q: %w", src.MaxResponseSize, err)
 		}
-		target.MaxResponseSize = size
+		*opts = append(*opts, esi.WithMaxResponseSize(size))
 	}
 	if src.ForwardFragmentCookies != nil {
-		target.DisableForwardCookies = !*src.ForwardFragmentCookies
+		*opts = append(*opts, esi.WithDisableForwardCookies(!*src.ForwardFragmentCookies))
 	}
 	if src.ErrorMarker != "" {
-		target.IncludeErrorMarker = src.ErrorMarker
+		*opts = append(*opts, esi.WithIncludeErrorMarker(src.ErrorMarker))
 	}
 	return nil
 }
