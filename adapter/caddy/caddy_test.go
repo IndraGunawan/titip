@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,7 +21,14 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
+	"go.uber.org/zap/zapcore"
 )
+
+func init() {
+	caddymain.RegisterSlogHandlerFactory(func(h slog.Handler, core zapcore.Core, moduleID string) slog.Handler {
+		return slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn})
+	})
+}
 
 // parseAndProvisionHandler is a helper that parses a Caddyfile snippet and provisions the Handler.
 func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, func()) {
@@ -724,6 +732,9 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 	caddyfileInput := `{
 		admin off
 		skip_install_trust
+		log {
+			output discard
+		}
 		titip {
 			storage test
 			cache_status rfc9211
@@ -775,6 +786,9 @@ func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 	caddyfileInput := `{
 		admin off
 		skip_install_trust
+		log {
+			output discard
+		}
 		titip {
 			storage test
 			cache_status rfc9211
@@ -857,6 +871,9 @@ func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 	caddyfileInput := fmt.Sprintf(`{
 		admin off
 		skip_install_trust
+		log {
+			output discard
+		}
 		titip {
 			storage test
 			cache_status rfc9211

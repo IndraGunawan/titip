@@ -1186,8 +1186,6 @@ func TestESI_ESIHandlerFetcher_404_FallbackToOutbound(t *testing.T) {
 }
 
 func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T) {
-	t.Parallel()
-
 	var sameHostReceivedCookie, sameHostReceivedAuth atomic.Value
 	var crossHostReceivedCookie, crossHostReceivedAuth atomic.Value
 
@@ -1230,7 +1228,7 @@ func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T)
 		WithESI(
 			esi.WithInternalFetcher(esi.HandlerFetcher(parentMux)),
 			esi.WithAllowPrivateIPs(true),
-			esi.WithMaxTimeout(5*time.Second),
+			esi.WithMaxTimeout(10*time.Second),
 		),
 	)
 
