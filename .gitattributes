@@ -1,1 +1,17 @@
+# Line endings and diff driver
 * text=auto eol=lf
+*.go text eol=lf diff=golang
+
+# GitHub Linguist overrides
+*.pb.go linguist-generated=true
+
+# Exclude tooling, CI, and workspace files from release archives
+/.editorconfig export-ignore
+/.git* export-ignore
+/.golangci.yaml export-ignore
+/AGENTS.md export-ignore
+/buf.gen.yaml export-ignore
+/buf.yaml export-ignore
+/docker-compose.yaml export-ignore
+/go.work export-ignore
+/go.work.sum export-ignore

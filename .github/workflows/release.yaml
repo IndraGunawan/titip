@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.0.0 or v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Validate inputs
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Release workflow must only run on main
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Release workflow must be dispatched against refs/heads/main, got ${GITHUB_REF}"
+            exit 1
+          fi
+
+          # Normalize: strip leading 'v' if provided
+          VERSION="${INPUT_VERSION#v}"
+
+          # SemVer 2.0 regex validation
+          if [[ ! ${VERSION} =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$ ]]; then
+            echo "::error::Invalid SemVer version: '${INPUT_VERSION}'"
+            exit 1
+          fi
+
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Bump modules & verify build
+        run: |
+          set -euo pipefail
+
+          # Update internal dependencies across submodules in adapter and storage
+          for mod in $(find adapter storage -name "go.mod" -not -path "*/.*" -exec dirname {} \; | sort); do
+            (
+              cd "$mod"
+              reqs=$(go mod edit -json | jq -r '.Require[]? | select(.Path | startswith("github.com/indragunawan/titip")) | .Path')
+              if [[ -n "${reqs}" ]]; then
+                for req in ${reqs}; do
+                  echo "Updating ${req} to v${VERSION} in ${mod}..."
+                  go get "${req}@v${VERSION}"
+                done
+                go mod tidy
+              fi
+            )
+          done
+
+          # Ensure root go.mod is tidy and workspace builds cleanly
+          go mod tidy
+          go build ./...
+
+      - name: Commit & Push changes
+        id: commit
+        uses: iarekylew00t/verified-bot-commit@v2
+        with:
+          message: "chore(release): prepare v${{ env.VERSION }} [skip ci]"
+          update-local: true
+          auto-stage: true
+          files: |
+            **
+
+      - name: Create and push tags
+        run: |
+          set -euo pipefail
+
+          # Collect subpackage tags first, root main package tag last
+          TAGS=()
+          for dir in $(find adapter storage -name "go.mod" -not -path "*/.*" -exec dirname {} \; | sort); do
+            TAGS+=("${dir}/v${VERSION}")
+          done
+          TAGS+=("v${VERSION}")
+
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+
+          # Push only tags that do not already exist on remote (idempotent / rerunnable)
+          for tag in "${TAGS[@]}"; do
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "Tag ${tag} already exists on remote, skipping."
+            else
+              git tag -a "${tag}" -m "Version ${tag}"
+              git push origin "${tag}"
+              echo "Pushed tag ${tag}"
+            fi
+          done

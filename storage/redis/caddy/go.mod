@@ -9,6 +9,11 @@ require (
 	github.com/redis/rueidis v1.0.77
 )
 
+replace (
+	github.com/indragunawan/titip => ../../..
+	github.com/indragunawan/titip/storage/redis => ..
+)
+
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/caddyserver/certmagic v0.25.3 // indirect
@@ -41,9 +46,4 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
-)
-
-replace (
-	github.com/indragunawan/titip => ../../..
-	github.com/indragunawan/titip/storage/redis => ..
 )
