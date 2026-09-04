@@ -35,45 +35,45 @@ Titip decouples cache storage into a **Two-Stage Resolution** model to optimize 
 package main
 
 import (
- "context"
- "log"
- "time"
+    "context"
+    "log"
+    "time"
 
- "github.com/redis/rueidis"
+    "github.com/redis/rueidis"
 
- "github.com/indragunawan/titip"
- storageRedis "github.com/indragunawan/titip/storage/redis"
+    "github.com/indragunawan/titip"
+    storageRedis "github.com/indragunawan/titip/storage/redis"
 )
 
 func main() {
- // 1. Initialize Rueidis client
- client, err := rueidis.NewClient(rueidis.ClientOption{
-  InitAddress: []string{"127.0.0.1:6379"},
- })
- if err != nil {
-  log.Fatalf("failed to connect to Redis: %v", err)
- }
- defer client.Close()
+    // 1. Initialize Rueidis client
+    client, err := rueidis.NewClient(rueidis.ClientOption{
+        InitAddress: []string{"127.0.0.1:6379"},
+    })
+    if err != nil {
+        log.Fatalf("failed to connect to Redis: %v", err)
+    }
+    defer client.Close()
 
- // 2. Initialize Titip Redis Storage Engine
- store, err := storageRedis.New(
-  client,
-  storageRedis.WithKeyPrefix("myapp:cache:"),
- )
- if err != nil {
-  log.Fatalf("failed to initialize storage: %v", err)
- }
+    // 2. Initialize Titip Redis Storage Engine
+    store, err := storageRedis.New(
+        client,
+        storageRedis.WithKeyPrefix("myapp:cache:"),
+    )
+    if err != nil {
+        log.Fatalf("failed to initialize storage: %v", err)
+    }
 
- // 3. Attach storage to Titip
- cache, err := titip.New(
-  titip.WithStorage(store),
-  titip.WithOriginTimeout(5*time.Second),
-  titip.WithStorageTimeout(1*time.Second),
- )
- if err != nil {
-  log.Fatalf("failed to initialize titip: %v", err)
- }
- defer cache.Close(context.Background())
+    // 3. Attach storage to Titip
+    cache, err := titip.New(
+        titip.WithStorage(store),
+        titip.WithBackgroundFetchTimeout(125*time.Second),
+        titip.WithStorageTimeout(1*time.Second),
+    )
+    if err != nil {
+        log.Fatalf("failed to initialize titip: %v", err)
+    }
+    defer cache.Close(context.Background())
 }
 ```
 

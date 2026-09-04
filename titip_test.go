@@ -26,7 +26,7 @@ func setupTestTitip(t testing.TB, opts ...Option) (*teststore.Store, storage.Sto
 
 	defaultOpts := []Option{
 		WithStorage(store),
-		WithOriginTimeout(10 * time.Second),
+		WithBackgroundFetchTimeout(10 * time.Second),
 		WithStorageTimeout(10 * time.Second),
 		WithCacheStatusMode(CacheStatusRFC9211),
 	}
@@ -1831,8 +1831,8 @@ func TestNew_MinimalOptions(t *testing.T) {
 	if mw.cfg.tagHeaderName != headerCacheTag {
 		t.Errorf("expected TagHeaderName %q, got %q", headerCacheTag, mw.cfg.tagHeaderName)
 	}
-	if mw.cfg.originTimeout != 30*time.Second {
-		t.Errorf("expected OriginTimeout 30s, got %v", mw.cfg.originTimeout)
+	if mw.cfg.backgroundFetchTimeout != 125*time.Second {
+		t.Errorf("expected BackgroundFetchTimeout 125s, got %v", mw.cfg.backgroundFetchTimeout)
 	}
 	if mw.cfg.storageTimeout != 1*time.Second {
 		t.Errorf("expected StorageTimeout 1s, got %v", mw.cfg.storageTimeout)
@@ -3006,3 +3006,71 @@ func TestPurge_PathOnly_PurgesCachedKeysWithHost(t *testing.T) {
 		t.Fatalf("expected 2 origin calls after purge (MISS), got %d", originCalls.Load())
 	}
 }
+
+// TestSynchronousFetch_RequestContextPassThrough verifies that synchronous cache misses
+// pass the request context directly to the origin handler without injecting artificial timeouts,
+// allowing upstream server timeouts or client cancellations to propagate naturally.
+func TestSynchronousFetch_RequestContextPassThrough(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	type testContextKey struct{}
+	ctxWithVal := context.WithValue(context.Background(), testContextKey{}, "test-val")
+
+	var receivedCtx context.Context
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedCtx = r.Context()
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/ctx-pass-through", nil).WithContext(ctxWithVal)
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req, origin)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec.Code)
+	}
+	if receivedCtx == nil {
+		t.Fatal("expected origin handler to receive request context")
+	}
+	if val, ok := receivedCtx.Value(testContextKey{}).(string); !ok || val != "test-val" {
+		t.Errorf("expected context value 'test-val', got %v", val)
+	}
+	// Verify no deadline was added by Titip
+	if _, hasDeadline := receivedCtx.Deadline(); hasDeadline {
+		t.Errorf("expected no artificial deadline on synchronous origin request context")
+	}
+}
+
+// TestBackgroundFetchTimeout_Configuration verifies WithBackgroundFetchTimeout options.
+func TestBackgroundFetchTimeout_Configuration(t *testing.T) {
+	t.Parallel()
+	store := teststore.New()
+
+	// 1. Custom timeout
+	mwCustom, err := New(
+		WithStorage(store),
+		WithBackgroundFetchTimeout(60 * time.Second),
+	)
+	if err != nil {
+		t.Fatalf("failed to create mw: %v", err)
+	}
+	if mwCustom.cfg.backgroundFetchTimeout != 60*time.Second {
+		t.Errorf("expected 60s, got %v", mwCustom.cfg.backgroundFetchTimeout)
+	}
+
+	// 2. Disabled timeout (0)
+	mwDisabled, err := New(
+		WithStorage(store),
+		WithBackgroundFetchTimeout(0),
+	)
+	if err != nil {
+		t.Fatalf("failed to create mw: %v", err)
+	}
+	if mwDisabled.cfg.backgroundFetchTimeout != 0 {
+		t.Errorf("expected 0, got %v", mwDisabled.cfg.backgroundFetchTimeout)
+	}
+}
+

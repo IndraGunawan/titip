@@ -36,8 +36,8 @@ type App struct {
 	// ConvertHeadToGet converts cold HEAD requests to GET when querying origin.
 	ConvertHeadToGet *bool `json:"convert_head_to_get,omitempty"`
 
-	// OriginTimeout specifies the default timeout for fetching from upstream.
-	OriginTimeout string `json:"origin_timeout,omitempty"`
+	// BackgroundFetchTimeout specifies the default timeout for background revalidations.
+	BackgroundFetchTimeout string `json:"background_fetch_timeout,omitempty"`
 
 	// StorageTimeout specifies the default timeout for storage operations.
 	StorageTimeout string `json:"storage_timeout,omitempty"`
@@ -147,11 +147,11 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 				}
 				app.ConvertHeadToGet = &b
 
-			case "origin_timeout":
+			case "background_fetch_timeout":
 				if !d.NextArg() {
 					return nil, d.ArgErr()
 				}
-				app.OriginTimeout = d.Val()
+				app.BackgroundFetchTimeout = d.Val()
 
 			case "storage_timeout":
 				if !d.NextArg() {

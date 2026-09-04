@@ -130,7 +130,7 @@ type Handler struct {
 	RespectClientCacheControl     *bool           `json:"respect_client_cache_control,omitempty"`
 	AutoInvalidateMutatingMethods *bool           `json:"auto_invalidate_mutating_methods,omitempty"`
 	ConvertHeadToGet              *bool           `json:"convert_head_to_get,omitempty"`
-	OriginTimeout                 string          `json:"origin_timeout,omitempty"`
+	BackgroundFetchTimeout        string          `json:"background_fetch_timeout,omitempty"`
 	StorageTimeout                string          `json:"storage_timeout,omitempty"`
 	TagHeader                     string          `json:"tag_header,omitempty"`
 	Key                           *KeyConfig      `json:"key,omitempty"`
@@ -245,17 +245,17 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithConvertHeadToGet(*convertHead))
 	}
 
-	// OriginTimeout (inherit from app if not set)
-	originTimeout := h.OriginTimeout
-	if originTimeout == "" && app != nil {
-		originTimeout = app.OriginTimeout
+	// BackgroundFetchTimeout (inherit from app if not set)
+	bgFetchTimeout := h.BackgroundFetchTimeout
+	if bgFetchTimeout == "" && app != nil {
+		bgFetchTimeout = app.BackgroundFetchTimeout
 	}
-	if originTimeout != "" {
-		d, err := caddy.ParseDuration(originTimeout)
+	if bgFetchTimeout != "" {
+		d, err := caddy.ParseDuration(bgFetchTimeout)
 		if err != nil {
-			return fmt.Errorf("titip: invalid origin_timeout duration %q: %w", originTimeout, err)
+			return fmt.Errorf("titip: invalid background_fetch_timeout duration %q: %w", bgFetchTimeout, err)
 		}
-		opts = append(opts, titip.WithOriginTimeout(d))
+		opts = append(opts, titip.WithBackgroundFetchTimeout(d))
 	}
 
 	// StorageTimeout (inherit from app if not set)
@@ -444,11 +444,11 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid boolean value %q: %v", d.Val(), err)
 				}
 				h.ConvertHeadToGet = &val
-			case "origin_timeout":
+			case "background_fetch_timeout":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				h.OriginTimeout = d.Val()
+				h.BackgroundFetchTimeout = d.Val()
 			case "storage_timeout":
 				if !d.NextArg() {
 					return d.ArgErr()

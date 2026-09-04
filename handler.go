@@ -339,14 +339,12 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 
 // 8. stateFetchOriginMiss: Direct Origin Fetch (NO singleflight) to eliminate Set-Cookie leaks on cache misses
 func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
-	detachedCtx := context.WithoutCancel(ctx.r.Context())
-	originCtx, cancel := context.WithTimeout(detachedCtx, t.cfg.originTimeout)
-	defer cancel()
+	originCtx := ctx.r.Context()
 
 	rec := getResponseRecorder()
 	defer putResponseRecorder(rec)
 
-	originReq := ctx.r.WithContext(originCtx)
+	originReq := ctx.r
 	if ctx.r.Method == http.MethodHead && t.cfg.convertHeadToGet {
 		originReq = ctx.r.Clone(originCtx)
 		originReq.Method = http.MethodGet
@@ -503,8 +501,8 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 	val, err, shared := t.sf.Do(sfKey, func() (any, error) {
 		// Context Detachment: wrap client context so cancellations don't abort in-flight origin fetch
-		originCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.originTimeout)
-		defer cancel()
+		// for other concurrent singleflight callers waiting on this result.
+		originCtx := context.WithoutCancel(ctx.r.Context())
 
 		rec := getResponseRecorder()
 		defer putResponseRecorder(rec)
@@ -885,13 +883,20 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 		}
 	}()
 
-	bgCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), t.cfg.originTimeout)
-	defer cancel()
+	bgCtx := context.WithoutCancel(r.Context())
+	if t.cfg.backgroundFetchTimeout > 0 {
+		var cancel context.CancelFunc
+		bgCtx, cancel = context.WithTimeout(bgCtx, t.cfg.backgroundFetchTimeout)
+		defer cancel()
+	}
 
 	rec := getResponseRecorder()
 	defer putResponseRecorder(rec)
 
-	originReq := r.WithContext(bgCtx)
+	originReq := r
+	if originReq.Context() != bgCtx {
+		originReq = r.WithContext(bgCtx)
+	}
 	if r.Method == http.MethodHead && t.cfg.convertHeadToGet {
 		originReq = r.Clone(bgCtx)
 		originReq.Method = http.MethodGet

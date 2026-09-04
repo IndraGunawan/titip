@@ -76,57 +76,57 @@ Wrap any standard `net/http` handler:
 package main
 
 import (
- "context"
- "net/http"
- "time"
+    "context"
+    "net/http"
+    "time"
 
- "github.com/redis/rueidis"
+    "github.com/redis/rueidis"
 
- "github.com/indragunawan/titip"
- storageRedis "github.com/indragunawan/titip/storage/redis"
+    "github.com/indragunawan/titip"
+    storageRedis "github.com/indragunawan/titip/storage/redis"
 )
 
 func main() {
- // 1. Initialize Redis Client
- client, err := rueidis.NewClient(rueidis.ClientOption{
-  InitAddress: []string{"127.0.0.1:6379"},
- })
- if err != nil {
-  panic(err)
- }
- defer client.Close()
+    // 1. Initialize Redis Client
+    client, err := rueidis.NewClient(rueidis.ClientOption{
+        InitAddress: []string{"127.0.0.1:6379"},
+    })
+    if err != nil {
+        panic(err)
+    }
+    defer client.Close()
 
- // 2. Create Titip Redis Storage
- store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("titip:"))
- if err != nil {
-  panic(err)
- }
- defer store.Close()
+    // 2. Create Titip Redis Storage
+    store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("titip:"))
+    if err != nil {
+        panic(err)
+    }
+    defer store.Close()
 
- // 3. Configure Titip Engine
- cache, err := titip.New(
-  titip.WithStorage(store),
-  titip.WithCacheStatusMode(titip.CacheStatusRFC9211),
-  titip.WithOriginTimeout(10*time.Second),
- )
- if err != nil {
-  panic(err)
- }
- defer cache.Close(context.Background())
+    // 3. Configure Titip Engine
+    cache, err := titip.New(
+        titip.WithStorage(store),
+        titip.WithCacheStatusMode(titip.CacheStatusRFC9211),
+        titip.WithBackgroundFetchTimeout(125*time.Second),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer cache.Close(context.Background())
 
- // 4. Wrap Standard HTTP Handler
- mux := http.NewServeMux()
- mux.HandleFunc("GET /api/data", func(w http.ResponseWriter, r *http.Request) {
-  w.Header().Set("Content-Type", "application/json")
-  // Cache publicly for 60 seconds, allow serving stale for 5 minutes during revalidation
-  w.Header().Set("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
-  w.Header().Set("Cache-Tag", "catalog items")
-  w.Write([]byte(`{"message": "hello from origin", "timestamp": "` + time.Now().String() + `"}`))
- })
+    // 4. Wrap Standard HTTP Handler
+    mux := http.NewServeMux()
+    mux.HandleFunc("GET /api/data", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        // Cache publicly for 60 seconds, allow serving stale for 5 minutes during revalidation
+        w.Header().Set("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
+        w.Header().Set("Cache-Tag", "catalog items")
+        w.Write([]byte(`{"message": "hello from origin", "timestamp": "` + time.Now().String() + `"}`))
+    })
 
- http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-  cache.ServeHTTP(w, r, mux)
- }))
+    http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        cache.ServeHTTP(w, r, mux)
+    }))
 }
 ```
 
@@ -140,7 +140,7 @@ Pass any of the following functional options to `titip.New(...)`:
 | `WithCacheStatusMode(mode)` | `CacheStatusMode` | `CacheStatusSimpleToken` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimpleToken`, or `CacheStatusNone`). |
 | `WithKeyConfig(cfg)` | `KeyConfig` | `{}` (standard) | Primary cache key generation rules and query parameter filtering. |
 | `WithTagHeaderName(name)` | `string` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
-| `WithOriginTimeout(d)` | `time.Duration` | `30s` | Maximum time budget for fetching responses from the origin. |
+| `WithBackgroundFetchTimeout(d)` | `time.Duration` | `125s` | Maximum timeout budget for background revalidations (`stale-while-revalidate`). |
 | `WithStorageTimeout(d)` | `time.Duration` | `1s` | Maximum time budget for storage reads/writes before fail-open bypass. |
 | `WithRespectClientCacheControl()` | `bool` | `false` | When enabled, honors client request `Cache-Control: no-cache` / `no-store`. |
 | `WithConvertHeadToGet(bool)` | `bool` | `true` | Converts origin `HEAD` cache misses to `GET` to prime the cache with body bytes. |

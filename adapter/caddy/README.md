@@ -28,7 +28,7 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
             password {env.REDIS_PASSWORD}
         }
         cache_status rfc9211
-        origin_timeout 10s
+        background_fetch_timeout 125s
         esi {
             enabled true
             max_depth 3

@@ -16,7 +16,7 @@
 		}
 		cache_status rfc9211
 		respect_client_cache_control false
-		origin_timeout 15s
+		background_fetch_timeout 125s
 		storage_timeout 1s
 		esi {
 			enabled true

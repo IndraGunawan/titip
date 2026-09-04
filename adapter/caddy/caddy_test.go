@@ -56,7 +56,7 @@ func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
 	t.Parallel()
 	config := `titip {
 		cache_status RFC9211
-		origin_timeout 20s
+		background_fetch_timeout 20s
 		storage_timeout 5s
 		storage test
 	}`
@@ -70,8 +70,8 @@ func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
 	if h.CacheStatus != "RFC9211" {
 		t.Errorf("expected cache_status RFC9211, got %s", h.CacheStatus)
 	}
-	if h.OriginTimeout != "20s" {
-		t.Errorf("expected origin_timeout 20s, got %s", h.OriginTimeout)
+	if h.BackgroundFetchTimeout != "20s" {
+		t.Errorf("expected background_fetch_timeout 20s, got %s", h.BackgroundFetchTimeout)
 	}
 	if h.StorageTimeout != "5s" {
 		t.Errorf("expected storage_timeout 5s, got %s", h.StorageTimeout)
@@ -100,7 +100,7 @@ func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
 	t.Parallel()
 	caddyfileInput := `titip {
 		cache_status rfc9211
-		origin_timeout 5s
+		background_fetch_timeout 5s
 		storage test
 	}`
 
@@ -667,7 +667,7 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 		titip {
 			storage test
 			cache_status rfc9211
-			origin_timeout 5s
+			background_fetch_timeout 5s
 			respect_client_cache_control false
 			auto_invalidate_mutating_methods true
 			esi {
@@ -722,8 +722,8 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 	if titipApp["cache_status"] != "rfc9211" {
 		t.Errorf("expected cache_status rfc9211, got %v", titipApp["cache_status"])
 	}
-	if titipApp["origin_timeout"] != "5s" {
-		t.Errorf("expected origin_timeout 5s, got %v", titipApp["origin_timeout"])
+	if titipApp["background_fetch_timeout"] != "5s" {
+		t.Errorf("expected background_fetch_timeout 5s, got %v", titipApp["background_fetch_timeout"])
 	}
 }
 
@@ -738,7 +738,7 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 		titip {
 			storage test
 			cache_status rfc9211
-			origin_timeout 10s
+			background_fetch_timeout 10s
 			respect_client_cache_control false
 			auto_invalidate_mutating_methods true
 			esi {
@@ -792,7 +792,7 @@ func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 		titip {
 			storage test
 			cache_status rfc9211
-			origin_timeout 5s
+			background_fetch_timeout 5s
 			esi {
 				enabled true
 				max_depth 3
@@ -877,7 +877,7 @@ func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
 		titip {
 			storage test
 			cache_status rfc9211
-			origin_timeout 5s
+			background_fetch_timeout 5s
 		}
 	}
 	:18090 {

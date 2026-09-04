@@ -35,7 +35,7 @@ func New(opts ...Option) (*Titip, error) {
 		convertHeadToGet:          true,
 		keyConfig:                 KeyConfig{},
 		tagHeaderName:             headerCacheTag,
-		originTimeout:             30 * time.Second,
+		backgroundFetchTimeout:    125 * time.Second,
 		storageTimeout:            1 * time.Second,
 		logger:                    slog.Default(),
 		esi: esi.Config{
