@@ -27,7 +27,7 @@ import (
 
 func init() {
 	caddy.RegisterModule(Handler{})
-	httpcaddyfile.RegisterDirectiveOrder("titip", httpcaddyfile.Before, "route")
+	httpcaddyfile.RegisterDirectiveOrder("titip", httpcaddyfile.After, "encode")
 	httpcaddyfile.RegisterHandlerDirective("titip", parseCaddyfile)
 }
 
@@ -382,18 +382,37 @@ func (h *Handler) Cleanup() error {
 
 // ServeHTTP implements the caddyhttp.MiddlewareHandler interface.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	if r.Body == nil {
-		r.Body = http.NoBody
+	// In Caddy, directives like `rewrite` or `try_files` can rewrite the request URI
+	// (for example, routing multiple URL paths to a single entrypoint or front controller)
+	// before middleware handlers like Titip execute. Caddy preserves the client's original,
+	// un-rewritten request in the context under caddyhttp.OriginalRequestCtxKey.
+	//
+	// We extract the original request URL for Titip's cache key generation so that distinct
+	// client-facing paths (e.g. "/about", "/users") do not collapse into the same cache key,
+	// while preserving the current request's headers, context, and body.
+	engineReq := r
+	if origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request); ok && origReq.URL != nil {
+		rCopy := *r
+		rCopy.URL = origReq.URL
+		rCopy.RequestURI = origReq.RequestURI
+		engineReq = &rCopy
 	}
-	// Bridge caddyhttp.Handler to standard http.Handler
+
+	// Bridge caddyhttp.Handler to standard http.Handler.
+	// Downstream handlers must receive the rewritten request so downstream route matchers
+	// and backend handlers see their expected target path.
 	downstream := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		if req.Body == nil {
-			req.Body = http.NoBody
+		downstreamReq := req
+		if req.URL != r.URL {
+			rCopy := *req
+			rCopy.URL = r.URL
+			rCopy.RequestURI = r.RequestURI
+			downstreamReq = &rCopy
 		}
-		_ = next.ServeHTTP(rw, req)
+		_ = next.ServeHTTP(rw, downstreamReq)
 	})
 
-	h.engine.ServeHTTP(w, r, downstream)
+	h.engine.ServeHTTP(w, engineReq, downstream)
 	return nil
 }
 

@@ -1044,3 +1044,78 @@ func TestCaddyHandler_SWR_PreservesReplacerContext(t *testing.T) {
 	}
 }
 
+func TestCaddyHandler_OriginalRequestRewrite(t *testing.T) {
+	t.Parallel()
+	caddyfileInput := `titip {
+		storage test
+	}`
+
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
+
+	var downstreamCalls atomic.Int32
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		// Downstream (e.g. FrankenPHP) must see the rewritten URL "index.php"
+		if r.URL.Path != "/index.php" {
+			t.Errorf("expected downstream to receive rewritten path /index.php, got %s", r.URL.Path)
+		}
+		downstreamCalls.Add(1)
+
+		// Simulating PHP front-controller reading OriginalRequestCtxKey or REQUEST_URI
+		origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request)
+		page := "unknown"
+		if ok && origReq.URL != nil {
+			page = strings.TrimPrefix(origReq.URL.Path, "/")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"page":%q}`, page)
+		return nil
+	})
+
+	makeRewrittenReq := func(origPath string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost:8080/index.php", nil)
+		origURL, _ := url.Parse("http://localhost:8080" + origPath)
+		origReq := *req
+		origReq.URL = origURL
+		origReq.RequestURI = origPath
+		ctx := context.WithValue(req.Context(), caddyhttp.OriginalRequestCtxKey, origReq)
+		return req.WithContext(ctx)
+	}
+
+	// 1. Request /users (Miss -> downstream call 1)
+	req1 := makeRewrittenReq("/users")
+	rec1 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec1, req1, downstream)
+	if rec1.Body.String() != `{"page":"users"}` {
+		t.Fatalf("expected page users, got %s", rec1.Body.String())
+	}
+	if downstreamCalls.Load() != 1 {
+		t.Fatalf("expected 1 downstream call, got %d", downstreamCalls.Load())
+	}
+
+	// 2. Request /products (Different original URL -> Must be a MISS, NOT collision with /users)
+	req2 := makeRewrittenReq("/products")
+	rec2 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec2, req2, downstream)
+	if rec2.Body.String() != `{"page":"products"}` {
+		t.Fatalf("expected page products (not collided with users), got %s", rec2.Body.String())
+	}
+	if downstreamCalls.Load() != 2 {
+		t.Fatalf("expected 2 downstream calls (separate cache entries), got %d", downstreamCalls.Load())
+	}
+
+	// 3. Request /users again (Same original URL -> HIT, no downstream call)
+	req3 := makeRewrittenReq("/users")
+	rec3 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec3, req3, downstream)
+	if rec3.Body.String() != `{"page":"users"}` {
+		t.Fatalf("expected cached page users, got %s", rec3.Body.String())
+	}
+	if downstreamCalls.Load() != 2 {
+		t.Fatalf("expected cache hit to not invoke downstream, got %d calls", downstreamCalls.Load())
+	}
+}
+
