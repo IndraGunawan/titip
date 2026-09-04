@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/caddyserver/caddy/v2 v2.11.4
-	github.com/indragunawan/titip v0.0.0
+	github.com/indragunawan/titip v0.1.0
 	go.uber.org/zap v1.28.0
 )
 
