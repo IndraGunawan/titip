@@ -93,6 +93,9 @@ func parsePurgeTarget(target string, cfg *KeyConfig) (*purgeTarget, error) {
 		if dir == "" {
 			dir = "/"
 		}
+		if cfg.CaseInsensitivePath {
+			dir = strings.ToLower(dir)
+		}
 		pt.path = path.Clean(dir)
 		pt.mode = purgeModeWildcard
 		return pt, nil
@@ -103,6 +106,9 @@ func parsePurgeTarget(target string, cfg *KeyConfig) (*purgeTarget, error) {
 		cleanedPath = "/"
 	} else if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(cleanedPath, "/") {
 		cleanedPath += "/"
+	}
+	if cfg.CaseInsensitivePath {
+		cleanedPath = strings.ToLower(cleanedPath)
 	}
 	pt.path = cleanedPath
 

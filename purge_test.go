@@ -593,3 +593,47 @@ func TestPurge_EndToEnd_MatrixOfTargets(t *testing.T) {
 		})
 	}
 }
+
+func TestPurgeTarget_CaseInsensitivePath(t *testing.T) {
+	cfg := &KeyConfig{CaseInsensitivePath: true}
+
+	// 1. Exact mode
+	ptExact, err := parsePurgeTarget("http://example.com/Products/Shoes/Running?token=123", cfg)
+	if err != nil {
+		t.Fatalf("parsePurgeTarget failed: %v", err)
+	}
+	if ptExact.path != "/products/shoes/running" {
+		t.Errorf("expected lowercase path /products/shoes/running, got %s", ptExact.path)
+	}
+	exactPatterns := buildPurgePatterns(ptExact, cfg)
+	expectedKey := "p=/products/shoes/running:h=example.com:m=GET:qs=token=123"
+	if len(exactPatterns) != 1 || exactPatterns[0] != expectedKey {
+		t.Errorf("expected exact pattern %q, got %v", expectedKey, exactPatterns)
+	}
+
+	// 2. Path sweep mode
+	ptSweep, err := parsePurgeTarget("http://example.com/Products/Shoes/Running", cfg)
+	if err != nil {
+		t.Fatalf("parsePurgeTarget failed: %v", err)
+	}
+	if ptSweep.path != "/products/shoes/running" {
+		t.Errorf("expected lowercase path /products/shoes/running, got %s", ptSweep.path)
+	}
+	sweepPatterns := buildPurgePatterns(ptSweep, cfg)
+	if len(sweepPatterns) != 1 || sweepPatterns[0] != "p=/products/shoes/running:h=example.com:m=*" {
+		t.Errorf("expected sweep pattern %q, got %v", "p=/products/shoes/running:h=example.com:m=*", sweepPatterns)
+	}
+
+	// 3. Wildcard mode
+	ptWildcard, err := parsePurgeTarget("http://example.com/Products/*", cfg)
+	if err != nil {
+		t.Fatalf("parsePurgeTarget failed: %v", err)
+	}
+	if ptWildcard.path != "/products" {
+		t.Errorf("expected lowercase wildcard dir /products, got %s", ptWildcard.path)
+	}
+	wildcardPatterns := buildPurgePatterns(ptWildcard, cfg)
+	if len(wildcardPatterns) != 1 || wildcardPatterns[0] != "p=/products/*:h=example.com:m=*" {
+		t.Errorf("expected wildcard pattern %q, got %v", "p=/products/*:h=example.com:m=*", wildcardPatterns)
+	}
+}

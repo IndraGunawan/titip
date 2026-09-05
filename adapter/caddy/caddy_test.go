@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
+	"github.com/indragunawan/titip"
 	"github.com/pierrec/lz4/v4"
 	"go.uber.org/zap/zapcore"
 )
@@ -300,6 +302,7 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 	t.Parallel()
 	config := `titip {
 		storage test
+		use_rewritten_url true
 		key {
 			include_protocol false
 			exclude_host true
@@ -310,6 +313,8 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 			exclude_marketing_params true
 			included_header_names X-App-Version Accept-Language
 			included_cookie_names session_currency
+			case_insensitive_path true
+			included_query_param_values format json xml
 		}
 	}`
 
@@ -319,6 +324,9 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 
+	if h.UseRewrittenURL == nil || *h.UseRewrittenURL != true {
+		t.Errorf("expected UseRewrittenURL true, got %v", h.UseRewrittenURL)
+	}
 	if h.Key == nil {
 		t.Fatalf("expected Key config to be populated")
 	}
@@ -345,6 +353,12 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 	}
 	if len(h.Key.IncludedCookieNames) != 1 || h.Key.IncludedCookieNames[0] != "session_currency" {
 		t.Errorf("unexpected IncludedCookieNames: %v", h.Key.IncludedCookieNames)
+	}
+	if h.Key.CaseInsensitivePath == nil || *h.Key.CaseInsensitivePath != true {
+		t.Errorf("expected CaseInsensitivePath true, got %v", h.Key.CaseInsensitivePath)
+	}
+	if len(h.Key.IncludedQueryParamValues) != 1 || len(h.Key.IncludedQueryParamValues["format"]) != 2 {
+		t.Errorf("unexpected IncludedQueryParamValues: %v", h.Key.IncludedQueryParamValues)
 	}
 }
 
@@ -1086,34 +1100,34 @@ func TestCaddyHandler_OriginalRequestRewrite(t *testing.T) {
 		return req.WithContext(ctx)
 	}
 
-	// 1. Request /users (Miss -> downstream call 1)
-	req1 := makeRewrittenReq("/users")
+	// 1. Request /articles (Miss -> downstream call 1)
+	req1 := makeRewrittenReq("/articles")
 	rec1 := httptest.NewRecorder()
 	_ = h.ServeHTTP(rec1, req1, downstream)
-	if rec1.Body.String() != `{"page":"users"}` {
-		t.Fatalf("expected page users, got %s", rec1.Body.String())
+	if rec1.Body.String() != `{"page":"articles"}` {
+		t.Fatalf("expected page articles, got %s", rec1.Body.String())
 	}
 	if downstreamCalls.Load() != 1 {
 		t.Fatalf("expected 1 downstream call, got %d", downstreamCalls.Load())
 	}
 
-	// 2. Request /products (Different original URL -> Must be a MISS, NOT collision with /users)
+	// 2. Request /products (Different original URL -> Must be a MISS, NOT collision with /articles)
 	req2 := makeRewrittenReq("/products")
 	rec2 := httptest.NewRecorder()
 	_ = h.ServeHTTP(rec2, req2, downstream)
 	if rec2.Body.String() != `{"page":"products"}` {
-		t.Fatalf("expected page products (not collided with users), got %s", rec2.Body.String())
+		t.Fatalf("expected page products (not collided with articles), got %s", rec2.Body.String())
 	}
 	if downstreamCalls.Load() != 2 {
 		t.Fatalf("expected 2 downstream calls (separate cache entries), got %d", downstreamCalls.Load())
 	}
 
-	// 3. Request /users again (Same original URL -> HIT, no downstream call)
-	req3 := makeRewrittenReq("/users")
+	// 3. Request /articles again (Same original URL -> HIT, no downstream call)
+	req3 := makeRewrittenReq("/articles")
 	rec3 := httptest.NewRecorder()
 	_ = h.ServeHTTP(rec3, req3, downstream)
-	if rec3.Body.String() != `{"page":"users"}` {
-		t.Fatalf("expected cached page users, got %s", rec3.Body.String())
+	if rec3.Body.String() != `{"page":"articles"}` {
+		t.Fatalf("expected cached page articles, got %s", rec3.Body.String())
 	}
 	if downstreamCalls.Load() != 2 {
 		t.Fatalf("expected cache hit to not invoke downstream, got %d calls", downstreamCalls.Load())
@@ -1280,5 +1294,493 @@ func TestCaddyHandler_DirectiveOrder_EncodePlainResponse(t *testing.T) {
 		t.Errorf("expected plain content for unencoded client, got %q", string(body3))
 	}
 }
+
+func TestCaddyHandler_UseRewrittenURL_LiveExecution(t *testing.T) {
+	t.Parallel()
+	caddyfileInput := `titip {
+		storage test
+		use_rewritten_url true
+	}`
+
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
+
+	var downstreamCalls atomic.Int32
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		downstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+		return nil
+	})
+
+	// Two different original paths rewritten to the same target: /canonical
+	makeRewrittenReq := func(origPath string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "http://localhost:8080/canonical", nil)
+		origURL, _ := url.Parse("http://localhost:8080" + origPath)
+		origReq := *req
+		origReq.URL = origURL
+		origReq.RequestURI = origPath
+		ctx := context.WithValue(req.Context(), caddyhttp.OriginalRequestCtxKey, origReq)
+		return req.WithContext(ctx)
+	}
+
+	// 1. Request via /alias1 -> Miss (downstream call 1)
+	req1 := makeRewrittenReq("/alias1")
+	rec1 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec1, req1, downstream)
+	if downstreamCalls.Load() != 1 {
+		t.Fatalf("expected 1 downstream call, got %d", downstreamCalls.Load())
+	}
+
+	// 2. Request via /alias2 -> Since use_rewritten_url=true, it uses /canonical -> HIT (0 downstream calls)
+	req2 := makeRewrittenReq("/alias2")
+	rec2 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec2, req2, downstream)
+	if downstreamCalls.Load() != 1 {
+		t.Fatalf("expected cache HIT on rewritten path /canonical (downstreamCalls stays 1), got %d", downstreamCalls.Load())
+	}
+}
+
+func TestCaddyHandler_CaseInsensitivePath_LiveExecution(t *testing.T) {
+	t.Parallel()
+	caddyfileInput := `titip {
+		storage test
+		key {
+			case_insensitive_path true
+		}
+	}`
+
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
+
+	var originCalls atomic.Int64
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("shoes-catalog"))
+		return nil
+	})
+
+	// 1. Request uppercase
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/Products/Shoes/Running", nil)
+	rec1 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec1, req1, downstream)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected origin call 1, got %d", originCalls.Load())
+	}
+
+	// 2. Request lowercase -> Should HIT cache!
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/products/shoes/running", nil)
+	rec2 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec2, req2, downstream)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cache HIT on lowercase URL (originCalls stays 1), got %d", originCalls.Load())
+	}
+}
+
+func TestCaddyHandler_IncludedQueryParamValues_LiveExecution(t *testing.T) {
+	t.Parallel()
+	caddyfileInput := `titip {
+		storage test
+		key {
+			included_query_param_values format json
+		}
+	}`
+
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
+
+	var originCalls atomic.Int64
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("product-content"))
+		return nil
+	})
+
+	// 1. Request no query -> Miss (originCalls = 1)
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/items", nil)
+	rec1 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec1, req1, downstream)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected origin call 1, got %d", originCalls.Load())
+	}
+
+	// 2. Request with disallowed format=xml -> Pruned -> Hits default cache! (originCalls stays 1)
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/items?format=xml", nil)
+	rec2 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec2, req2, downstream)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cache HIT on default layout for format=xml (originCalls stays 1), got %d", originCalls.Load())
+	}
+
+	// 3. Request with allowed format=json -> Separate cache entry -> Miss (originCalls = 2)
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/items?format=json", nil)
+	rec3 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec3, req3, downstream)
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected origin call 2 for format=json, got %d", originCalls.Load())
+	}
+
+	// 4. Second request with format=json -> Cache HIT! (originCalls stays 2)
+	req4 := httptest.NewRequest(http.MethodGet, "http://example.com/items?format=json", nil)
+	rec4 := httptest.NewRecorder()
+	_ = h.ServeHTTP(rec4, req4, downstream)
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected cache HIT for format=json, got %d", originCalls.Load())
+	}
+}
+
+func TestCaddyHandler_KeyConfig_SmartExcludeQueryStringInheritance(t *testing.T) {
+	t.Parallel()
+
+	boolPtr := func(b bool) *bool { return &b }
+
+	// Baseline global config with ExcludeQueryString: true
+	globalKey := &KeyConfig{
+		ExcludeQueryString: boolPtr(true),
+	}
+
+	// 1. Route defines IncludedQueryParamValues without ExcludeQueryString -> ExcludeQueryString should become false
+	t.Run("RouteWithIncludedQueryParamValues", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+		if !target.ExcludeQueryString {
+			t.Fatalf("expected global ExcludeQueryString to be true")
+		}
+
+		routeKey := &KeyConfig{
+			IncludedQueryParamValues: map[string][]string{
+				"layout": {"marketplace"},
+			},
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if target.ExcludeQueryString {
+			t.Errorf("expected route whitelist to automatically deactivate ExcludeQueryString, got true")
+		}
+		if len(target.IncludedQueryParamValues["layout"]) != 1 || target.IncludedQueryParamValues["layout"][0] != "marketplace" {
+			t.Errorf("expected IncludedQueryParamValues to be populated, got: %v", target.IncludedQueryParamValues)
+		}
+	})
+
+	// 2. Route defines IncludedQueryParams without ExcludeQueryString -> ExcludeQueryString should become false
+	t.Run("RouteWithIncludedQueryParams", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+		if !target.ExcludeQueryString {
+			t.Fatalf("expected global ExcludeQueryString to be true")
+		}
+
+		routeKey := &KeyConfig{
+			IncludedQueryParams: []string{"page", "sort"},
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if target.ExcludeQueryString {
+			t.Errorf("expected route whitelist to automatically deactivate ExcludeQueryString, got true")
+		}
+		if len(target.IncludedQueryParams) != 2 {
+			t.Errorf("expected 2 IncludedQueryParams, got: %v", target.IncludedQueryParams)
+		}
+	})
+
+	// 3. Route defines no whitelist and no ExcludeQueryString -> ExcludeQueryString remains true
+	t.Run("RouteWithoutWhitelist", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+
+		routeKey := &KeyConfig{
+			CaseInsensitivePath: boolPtr(true),
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if !target.ExcludeQueryString {
+			t.Errorf("expected ExcludeQueryString to remain true when route has no whitelist, got false")
+		}
+		if !target.CaseInsensitivePath {
+			t.Errorf("expected CaseInsensitivePath to be true, got false")
+		}
+	})
+
+	// 4. Route defines whitelist but explicitly sets ExcludeQueryString: true -> Explicit choice honored
+	t.Run("RouteExplicitExcludeQueryStringTrue", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+
+		routeKey := &KeyConfig{
+			ExcludeQueryString: boolPtr(true),
+			IncludedQueryParamValues: map[string][]string{
+				"layout": {"marketplace"},
+			},
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if !target.ExcludeQueryString {
+			t.Errorf("expected explicit ExcludeQueryString=true on route to take precedence, got false")
+		}
+	})
+
+	// 5. Route defines whitelist and explicitly sets ExcludeQueryString: false -> Explicit choice honored
+	t.Run("RouteExplicitExcludeQueryStringFalse", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+
+		routeKey := &KeyConfig{
+			ExcludeQueryString:  boolPtr(false),
+			IncludedQueryParams: []string{"page"},
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if target.ExcludeQueryString {
+			t.Errorf("expected explicit ExcludeQueryString=false on route to take precedence, got true")
+		}
+	})
+}
+
+type testCaptureLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+	level   slog.Level
+}
+
+func (c *testCaptureLogHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= c.level
+}
+
+func (c *testCaptureLogHandler) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, r.Clone())
+	return nil
+}
+
+func (c *testCaptureLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return c }
+func (c *testCaptureLogHandler) WithGroup(_ string) slog.Handler      { return c }
+
+func TestCaddyHandler_ModuleLifecycleLogging(t *testing.T) {
+	t.Parallel()
+
+	capture := &testCaptureLogHandler{level: slog.LevelDebug}
+	testLogger := slog.New(capture)
+
+	d := caddyfile.NewTestDispenser(`titip {
+		storage test
+	}`)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	h.logger = testLogger
+
+	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := h.Provision(ctx); err != nil {
+		t.Fatalf("provision error: %v", err)
+	}
+
+	capture.mu.Lock()
+	records := slices.Clone(capture.records)
+	capture.mu.Unlock()
+
+	var foundInit, foundRegister bool
+	for _, r := range records {
+		if r.Level == slog.LevelInfo && r.Message == "module initialized" {
+			foundInit = true
+			var storageAttr string
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "storage" {
+					storageAttr = a.Value.String()
+				}
+				return true
+			})
+			if storageAttr != "test" {
+				t.Errorf("expected storage 'test', got %q", storageAttr)
+			}
+		}
+		if r.Level == slog.LevelDebug && r.Message == "module registered" {
+			foundRegister = true
+			var idAttr string
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "id" {
+					idAttr = a.Value.String()
+				}
+				return true
+			})
+			if idAttr != h.id {
+				t.Errorf("expected id %q, got %q", h.id, idAttr)
+			}
+		}
+	}
+
+	if !foundInit {
+		t.Errorf("expected INFO 'module initialized' log record")
+	}
+	if !foundRegister {
+		t.Errorf("expected DEBUG 'module registered' log record")
+	}
+
+	// Test Cleanup
+	if err := h.Cleanup(); err != nil {
+		t.Fatalf("cleanup error: %v", err)
+	}
+
+	capture.mu.Lock()
+	cleanupRecords := slices.Clone(capture.records)
+	capture.mu.Unlock()
+
+	var foundCleanup bool
+	for _, r := range cleanupRecords {
+		if r.Level == slog.LevelDebug && r.Message == "module cleaned up" {
+			foundCleanup = true
+			var idAttr string
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "id" {
+					idAttr = a.Value.String()
+				}
+				return true
+			})
+			if idAttr != h.id {
+				t.Errorf("expected cleanup id %q, got %q", h.id, idAttr)
+			}
+		}
+	}
+	if !foundCleanup {
+		t.Errorf("expected DEBUG 'module cleaned up' log record")
+	}
+}
+
+func TestCaddyHandler_GlobalExcludeQueryString_RouteWhitelistOverride_LiveExecution(t *testing.T) {
+	var originCalls atomic.Int64
+	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "content for %s (call %d)", r.URL.Path, originCalls.Load())
+	}))
+	defer originServer.Close()
+
+	originURL, err := url.Parse(originServer.URL)
+	if err != nil {
+		t.Fatalf("parse origin url: %v", err)
+	}
+
+	caddyfileInput := fmt.Sprintf(`{
+		admin off
+		skip_install_trust
+		log {
+			output discard
+		}
+		titip {
+			storage test
+			key {
+				exclude_query_string true
+			}
+		}
+	}
+	:18094 {
+		route {
+			handle /items/* {
+				titip {
+					key {
+						included_query_param_values format json
+					}
+				}
+				reverse_proxy %s
+			}
+
+			handle /blog/* {
+				titip
+				reverse_proxy %s
+			}
+		}
+	}`, originURL.Host, originURL.Host)
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+	if cadAdapter == nil {
+		t.Fatalf("caddyfile adapter not registered")
+	}
+	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+	if err != nil {
+		t.Fatalf("adapt failed: %v", err)
+	}
+
+	cfg := new(caddymain.Config)
+	if err := json.Unmarshal(jsonBytes, cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if err := caddymain.Run(cfg); err != nil {
+		t.Fatalf("caddy run failed: %v", err)
+	}
+	defer func() {
+		_ = caddymain.Stop()
+	}()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// 1. /items with format=json -> Call 1 (MISS)
+	resp1, err := client.Get("http://localhost:18094/items/detail?format=json")
+	if err != nil {
+		t.Fatalf("req 1 failed: %v", err)
+	}
+	_ = resp1.Body.Close()
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected originCalls=1, got %d", originCalls.Load())
+	}
+
+	// /items with format=json again -> HIT (originCalls stays 1)
+	resp2, err := client.Get("http://localhost:18094/items/detail?format=json")
+	if err != nil {
+		t.Fatalf("req 2 failed: %v", err)
+	}
+	_ = resp2.Body.Close()
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cache HIT for format=json (originCalls stays 1), got %d", originCalls.Load())
+	}
+
+	// 2. /items with unlisted format=xml -> pruned, so it collapses to /items/detail (Call 2)
+	resp3, err := client.Get("http://localhost:18094/items/detail?format=xml")
+	if err != nil {
+		t.Fatalf("req 3 failed: %v", err)
+	}
+	_ = resp3.Body.Close()
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected originCalls=2 for unlisted format=xml, got %d", originCalls.Load())
+	}
+
+	// Second request for unlisted format=xml -> HIT on default /items/detail (originCalls stays 2)
+	resp4, err := client.Get("http://localhost:18094/items/detail?format=xml")
+	if err != nil {
+		t.Fatalf("req 4 failed: %v", err)
+	}
+	_ = resp4.Body.Close()
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected cache HIT for second format=xml (originCalls stays 2), got %d", originCalls.Load())
+	}
+
+	// 3. /blog with query -> query stripped per global exclude_query_string: true (Call 3)
+	respBlog1, err := client.Get("http://localhost:18094/blog/post?token=123")
+	if err != nil {
+		t.Fatalf("blog req 1 failed: %v", err)
+	}
+	_ = respBlog1.Body.Close()
+	if originCalls.Load() != 3 {
+		t.Fatalf("expected originCalls=3 on first blog request, got %d", originCalls.Load())
+	}
+
+	// /blog with different query token -> HIT on stripped /blog/post (originCalls stays 3)
+	respBlog2, err := client.Get("http://localhost:18094/blog/post?token=456")
+	if err != nil {
+		t.Fatalf("blog req 2 failed: %v", err)
+	}
+	_ = respBlog2.Body.Close()
+	if originCalls.Load() != 3 {
+		t.Fatalf("expected cache hit on blog with different query string (originCalls stays 3), got %d", originCalls.Load())
+	}
+}
+
 
 

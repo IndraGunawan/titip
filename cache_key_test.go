@@ -810,6 +810,29 @@ func BenchmarkGeneratePrimaryKey_AllOptions(b *testing.B) {
 	}
 }
 
+func BenchmarkGeneratePrimaryKey_CaseInsensitive(b *testing.B) {
+	req := makeReq("http://example.com/Products/Shoes/Running?id=123")
+	cfg := &KeyConfig{CaseInsensitivePath: true}
+
+	for b.Loop() {
+		_ = generatePrimaryKey(req, cfg)
+	}
+}
+
+func BenchmarkGeneratePrimaryKey_QueryParamValues(b *testing.B) {
+	req := makeReq("http://example.com/items?format=json&page=2&sort=asc&utm_source=fb")
+	cfg := &KeyConfig{
+		IncludedQueryParams: []string{"page", "sort"},
+		IncludedQueryParamValues: map[string][]string{
+			"format": {"json"},
+		},
+	}
+
+	for b.Loop() {
+		_ = generatePrimaryKey(req, cfg)
+	}
+}
+
 func BenchmarkGenerateVariantKey(b *testing.B) {
 	req := &http.Request{
 		Header: http.Header{
@@ -857,5 +880,94 @@ func TestGenerateVariantKey_PreservesCasing(t *testing.T) {
 	vKey := generateVariantKey(req, []string{"X-Custom-Vary"})
 	if vKey != "x-custom-vary=CaseSensitiveValue123" {
 		t.Errorf("expected x-custom-vary=CaseSensitiveValue123, got %s", vKey)
+	}
+}
+
+func TestGeneratePrimaryKey_Query_MarketingParams_CaseInsensitive(t *testing.T) {
+	req := makeReq("http://example.com/shoes?UTM_CAMPAIGN=summer&Utm_Source=google&GCLID=999&FBCLID=123&size=10&color=blue")
+	key := generatePrimaryKey(req, &KeyConfig{ExcludeMarketingParams: true})
+	for _, mq := range []string{"UTM_CAMPAIGN", "Utm_Source", "GCLID", "FBCLID"} {
+		if contains(key, mq) {
+			t.Fatalf("uppercase marketing param %q must be stripped, got: %s", mq, key)
+		}
+	}
+	if !contains(key, "size=10") || !contains(key, "color=blue") {
+		t.Fatalf("non-marketing params must be preserved, got: %s", key)
+	}
+}
+
+func TestGeneratePrimaryKey_Path_CaseInsensitive(t *testing.T) {
+	reqUpper := makeReq("http://example.com/Products/Shoes/Running?token=AbC123")
+	reqLower := makeReq("http://example.com/products/shoes/running?token=AbC123")
+
+	keyUpper := generatePrimaryKey(reqUpper, &KeyConfig{CaseInsensitivePath: true})
+	keyLower := generatePrimaryKey(reqLower, &KeyConfig{CaseInsensitivePath: true})
+
+	expected := "p=/products/shoes/running:h=example.com:m=GET:qs=token=AbC123"
+	if keyUpper != expected {
+		t.Errorf("expected %q, got %q", expected, keyUpper)
+	}
+	if keyUpper != keyLower {
+		t.Errorf("expected uppercase and lowercase path keys to match: %q != %q", keyUpper, keyLower)
+	}
+
+	// Verify query string values are NOT lowercased!
+	if !contains(keyUpper, "token=AbC123") {
+		t.Errorf("expected query parameter value to retain exact casing, got: %s", keyUpper)
+	}
+}
+
+func TestGeneratePrimaryKey_Query_IncludedQueryParamValues(t *testing.T) {
+	cfg := &KeyConfig{
+		IncludedQueryParamValues: map[string][]string{
+			"format": {"json"},
+		},
+	}
+
+	// 1. Allowed value matches
+	reqJSON := makeReq("http://example.com/items?format=json&utm_source=fb")
+	keyJSON := generatePrimaryKey(reqJSON, cfg)
+	if !contains(keyJSON, "qs=format=json") {
+		t.Errorf("expected format=json to be included, got: %s", keyJSON)
+	}
+	if contains(keyJSON, "utm_source") {
+		t.Errorf("unwhitelisted param utm_source must be dropped, got: %s", keyJSON)
+	}
+
+	// 2. Disallowed / unknown value dropped completely -> matches default page!
+	reqXML := makeReq("http://example.com/items?format=xml")
+	keyXML := generatePrimaryKey(reqXML, cfg)
+	reqNoQuery := makeReq("http://example.com/items")
+	keyNoQuery := generatePrimaryKey(reqNoQuery, cfg)
+	if keyXML != keyNoQuery {
+		t.Errorf("disallowed format value should drop qs and match no-query key: %q != %q", keyXML, keyNoQuery)
+	}
+
+	// 3. Combined with IncludedQueryParams (name-based whitelist)
+	cfgCombined := &KeyConfig{
+		IncludedQueryParams: []string{"page", "sort"},
+		IncludedQueryParamValues: map[string][]string{
+			"format": {"json"},
+		},
+	}
+	reqCombined := makeReq("http://example.com/items?page=2&sort=asc&format=json&extra=ignored")
+	keyCombined := generatePrimaryKey(reqCombined, cfgCombined)
+	expectedQS := "format=json&page=2&sort=asc"
+	if !contains(keyCombined, expectedQS) {
+		t.Errorf("expected %q in key, got: %s", expectedQS, keyCombined)
+	}
+	if contains(keyCombined, "extra") {
+		t.Errorf("unwhitelisted param extra must be dropped, got: %s", keyCombined)
+	}
+
+	// 4. Combined with Disallowed format value
+	reqCombinedDisallowed := makeReq("http://example.com/items?page=2&sort=asc&format=xml&extra=ignored")
+	keyCombinedDisallowed := generatePrimaryKey(reqCombinedDisallowed, cfgCombined)
+	expectedQSDisallowed := "page=2&sort=asc"
+	if !contains(keyCombinedDisallowed, expectedQSDisallowed) {
+		t.Errorf("expected %q in key, got: %s", expectedQSDisallowed, keyCombinedDisallowed)
+	}
+	if contains(keyCombinedDisallowed, "format") {
+		t.Errorf("disallowed format value must be dropped, got: %s", keyCombinedDisallowed)
 	}
 }
