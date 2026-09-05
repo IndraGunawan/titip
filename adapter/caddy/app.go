@@ -48,6 +48,9 @@ type App struct {
 	// ESI defines default Edge Side Includes parameters.
 	ESI *ESIConfig `json:"esi,omitempty"`
 
+	// UseRewrittenURL uses the rewritten request URL rather than client original request URL.
+	UseRewrittenURL *bool `json:"use_rewritten_url,omitempty"`
+
 	storage storage.Storage
 }
 
@@ -172,6 +175,17 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 					return nil, err
 				}
 				app.ESI = esi
+
+			case "use_rewritten_url":
+				val := true
+				if d.NextArg() {
+					var err error
+					val, err = strconv.ParseBool(d.Val())
+					if err != nil {
+						return nil, d.Errf("invalid boolean for use_rewritten_url: %v", err)
+					}
+				}
+				app.UseRewrittenURL = &val
 
 			default:
 				return nil, d.Errf("unknown global titip directive: %s", d.Val())

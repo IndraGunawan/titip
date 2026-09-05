@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -97,15 +98,17 @@ func getEngines() []*titip.Titip {
 
 // KeyConfig defines the cache key generation parameters in Caddy.
 type KeyConfig struct {
-	IncludeProtocol        *bool    `json:"include_protocol,omitempty"`
-	ExcludeHost            *bool    `json:"exclude_host,omitempty"`
-	ExcludeQueryString     *bool    `json:"exclude_query_string,omitempty"`
-	DisableQueryStringSort *bool    `json:"disable_query_string_sort,omitempty"`
-	IncludedQueryParams    []string `json:"included_query_params,omitempty"`
-	ExcludedQueryParams    []string `json:"excluded_query_params,omitempty"`
-	ExcludeMarketingParams *bool    `json:"exclude_marketing_params,omitempty"`
-	IncludedHeaderNames    []string `json:"included_header_names,omitempty"`
-	IncludedCookieNames    []string `json:"included_cookie_names,omitempty"`
+	IncludeProtocol          *bool               `json:"include_protocol,omitempty"`
+	ExcludeHost              *bool               `json:"exclude_host,omitempty"`
+	ExcludeQueryString       *bool               `json:"exclude_query_string,omitempty"`
+	DisableQueryStringSort   *bool               `json:"disable_query_string_sort,omitempty"`
+	IncludedQueryParams      []string            `json:"included_query_params,omitempty"`
+	ExcludedQueryParams      []string            `json:"excluded_query_params,omitempty"`
+	ExcludeMarketingParams   *bool               `json:"exclude_marketing_params,omitempty"`
+	IncludedHeaderNames      []string            `json:"included_header_names,omitempty"`
+	IncludedCookieNames      []string            `json:"included_cookie_names,omitempty"`
+	CaseInsensitivePath      *bool               `json:"case_insensitive_path,omitempty"`
+	IncludedQueryParamValues map[string][]string `json:"included_query_param_values,omitempty"`
 }
 
 // ESIConfig defines ESI parameters in Caddy.
@@ -135,10 +138,12 @@ type Handler struct {
 	TagHeader                     string          `json:"tag_header,omitempty"`
 	Key                           *KeyConfig      `json:"key,omitempty"`
 	ESI                           *ESIConfig      `json:"esi,omitempty"`
+	UseRewrittenURL               *bool           `json:"use_rewritten_url,omitempty"`
 
-	storageMod StorageModule
-	engine     *titip.Titip
-	id         string
+	storageMod      StorageModule
+	engine          *titip.Titip
+	id              string
+	useRewrittenURL bool
 }
 
 // CaddyModule returns the Caddy module information.
@@ -275,6 +280,16 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithTagHeaderName(h.TagHeader))
 	}
 
+	// UseRewrittenURL (inherit from app if not set)
+	useRewritten := false
+	if app != nil && app.UseRewrittenURL != nil {
+		useRewritten = *app.UseRewrittenURL
+	}
+	if h.UseRewrittenURL != nil {
+		useRewritten = *h.UseRewrittenURL
+	}
+	h.useRewrittenURL = useRewritten
+
 	// Key configuration: default -> global App defaults -> route overrides
 	if (app != nil && app.KeyConfig != nil) || h.Key != nil {
 		keyCfg := titip.KeyConfig{}
@@ -388,14 +403,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// un-rewritten request in the context under caddyhttp.OriginalRequestCtxKey.
 	//
 	// We extract the original request URL for Titip's cache key generation so that distinct
-	// client-facing paths (e.g. "/about", "/users") do not collapse into the same cache key,
+	// client-facing paths (e.g. "/about", "/products") do not collapse into the same cache key,
 	// while preserving the current request's headers, context, and body.
 	engineReq := r
-	if origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request); ok && origReq.URL != nil {
-		rCopy := *r
-		rCopy.URL = origReq.URL
-		rCopy.RequestURI = origReq.RequestURI
-		engineReq = &rCopy
+	if !h.useRewrittenURL {
+		if origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request); ok && origReq.URL != nil {
+			rCopy := *r
+			rCopy.URL = origReq.URL
+			rCopy.RequestURI = origReq.RequestURI
+			engineReq = &rCopy
+		}
 	}
 
 	// Bridge caddyhttp.Handler to standard http.Handler.
@@ -492,6 +509,16 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err := h.ESI.unmarshalCaddyfile(d); err != nil {
 					return err
 				}
+			case "use_rewritten_url":
+				val := true
+				if d.NextArg() {
+					var err error
+					val, err = strconv.ParseBool(d.Val())
+					if err != nil {
+						return d.Errf("invalid boolean value %q: %v", d.Val(), err)
+					}
+				}
+				h.UseRewrittenURL = &val
 			default:
 				return d.Errf("unknown titip directive %q", d.Val())
 			}
@@ -567,6 +594,29 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			kc.IncludedHeaderNames = append(kc.IncludedHeaderNames, d.RemainingArgs()...)
 		case "included_cookie_names", "include_cookies":
 			kc.IncludedCookieNames = append(kc.IncludedCookieNames, d.RemainingArgs()...)
+		case "case_insensitive_path", "lowercase_path":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for case_insensitive_path: %v", err)
+				}
+			}
+			kc.CaseInsensitivePath = &val
+		case "included_query_param_values", "query_enum":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			param := d.Val()
+			vals := d.RemainingArgs()
+			if len(vals) == 0 {
+				return d.Errf("included_query_param_values requires at least one allowed value for parameter %q", param)
+			}
+			if kc.IncludedQueryParamValues == nil {
+				kc.IncludedQueryParamValues = make(map[string][]string)
+			}
+			kc.IncludedQueryParamValues[param] = append(kc.IncludedQueryParamValues[param], vals...)
 		case "query":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -751,6 +801,17 @@ func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
 	}
 	if len(src.IncludedCookieNames) > 0 {
 		target.IncludedCookieNames = src.IncludedCookieNames
+	}
+	if src.CaseInsensitivePath != nil {
+		target.CaseInsensitivePath = *src.CaseInsensitivePath
+	}
+	if len(src.IncludedQueryParamValues) > 0 {
+		if target.IncludedQueryParamValues == nil {
+			target.IncludedQueryParamValues = make(map[string][]string, len(src.IncludedQueryParamValues))
+		}
+		for k, v := range src.IncludedQueryParamValues {
+			target.IncludedQueryParamValues[k] = slices.Clone(v)
+		}
 	}
 	return nil
 }
