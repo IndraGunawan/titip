@@ -9,8 +9,6 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
-
-	"github.com/indragunawan/titip/storage"
 )
 
 func init() {
@@ -51,7 +49,7 @@ type App struct {
 	// UseRewrittenURL uses the rewritten request URL rather than client original request URL.
 	UseRewrittenURL *bool `json:"use_rewritten_url,omitempty"`
 
-	storage storage.Storage
+	storageMod StorageModule
 }
 
 // CaddyModule returns the Caddy module information.
@@ -73,7 +71,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 		if !ok {
 			return fmt.Errorf("titip: global storage module does not implement StorageModule")
 		}
-		a.storage = sm.Storage()
+		a.storageMod = sm
 	}
 	return nil
 }
@@ -90,8 +88,10 @@ func (a *App) Stop() error {
 
 // Cleanup implements caddy.CleanerUpper.
 func (a *App) Cleanup() error {
-	if a.storage != nil {
-		_ = a.storage.Close()
+	if a.storageMod != nil {
+		if s := a.storageMod.Storage(); s != nil {
+			_ = s.Close()
+		}
 	}
 	return nil
 }

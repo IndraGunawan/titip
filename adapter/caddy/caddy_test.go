@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
+	"github.com/indragunawan/titip"
 	"github.com/pierrec/lz4/v4"
 	"go.uber.org/zap/zapcore"
 )
@@ -1432,5 +1434,353 @@ func TestCaddyHandler_IncludedQueryParamValues_LiveExecution(t *testing.T) {
 		t.Fatalf("expected cache HIT for format=json, got %d", originCalls.Load())
 	}
 }
+
+func TestCaddyHandler_KeyConfig_SmartExcludeQueryStringInheritance(t *testing.T) {
+	t.Parallel()
+
+	boolPtr := func(b bool) *bool { return &b }
+
+	// Baseline global config with ExcludeQueryString: true
+	globalKey := &KeyConfig{
+		ExcludeQueryString: boolPtr(true),
+	}
+
+	// 1. Route defines IncludedQueryParamValues without ExcludeQueryString -> ExcludeQueryString should become false
+	t.Run("RouteWithIncludedQueryParamValues", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+		if !target.ExcludeQueryString {
+			t.Fatalf("expected global ExcludeQueryString to be true")
+		}
+
+		routeKey := &KeyConfig{
+			IncludedQueryParamValues: map[string][]string{
+				"layout": {"marketplace"},
+			},
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if target.ExcludeQueryString {
+			t.Errorf("expected route whitelist to automatically deactivate ExcludeQueryString, got true")
+		}
+		if len(target.IncludedQueryParamValues["layout"]) != 1 || target.IncludedQueryParamValues["layout"][0] != "marketplace" {
+			t.Errorf("expected IncludedQueryParamValues to be populated, got: %v", target.IncludedQueryParamValues)
+		}
+	})
+
+	// 2. Route defines IncludedQueryParams without ExcludeQueryString -> ExcludeQueryString should become false
+	t.Run("RouteWithIncludedQueryParams", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+		if !target.ExcludeQueryString {
+			t.Fatalf("expected global ExcludeQueryString to be true")
+		}
+
+		routeKey := &KeyConfig{
+			IncludedQueryParams: []string{"page", "sort"},
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if target.ExcludeQueryString {
+			t.Errorf("expected route whitelist to automatically deactivate ExcludeQueryString, got true")
+		}
+		if len(target.IncludedQueryParams) != 2 {
+			t.Errorf("expected 2 IncludedQueryParams, got: %v", target.IncludedQueryParams)
+		}
+	})
+
+	// 3. Route defines no whitelist and no ExcludeQueryString -> ExcludeQueryString remains true
+	t.Run("RouteWithoutWhitelist", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+
+		routeKey := &KeyConfig{
+			CaseInsensitivePath: boolPtr(true),
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if !target.ExcludeQueryString {
+			t.Errorf("expected ExcludeQueryString to remain true when route has no whitelist, got false")
+		}
+		if !target.CaseInsensitivePath {
+			t.Errorf("expected CaseInsensitivePath to be true, got false")
+		}
+	})
+
+	// 4. Route defines whitelist but explicitly sets ExcludeQueryString: true -> Explicit choice honored
+	t.Run("RouteExplicitExcludeQueryStringTrue", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+
+		routeKey := &KeyConfig{
+			ExcludeQueryString: boolPtr(true),
+			IncludedQueryParamValues: map[string][]string{
+				"layout": {"marketplace"},
+			},
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if !target.ExcludeQueryString {
+			t.Errorf("expected explicit ExcludeQueryString=true on route to take precedence, got false")
+		}
+	})
+
+	// 5. Route defines whitelist and explicitly sets ExcludeQueryString: false -> Explicit choice honored
+	t.Run("RouteExplicitExcludeQueryStringFalse", func(t *testing.T) {
+		target := titip.KeyConfig{}
+		_ = applyKeyConfig(&target, globalKey)
+
+		routeKey := &KeyConfig{
+			ExcludeQueryString:  boolPtr(false),
+			IncludedQueryParams: []string{"page"},
+		}
+		_ = applyKeyConfig(&target, routeKey)
+		if target.ExcludeQueryString {
+			t.Errorf("expected explicit ExcludeQueryString=false on route to take precedence, got true")
+		}
+	})
+}
+
+type testCaptureLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+	level   slog.Level
+}
+
+func (c *testCaptureLogHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= c.level
+}
+
+func (c *testCaptureLogHandler) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, r.Clone())
+	return nil
+}
+
+func (c *testCaptureLogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return c }
+func (c *testCaptureLogHandler) WithGroup(_ string) slog.Handler      { return c }
+
+func TestCaddyHandler_ModuleLifecycleLogging(t *testing.T) {
+	t.Parallel()
+
+	capture := &testCaptureLogHandler{level: slog.LevelDebug}
+	testLogger := slog.New(capture)
+
+	d := caddyfile.NewTestDispenser(`titip {
+		storage test
+	}`)
+	var h Handler
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	h.logger = testLogger
+
+	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
+	defer cancel()
+
+	if err := h.Provision(ctx); err != nil {
+		t.Fatalf("provision error: %v", err)
+	}
+
+	capture.mu.Lock()
+	records := slices.Clone(capture.records)
+	capture.mu.Unlock()
+
+	var foundInit, foundRegister bool
+	for _, r := range records {
+		if r.Level == slog.LevelInfo && r.Message == "module initialized" {
+			foundInit = true
+			var storageAttr string
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "storage" {
+					storageAttr = a.Value.String()
+				}
+				return true
+			})
+			if storageAttr != "test" {
+				t.Errorf("expected storage 'test', got %q", storageAttr)
+			}
+		}
+		if r.Level == slog.LevelDebug && r.Message == "module registered" {
+			foundRegister = true
+			var idAttr string
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "id" {
+					idAttr = a.Value.String()
+				}
+				return true
+			})
+			if idAttr != h.id {
+				t.Errorf("expected id %q, got %q", h.id, idAttr)
+			}
+		}
+	}
+
+	if !foundInit {
+		t.Errorf("expected INFO 'module initialized' log record")
+	}
+	if !foundRegister {
+		t.Errorf("expected DEBUG 'module registered' log record")
+	}
+
+	// Test Cleanup
+	if err := h.Cleanup(); err != nil {
+		t.Fatalf("cleanup error: %v", err)
+	}
+
+	capture.mu.Lock()
+	cleanupRecords := slices.Clone(capture.records)
+	capture.mu.Unlock()
+
+	var foundCleanup bool
+	for _, r := range cleanupRecords {
+		if r.Level == slog.LevelDebug && r.Message == "module cleaned up" {
+			foundCleanup = true
+			var idAttr string
+			r.Attrs(func(a slog.Attr) bool {
+				if a.Key == "id" {
+					idAttr = a.Value.String()
+				}
+				return true
+			})
+			if idAttr != h.id {
+				t.Errorf("expected cleanup id %q, got %q", h.id, idAttr)
+			}
+		}
+	}
+	if !foundCleanup {
+		t.Errorf("expected DEBUG 'module cleaned up' log record")
+	}
+}
+
+func TestCaddyHandler_GlobalExcludeQueryString_RouteWhitelistOverride_LiveExecution(t *testing.T) {
+	var originCalls atomic.Int64
+	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "content for %s (call %d)", r.URL.Path, originCalls.Load())
+	}))
+	defer originServer.Close()
+
+	originURL, err := url.Parse(originServer.URL)
+	if err != nil {
+		t.Fatalf("parse origin url: %v", err)
+	}
+
+	caddyfileInput := fmt.Sprintf(`{
+		admin off
+		skip_install_trust
+		log {
+			output discard
+		}
+		titip {
+			storage test
+			key {
+				exclude_query_string true
+			}
+		}
+	}
+	:18094 {
+		route {
+			handle /items/* {
+				titip {
+					key {
+						included_query_param_values format json
+					}
+				}
+				reverse_proxy %s
+			}
+
+			handle /blog/* {
+				titip
+				reverse_proxy %s
+			}
+		}
+	}`, originURL.Host, originURL.Host)
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+	if cadAdapter == nil {
+		t.Fatalf("caddyfile adapter not registered")
+	}
+	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+	if err != nil {
+		t.Fatalf("adapt failed: %v", err)
+	}
+
+	cfg := new(caddymain.Config)
+	if err := json.Unmarshal(jsonBytes, cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if err := caddymain.Run(cfg); err != nil {
+		t.Fatalf("caddy run failed: %v", err)
+	}
+	defer func() {
+		_ = caddymain.Stop()
+	}()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// 1. /items with format=json -> Call 1 (MISS)
+	resp1, err := client.Get("http://localhost:18094/items/detail?format=json")
+	if err != nil {
+		t.Fatalf("req 1 failed: %v", err)
+	}
+	_ = resp1.Body.Close()
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected originCalls=1, got %d", originCalls.Load())
+	}
+
+	// /items with format=json again -> HIT (originCalls stays 1)
+	resp2, err := client.Get("http://localhost:18094/items/detail?format=json")
+	if err != nil {
+		t.Fatalf("req 2 failed: %v", err)
+	}
+	_ = resp2.Body.Close()
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cache HIT for format=json (originCalls stays 1), got %d", originCalls.Load())
+	}
+
+	// 2. /items with unlisted format=xml -> pruned, so it collapses to /items/detail (Call 2)
+	resp3, err := client.Get("http://localhost:18094/items/detail?format=xml")
+	if err != nil {
+		t.Fatalf("req 3 failed: %v", err)
+	}
+	_ = resp3.Body.Close()
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected originCalls=2 for unlisted format=xml, got %d", originCalls.Load())
+	}
+
+	// Second request for unlisted format=xml -> HIT on default /items/detail (originCalls stays 2)
+	resp4, err := client.Get("http://localhost:18094/items/detail?format=xml")
+	if err != nil {
+		t.Fatalf("req 4 failed: %v", err)
+	}
+	_ = resp4.Body.Close()
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected cache HIT for second format=xml (originCalls stays 2), got %d", originCalls.Load())
+	}
+
+	// 3. /blog with query -> query stripped per global exclude_query_string: true (Call 3)
+	respBlog1, err := client.Get("http://localhost:18094/blog/post?token=123")
+	if err != nil {
+		t.Fatalf("blog req 1 failed: %v", err)
+	}
+	_ = respBlog1.Body.Close()
+	if originCalls.Load() != 3 {
+		t.Fatalf("expected originCalls=3 on first blog request, got %d", originCalls.Load())
+	}
+
+	// /blog with different query token -> HIT on stripped /blog/post (originCalls stays 3)
+	respBlog2, err := client.Get("http://localhost:18094/blog/post?token=456")
+	if err != nil {
+		t.Fatalf("blog req 2 failed: %v", err)
+	}
+	_ = respBlog2.Body.Close()
+	if originCalls.Load() != 3 {
+		t.Fatalf("expected cache hit on blog with different query string (originCalls stays 3), got %d", originCalls.Load())
+	}
+}
+
 
 

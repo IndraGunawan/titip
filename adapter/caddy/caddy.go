@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -144,6 +145,7 @@ type Handler struct {
 	engine          *titip.Titip
 	id              string
 	useRewrittenURL bool
+	logger          *slog.Logger
 }
 
 // CaddyModule returns the Caddy module information.
@@ -157,6 +159,9 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the Titip caching engine and guest storage module.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	h.id = fmt.Sprintf("titip-%p", h)
+	if h.logger == nil {
+		h.logger = ctx.Slogger()
+	}
 
 	// Check for global App defaults
 	var app *App
@@ -182,8 +187,8 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 		h.storageMod = sMod
 		store = sMod.Storage()
-	} else if app != nil && app.storage != nil {
-		store = app.storage
+	} else if app != nil && app.storageMod != nil {
+		store = app.storageMod.Storage()
 	} else {
 		return fmt.Errorf("titip: storage configuration is required (neither route nor global storage provided)")
 	}
@@ -198,14 +203,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		titip.WithMetrics(ctx.GetMetricsRegistry()),
 	}
 
-	func() {
-		defer func() {
-			_ = recover()
-		}()
-		if l := ctx.Slogger(); l != nil {
-			opts = append(opts, titip.WithLogger(l))
-		}
-	}()
+	if h.logger != nil {
+		opts = append(opts, titip.WithLogger(h.logger))
+	}
 
 	// Cache-Status header mode (inherit from app if not set)
 	cacheStatus := h.CacheStatus
@@ -373,6 +373,38 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.engine = engine
 	registerEngine(h.id, engine)
 
+	storageName := "unknown"
+	if h.storageMod != nil {
+		if mod, ok := h.storageMod.(caddy.Module); ok {
+			storageName = strings.TrimPrefix(string(mod.CaddyModule().ID), "titip.storage.")
+		}
+	} else if app != nil && app.storageMod != nil {
+		if mod, ok := app.storageMod.(caddy.Module); ok {
+			storageName = strings.TrimPrefix(string(mod.CaddyModule().ID), "titip.storage.")
+		}
+	}
+	if storageName == "unknown" && store != nil {
+		tName := strings.TrimPrefix(fmt.Sprintf("%T", store), "*")
+		if idx := strings.Index(tName, "."); idx != -1 {
+			storageName = strings.ToLower(tName[:idx])
+		} else {
+			storageName = strings.ToLower(tName)
+		}
+	}
+
+	if h.logger != nil {
+		if h.logger.Enabled(ctx, slog.LevelInfo) {
+			h.logger.InfoContext(ctx, "module initialized",
+				slog.String("storage", storageName),
+			)
+		}
+		if h.logger.Enabled(ctx, slog.LevelDebug) {
+			h.logger.DebugContext(ctx, "module registered",
+				slog.String("id", h.id),
+			)
+		}
+	}
+
 	return nil
 }
 
@@ -387,6 +419,11 @@ func (h *Handler) Validate() error {
 // Cleanup gracefully shuts down the caching engine.
 func (h *Handler) Cleanup() error {
 	unregisterEngine(h.id)
+	if h.logger != nil && h.logger.Enabled(context.Background(), slog.LevelDebug) {
+		h.logger.DebugContext(context.Background(), "module cleaned up",
+			slog.String("id", h.id),
+		)
+	}
 	if h.engine != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -783,6 +820,8 @@ func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
 	}
 	if src.ExcludeQueryString != nil {
 		target.ExcludeQueryString = *src.ExcludeQueryString
+	} else if len(src.IncludedQueryParams) > 0 || len(src.IncludedQueryParamValues) > 0 {
+		target.ExcludeQueryString = false
 	}
 	if src.DisableQueryStringSort != nil {
 		target.DisableQueryStringSort = *src.DisableQueryStringSort
