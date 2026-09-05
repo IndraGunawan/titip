@@ -2,6 +2,7 @@ package titip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -35,7 +36,7 @@ func New(opts ...Option) (*Titip, error) {
 		convertHeadToGet:          true,
 		keyConfig:                 KeyConfig{},
 		tagHeaderName:             headerCacheTag,
-		originTimeout:             30 * time.Second,
+		backgroundFetchTimeout:    125 * time.Second,
 		storageTimeout:            1 * time.Second,
 		logger:                    slog.Default(),
 		esi: esi.Config{
@@ -224,16 +225,25 @@ func (t *Titip) Close(ctx context.Context) error {
 		close(done)
 	}()
 
+	var waitErr error
 	select {
 	case <-done:
 	case <-ctx.Done():
-		if t.logger.Enabled(ctx, slog.LevelWarn) {
-			t.logger.WarnContext(ctx, "close timeout waiting for background swr tasks", slog.Any("error", ctx.Err()))
+		select {
+		case <-done:
+		default:
+			waitErr = fmt.Errorf("titip: close timeout waiting for background swr tasks: %w", ctx.Err())
+			if t.logger.Enabled(ctx, slog.LevelWarn) {
+				t.logger.WarnContext(ctx, "close timeout waiting for background swr tasks", slog.Any("error", ctx.Err()))
+			}
 		}
 	}
 
 	if err := t.storage.Close(); err != nil {
+		if waitErr != nil {
+			return errors.Join(waitErr, fmt.Errorf("titip: storage close error: %w", err))
+		}
 		return fmt.Errorf("titip: storage close error: %w", err)
 	}
-	return nil
+	return waitErr
 }

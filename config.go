@@ -60,7 +60,7 @@ type config struct {
 	autoInvalidateMutatingMethods bool
 	keyConfig                     KeyConfig
 	tagHeaderName                 string
-	originTimeout                 time.Duration
+	backgroundFetchTimeout        time.Duration
 	storageTimeout                time.Duration
 	esi                           esi.Config
 }
@@ -144,10 +144,12 @@ func WithTagHeaderName(name string) Option {
 	}
 }
 
-// WithOriginTimeout configures maximum origin fetch timeout (defaults to 30s).
-func WithOriginTimeout(d time.Duration) Option {
+// WithBackgroundFetchTimeout configures the maximum timeout for asynchronous background revalidation
+// (stale-while-revalidate) origin fetches (defaults to 125s).
+// Set to 0 or negative to disable background timeout enforcement.
+func WithBackgroundFetchTimeout(d time.Duration) Option {
 	return func(c *config) {
-		c.originTimeout = d
+		c.backgroundFetchTimeout = d
 	}
 }
 

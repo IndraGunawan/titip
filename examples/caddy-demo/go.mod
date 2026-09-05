@@ -71,8 +71,8 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/indragunawan/titip v0.0.0 // indirect
-	github.com/indragunawan/titip/storage/redis v0.0.0 // indirect
+	github.com/indragunawan/titip v0.1.0 // indirect
+	github.com/indragunawan/titip/storage/redis v0.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.9.2 // indirect
