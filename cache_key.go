@@ -236,27 +236,6 @@ func buildQueryString(r *http.Request, cfg *KeyConfig) string {
 	return buildSortedQueryString(r, cfg)
 }
 
-// isQueryAllowed reports whether query param k should be included per cfg.
-func isQueryAllowed(k string, cfg *KeyConfig) bool {
-	hasWhitelist := len(cfg.IncludedQueryParams) > 0 || len(cfg.IncludedQueryParamValues) > 0
-	if hasWhitelist {
-		if slices.Contains(cfg.IncludedQueryParams, k) {
-			return true
-		}
-		if _, ok := cfg.IncludedQueryParamValues[k]; ok {
-			return true
-		}
-		return false
-	}
-	if slices.Contains(cfg.ExcludedQueryParams, k) {
-		return false
-	}
-	if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, strings.ToLower(k)) {
-		return false
-	}
-	return true
-}
-
 // isQueryParamAllowed reports whether query param k with value v should be included per cfg.
 func isQueryParamAllowed(k, v string, cfg *KeyConfig) bool {
 	hasWhitelist := len(cfg.IncludedQueryParams) > 0 || len(cfg.IncludedQueryParamValues) > 0

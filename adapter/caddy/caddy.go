@@ -383,10 +383,10 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			storageName = strings.TrimPrefix(string(mod.CaddyModule().ID), "titip.storage.")
 		}
 	}
-	if storageName == "unknown" && store != nil {
+	if storageName == "unknown" {
 		tName := strings.TrimPrefix(fmt.Sprintf("%T", store), "*")
-		if idx := strings.Index(tName, "."); idx != -1 {
-			storageName = strings.ToLower(tName[:idx])
+		if before, _, ok := strings.Cut(tName, "."); ok {
+			storageName = strings.ToLower(before)
 		} else {
 			storageName = strings.ToLower(tName)
 		}
