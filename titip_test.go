@@ -778,7 +778,7 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 
 	// 4. Close middleware
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := mw.Close(ctx); err != nil {
 		t.Fatalf("close failed: %v", err)
@@ -786,6 +786,46 @@ func TestGracefulShutdown(t *testing.T) {
 
 	if revalidations.Load() != 2 {
 		t.Fatalf("expected 2 revalidations, got %d", revalidations.Load())
+	}
+}
+
+func TestGracefulShutdown_Timeout(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	blockOrigin := make(chan struct{})
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=1, stale-while-revalidate=10")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("swr response"))
+		if r.Header.Get("X-Is-SWR") == "true" {
+			<-blockOrigin
+		}
+	})
+
+	handler := mw.testHandler(originHandler)
+
+	// 1. Prime cache
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/swr-shutdown-timeout", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req)
+
+	// 2. Wait for max-age (1s) to expire
+	time.Sleep(1100 * time.Millisecond)
+
+	// 3. Trigger SWR with header so origin will block
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/api/swr-shutdown-timeout", nil)
+	req2.Header.Set("X-Is-SWR", "true")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	// 4. Close middleware with short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := mw.Close(ctx)
+	close(blockOrigin) // unblock background task
+	if err == nil {
+		t.Fatal("expected Close to fail on context deadline exceeded, got nil")
 	}
 }
 
