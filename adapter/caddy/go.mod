@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/caddyserver/caddy/v2 v2.11.4
 	github.com/indragunawan/titip v0.1.0
+	github.com/pierrec/lz4/v4 v4.1.29
 	go.uber.org/zap v1.28.0
 )
 
@@ -85,7 +86,6 @@ require (
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
-	github.com/pierrec/lz4/v4 v4.1.29 // indirect
 	github.com/pires/go-proxyproto v0.12.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pquerna/cachecontrol v0.2.0 // indirect

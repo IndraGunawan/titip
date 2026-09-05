@@ -1,6 +1,7 @@
 package caddy
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
@@ -18,12 +19,29 @@ type TestStorage struct {
 	store *teststore.Store
 }
 
+var (
+	lastTestStoreMu sync.Mutex
+	lastTestStore   *teststore.Store
+)
+
 // CaddyModule returns the Caddy module information.
 func (TestStorage) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "titip.storage.test",
-		New: func() caddy.Module { return &TestStorage{store: teststore.New()} },
+		ID: "titip.storage.test",
+		New: func() caddy.Module {
+			s := teststore.New()
+			lastTestStoreMu.Lock()
+			lastTestStore = s
+			lastTestStoreMu.Unlock()
+			return &TestStorage{store: s}
+		},
 	}
+}
+
+func getLastTestStore() *teststore.Store {
+	lastTestStoreMu.Lock()
+	defer lastTestStoreMu.Unlock()
+	return lastTestStore
 }
 
 // Provision initializes the test store.
