@@ -76,6 +76,7 @@ jobs:
           done
 
           # Ensure root go.mod is tidy and workspace builds cleanly
+          go work sync
           go mod tidy
           go build ./...
 
