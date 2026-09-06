@@ -138,7 +138,7 @@ Pass any of the following functional options to `titip.New(...)`:
 | :--- | :--- | :--- | :--- |
 | `WithStorage(s)` | `storage.Storage` | *(Required)* | Storage backend implementation (e.g. `storage/redis`). |
 | `WithCacheStatusMode(mode)` | `CacheStatusMode` | `CacheStatusSimpleToken` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimpleToken`, or `CacheStatusNone`). |
-| `WithKeyConfig(cfg)` | `KeyConfig` | `{}` (standard) | Primary cache key generation rules and query parameter filtering. |
+| `WithCacheKey(cfg)` | `CacheKey` | `{}` (standard) | Primary cache key generation rules and query parameter filtering. |
 | `WithTagHeaderName(name)` | `string` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
 | `WithBackgroundFetchTimeout(d)` | `time.Duration` | `125s` | Maximum timeout budget for background revalidations (`stale-while-revalidate`). |
 | `WithStorageTimeout(d)` | `time.Duration` | `1s` | Maximum time budget for storage reads/writes before fail-open bypass. |
@@ -151,15 +151,15 @@ Pass any of the following functional options to `titip.New(...)`:
 
 ## Cache Key & Query Parameter Normalization
 
-Titip constructs normalized cache keys directly without expensive hashing. Use `KeyConfig` to filter query parameters and strip tracking tags to prevent cache fragmentation:
+Titip constructs normalized cache keys directly without expensive hashing. Use `CacheKey` to filter query parameters and strip tracking tags to prevent cache fragmentation:
 
 ```go
 cache, err := titip.New(
     titip.WithStorage(store),
-    titip.WithKeyConfig(titip.KeyConfig{
+    titip.WithCacheKey(titip.CacheKey{
         // Strips marketing query parameters (utm_*, fbclid, gclid, mc_eid, etc.)
         ExcludeMarketingParams: true,
-        // Whitelist specific query parameters to include (or use ExcludedQueryParams for a blacklist)
+        // Allowlist specific query parameters to include (or use ExcludedQueryParams for a denylist)
         IncludedQueryParams:    []string{"page", "sort", "filter"},
     }),
 )
@@ -273,7 +273,7 @@ cache, err := titip.New(
 | `esi.WithMaxTimeout(duration)` | `30s` | Maximum time budget per fragment include fetch. |
 | `esi.WithMaxConcurrentRequests(int)` | `8` | Maximum concurrent fetch goroutines per document. |
 | `esi.WithAllowPrivateIPs(bool)` | `false` | SSRF guard: when false (default), blocks RFC 1918 / loopback / cloud metadata CIDRs. |
-| `esi.WithAllowedHosts(...string)` | `[]` | Whitelist for external domain includes (empty allows all public hosts). |
+| `esi.WithAllowedHosts(...string)` | `[]` | List of allowed external hosts for domain includes (empty allows all public hosts). |
 | `esi.WithAllowPrivateIPsForAllowedHosts(bool)` | `false` | Permits private IPs specifically for explicitly allowed hosts. |
 | `esi.WithMaxResponseSize(int64)` | `10MB` | Maximum allowed fragment body size in bytes. |
 | `esi.WithDisableForwardCookies(bool)` | `false` | When false (default), forwards `Set-Cookie` headers from fragments to the client. |

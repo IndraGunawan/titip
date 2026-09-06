@@ -32,12 +32,12 @@ func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 	}
 
 	expectedAddrs := []string{"127.0.0.1:6379", "127.0.0.1:6380", "127.0.0.1:6381"}
-	if len(r.Addresses) != len(expectedAddrs) {
-		t.Fatalf("expected %d addresses, got %v", len(expectedAddrs), r.Addresses)
+	if len(r.Address) != len(expectedAddrs) {
+		t.Fatalf("expected %d addresses, got %v", len(expectedAddrs), r.Address)
 	}
 	for i, addr := range expectedAddrs {
-		if r.Addresses[i] != addr {
-			t.Errorf("address[%d] expected %q, got %q", i, addr, r.Addresses[i])
+		if r.Address[i] != addr {
+			t.Errorf("address[%d] expected %q, got %q", i, addr, r.Address[i])
 		}
 	}
 
@@ -61,7 +61,7 @@ func TestRedisStorage_UnmarshalCaddyfile(t *testing.T) {
 func TestRedisStorage_ProvisionAndCleanup(t *testing.T) {
 	addr := getTestRedisAddr()
 	r := &RedisStorage{
-		Addresses: []string{addr},
+		Address:   []string{addr},
 		KeyPrefix: "caddy_test:",
 	}
 

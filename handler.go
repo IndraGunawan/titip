@@ -116,7 +116,7 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 
 // 2. stateLookupMetadata: Generates Primary Key and looks up Stage 1 metadata in Redis
 func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
-	ctx.primaryKey = generatePrimaryKey(ctx.r, &t.cfg.keyConfig)
+	ctx.primaryKey = generatePrimaryKey(ctx.r, &t.cfg.cacheKey)
 
 	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.storageTimeout)
 	meta, isSoftPurged, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)

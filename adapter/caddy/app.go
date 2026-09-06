@@ -40,8 +40,8 @@ type App struct {
 	// StorageTimeout specifies the default timeout for storage operations.
 	StorageTimeout string `json:"storage_timeout,omitempty"`
 
-	// KeyConfig defines default cache key generation rules.
-	KeyConfig *KeyConfig `json:"key_config,omitempty"`
+	// CacheKey defines default cache key generation rules.
+	CacheKey *CacheKey `json:"cache_key,omitempty"`
 
 	// ESI defines default Edge Side Includes parameters.
 	ESI *ESIConfig `json:"esi,omitempty"`
@@ -162,12 +162,12 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 				}
 				app.StorageTimeout = d.Val()
 
-			case "key", "key_config":
-				kc := new(KeyConfig)
-				if err := kc.unmarshalCaddyfile(d); err != nil {
+			case "cache_key":
+				ck := new(CacheKey)
+				if err := ck.unmarshalCaddyfile(d); err != nil {
 					return nil, err
 				}
-				app.KeyConfig = kc
+				app.CacheKey = ck
 
 			case "esi":
 				esi := new(ESIConfig)

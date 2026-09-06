@@ -1548,7 +1548,7 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 	}
 
 	// 2. Simulate microsecond glitch: Metadata is present, but GetVariant returns nil (body evicted)
-	primaryKey := generatePrimaryKey(req1, &KeyConfig{})
+	primaryKey := generatePrimaryKey(req1, &CacheKey{})
 	meta, _, err := store.GetMeta(context.Background(), primaryKey)
 	if err != nil || meta == nil {
 		t.Fatalf("expected metadata in storage, got err=%v meta=%v", err, meta)

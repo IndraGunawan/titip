@@ -29,6 +29,9 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
         }
         cache_status rfc9211
         background_fetch_timeout 125s
+        cache_key {
+            exclude_marketing_params true
+        }
         esi {
             enabled true
             max_depth 3
@@ -53,7 +56,7 @@ You can also configure `titip` locally or override specific settings per route:
 
 ```caddyfile
 :8080 {
-    # Route with custom storage prefix override:
+    # Route with custom storage prefix and cache_key override:
     handle /api/* {
         titip {
             storage redis {
@@ -61,6 +64,10 @@ You can also configure `titip` locally or override specific settings per route:
                 key_prefix api_cache:
             }
             cache_status rfc9211
+            cache_key {
+                included_query_params id format page
+                exclude_marketing_params true
+            }
         }
         reverse_proxy localhost:9000
     }
@@ -73,6 +80,24 @@ You can also configure `titip` locally or override specific settings per route:
 }
 ```
 
+### Cache Key Directive Reference
+
+Configure cache key assembly inside the `cache_key { ... }` block:
+
+| Subdirective | Default | Description |
+| :--- | :--- | :--- |
+| `include_protocol <bool>` | `false` | Include scheme (`http://` vs `https://`) in the cache key. |
+| `exclude_host <bool>` | `false` | Exclude hostname from the cache key. |
+| `exclude_query_string <bool>` | `false` | Ignore all query parameters entirely. |
+| `disable_query_string_sort <bool>` | `false` | Preserve raw query string order instead of sorting alphabetically. |
+| `included_query_params <names...>` | `(all)` | Allowlist of query parameters to keep in the cache key. |
+| `excluded_query_params <names...>` | `(none)` | Denylist of query parameters to exclude from the cache key. |
+| `exclude_marketing_params <bool>` | `false` | Strip common tracking parameters (`utm_*`, `fbclid`, `gclid`, etc.). |
+| `included_query_param_values <param> <vals...>` | `(none)` | Allowlist specific accepted values for a query parameter. |
+| `included_header_names <names...>` | `(none)` | Include specific request header values in the primary key. |
+| `included_cookie_names <names...>` | `(none)` | Include specific cookie values in the primary key. |
+| `case_insensitive_path <bool>` | `false` | Lowercase URL path for case-insensitive matching. |
+
 ### ESI Directive Reference
 
 | Subdirective | Default | Description |
@@ -83,7 +108,7 @@ You can also configure `titip` locally or override specific settings per route:
 | `max_timeout <duration>` | `30s` | Maximum time budget for fetching individual fragment includes. |
 | `max_concurrent_requests <int>` | `8` | Maximum concurrent fetch goroutines per document. |
 | `block_private_ips <bool>` | `true` | SSRF protection: block private/loopback/cloud metadata IPs on external includes. |
-| `allowed_hosts <hosts...>` | `(all)` | Whitelist of allowed external hosts for ESI includes. |
+| `allowed_hosts <hosts...>` | `(all)` | List of allowed external hosts for ESI includes. |
 | `forward_fragment_cookies <bool>` | `true` | Forward `Set-Cookie` headers from fragments to downstream client. |
 
 ## 3. Caddy Admin Purge API (`POST /titip/purge`)

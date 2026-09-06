@@ -298,12 +298,12 @@ func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
 	}
 }
 
-func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
+func TestCaddyHandler_CacheKey_UnmarshalCaddyfile(t *testing.T) {
 	t.Parallel()
 	config := `titip {
 		storage test
 		use_rewritten_url true
-		key {
+		cache_key {
 			include_protocol false
 			exclude_host true
 			exclude_query_string false
@@ -327,46 +327,46 @@ func TestCaddyHandler_KeyConfig_UnmarshalCaddyfile(t *testing.T) {
 	if h.UseRewrittenURL == nil || *h.UseRewrittenURL != true {
 		t.Errorf("expected UseRewrittenURL true, got %v", h.UseRewrittenURL)
 	}
-	if h.Key == nil {
-		t.Fatalf("expected Key config to be populated")
+	if h.CacheKey == nil {
+		t.Fatalf("expected CacheKey config to be populated")
 	}
-	if h.Key.IncludeProtocol == nil || *h.Key.IncludeProtocol != false {
-		t.Errorf("expected IncludeProtocol false, got %v", h.Key.IncludeProtocol)
+	if h.CacheKey.IncludeProtocol == nil || *h.CacheKey.IncludeProtocol != false {
+		t.Errorf("expected IncludeProtocol false, got %v", h.CacheKey.IncludeProtocol)
 	}
-	if h.Key.ExcludeHost == nil || *h.Key.ExcludeHost != true {
-		t.Errorf("expected ExcludeHost true, got %v", h.Key.ExcludeHost)
+	if h.CacheKey.ExcludeHost == nil || *h.CacheKey.ExcludeHost != true {
+		t.Errorf("expected ExcludeHost true, got %v", h.CacheKey.ExcludeHost)
 	}
-	if h.Key.ExcludeQueryString == nil || *h.Key.ExcludeQueryString != false {
-		t.Errorf("expected ExcludeQueryString false, got %v", h.Key.ExcludeQueryString)
+	if h.CacheKey.ExcludeQueryString == nil || *h.CacheKey.ExcludeQueryString != false {
+		t.Errorf("expected ExcludeQueryString false, got %v", h.CacheKey.ExcludeQueryString)
 	}
-	if len(h.Key.IncludedQueryParams) != 3 || h.Key.IncludedQueryParams[0] != "id" {
-		t.Errorf("unexpected IncludedQueryParams: %v", h.Key.IncludedQueryParams)
+	if len(h.CacheKey.IncludedQueryParams) != 3 || h.CacheKey.IncludedQueryParams[0] != "id" {
+		t.Errorf("unexpected IncludedQueryParams: %v", h.CacheKey.IncludedQueryParams)
 	}
-	if len(h.Key.ExcludedQueryParams) != 1 || h.Key.ExcludedQueryParams[0] != "tracking" {
-		t.Errorf("unexpected ExcludedQueryParams: %v", h.Key.ExcludedQueryParams)
+	if len(h.CacheKey.ExcludedQueryParams) != 1 || h.CacheKey.ExcludedQueryParams[0] != "tracking" {
+		t.Errorf("unexpected ExcludedQueryParams: %v", h.CacheKey.ExcludedQueryParams)
 	}
-	if h.Key.ExcludeMarketingParams == nil || *h.Key.ExcludeMarketingParams != true {
-		t.Errorf("expected ExcludeMarketingParams true, got %v", h.Key.ExcludeMarketingParams)
+	if h.CacheKey.ExcludeMarketingParams == nil || *h.CacheKey.ExcludeMarketingParams != true {
+		t.Errorf("expected ExcludeMarketingParams true, got %v", h.CacheKey.ExcludeMarketingParams)
 	}
-	if len(h.Key.IncludedHeaderNames) != 2 || h.Key.IncludedHeaderNames[0] != "X-App-Version" {
-		t.Errorf("unexpected IncludedHeaderNames: %v", h.Key.IncludedHeaderNames)
+	if len(h.CacheKey.IncludedHeaderNames) != 2 || h.CacheKey.IncludedHeaderNames[0] != "X-App-Version" {
+		t.Errorf("unexpected IncludedHeaderNames: %v", h.CacheKey.IncludedHeaderNames)
 	}
-	if len(h.Key.IncludedCookieNames) != 1 || h.Key.IncludedCookieNames[0] != "session_currency" {
-		t.Errorf("unexpected IncludedCookieNames: %v", h.Key.IncludedCookieNames)
+	if len(h.CacheKey.IncludedCookieNames) != 1 || h.CacheKey.IncludedCookieNames[0] != "session_currency" {
+		t.Errorf("unexpected IncludedCookieNames: %v", h.CacheKey.IncludedCookieNames)
 	}
-	if h.Key.CaseInsensitivePath == nil || *h.Key.CaseInsensitivePath != true {
-		t.Errorf("expected CaseInsensitivePath true, got %v", h.Key.CaseInsensitivePath)
+	if h.CacheKey.CaseInsensitivePath == nil || *h.CacheKey.CaseInsensitivePath != true {
+		t.Errorf("expected CaseInsensitivePath true, got %v", h.CacheKey.CaseInsensitivePath)
 	}
-	if len(h.Key.IncludedQueryParamValues) != 1 || len(h.Key.IncludedQueryParamValues["format"]) != 2 {
-		t.Errorf("unexpected IncludedQueryParamValues: %v", h.Key.IncludedQueryParamValues)
+	if len(h.CacheKey.IncludedQueryParamValues) != 1 || len(h.CacheKey.IncludedQueryParamValues["format"]) != 2 {
+		t.Errorf("unexpected IncludedQueryParamValues: %v", h.CacheKey.IncludedQueryParamValues)
 	}
 }
 
-func TestCaddyHandler_KeyConfig_LiveExecution(t *testing.T) {
+func TestCaddyHandler_CacheKey_LiveExecution(t *testing.T) {
 	t.Parallel()
 	caddyfileInput := `titip {
 		storage test
-		key {
+		cache_key {
 			include_protocol false
 			exclude_host true
 			included_query_params id
@@ -690,9 +690,9 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 				max_depth 3
 				max_timeout 5s
 			}
-			key {
+			cache_key {
 				include_protocol true
-				query whitelist a b
+				included_query_params a b
 			}
 		}
 	}
@@ -795,9 +795,9 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 	}
 }
 
-// TestDeepMerge_ESIAndKeyConfig_Caddyfile verifies that route-level overrides
+// TestDeepMerge_ESIAndCacheKey_Caddyfile verifies that route-level overrides
 // in Caddyfile merge cleanly on top of global defaults during full Caddyfile compilation.
-func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
+func TestDeepMerge_ESIAndCacheKey_Caddyfile(t *testing.T) {
 	caddyfileInput := `{
 		admin off
 		skip_install_trust
@@ -814,9 +814,9 @@ func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 				max_timeout 5s
 				max_concurrent_requests 8
 			}
-			key {
+			cache_key {
 				include_protocol true
-				query whitelist a b
+				included_query_params a b
 			}
 		}
 	}
@@ -826,8 +826,8 @@ func TestDeepMerge_ESIAndKeyConfig_Caddyfile(t *testing.T) {
 				esi {
 					max_depth 10
 				}
-				key {
-					query whitelist a b c
+				cache_key {
+					included_query_params a b c
 				}
 			}
 			respond "Deep Merge Route" 200
@@ -1347,7 +1347,7 @@ func TestCaddyHandler_CaseInsensitivePath_LiveExecution(t *testing.T) {
 	t.Parallel()
 	caddyfileInput := `titip {
 		storage test
-		key {
+		cache_key {
 			case_insensitive_path true
 		}
 	}`
@@ -1385,7 +1385,7 @@ func TestCaddyHandler_IncludedQueryParamValues_LiveExecution(t *testing.T) {
 	t.Parallel()
 	caddyfileInput := `titip {
 		storage test
-		key {
+		cache_key {
 			included_query_param_values format json
 		}
 	}`
@@ -1435,32 +1435,32 @@ func TestCaddyHandler_IncludedQueryParamValues_LiveExecution(t *testing.T) {
 	}
 }
 
-func TestCaddyHandler_KeyConfig_SmartExcludeQueryStringInheritance(t *testing.T) {
+func TestCaddyHandler_CacheKey_SmartExcludeQueryStringInheritance(t *testing.T) {
 	t.Parallel()
 
 	boolPtr := func(b bool) *bool { return &b }
 
 	// Baseline global config with ExcludeQueryString: true
-	globalKey := &KeyConfig{
+	globalKey := &CacheKey{
 		ExcludeQueryString: boolPtr(true),
 	}
 
 	// 1. Route defines IncludedQueryParamValues without ExcludeQueryString -> ExcludeQueryString should become false
 	t.Run("RouteWithIncludedQueryParamValues", func(t *testing.T) {
-		target := titip.KeyConfig{}
-		_ = applyKeyConfig(&target, globalKey)
+		target := titip.CacheKey{}
+		_ = applyCacheKey(&target, globalKey)
 		if !target.ExcludeQueryString {
 			t.Fatalf("expected global ExcludeQueryString to be true")
 		}
 
-		routeKey := &KeyConfig{
+		routeKey := &CacheKey{
 			IncludedQueryParamValues: map[string][]string{
 				"layout": {"marketplace"},
 			},
 		}
-		_ = applyKeyConfig(&target, routeKey)
+		_ = applyCacheKey(&target, routeKey)
 		if target.ExcludeQueryString {
-			t.Errorf("expected route whitelist to automatically deactivate ExcludeQueryString, got true")
+			t.Errorf("expected route allowlist to automatically deactivate ExcludeQueryString, got true")
 		}
 		if len(target.IncludedQueryParamValues["layout"]) != 1 || target.IncludedQueryParamValues["layout"][0] != "marketplace" {
 			t.Errorf("expected IncludedQueryParamValues to be populated, got: %v", target.IncludedQueryParamValues)
@@ -1469,68 +1469,68 @@ func TestCaddyHandler_KeyConfig_SmartExcludeQueryStringInheritance(t *testing.T)
 
 	// 2. Route defines IncludedQueryParams without ExcludeQueryString -> ExcludeQueryString should become false
 	t.Run("RouteWithIncludedQueryParams", func(t *testing.T) {
-		target := titip.KeyConfig{}
-		_ = applyKeyConfig(&target, globalKey)
+		target := titip.CacheKey{}
+		_ = applyCacheKey(&target, globalKey)
 		if !target.ExcludeQueryString {
 			t.Fatalf("expected global ExcludeQueryString to be true")
 		}
 
-		routeKey := &KeyConfig{
+		routeKey := &CacheKey{
 			IncludedQueryParams: []string{"page", "sort"},
 		}
-		_ = applyKeyConfig(&target, routeKey)
+		_ = applyCacheKey(&target, routeKey)
 		if target.ExcludeQueryString {
-			t.Errorf("expected route whitelist to automatically deactivate ExcludeQueryString, got true")
+			t.Errorf("expected route allowlist to automatically deactivate ExcludeQueryString, got true")
 		}
 		if len(target.IncludedQueryParams) != 2 {
 			t.Errorf("expected 2 IncludedQueryParams, got: %v", target.IncludedQueryParams)
 		}
 	})
 
-	// 3. Route defines no whitelist and no ExcludeQueryString -> ExcludeQueryString remains true
-	t.Run("RouteWithoutWhitelist", func(t *testing.T) {
-		target := titip.KeyConfig{}
-		_ = applyKeyConfig(&target, globalKey)
+	// 3. Route defines no allowlist and no ExcludeQueryString -> ExcludeQueryString remains true
+	t.Run("RouteWithoutAllowlist", func(t *testing.T) {
+		target := titip.CacheKey{}
+		_ = applyCacheKey(&target, globalKey)
 
-		routeKey := &KeyConfig{
+		routeKey := &CacheKey{
 			CaseInsensitivePath: boolPtr(true),
 		}
-		_ = applyKeyConfig(&target, routeKey)
+		_ = applyCacheKey(&target, routeKey)
 		if !target.ExcludeQueryString {
-			t.Errorf("expected ExcludeQueryString to remain true when route has no whitelist, got false")
+			t.Errorf("expected ExcludeQueryString to remain true when route has no allowlist, got false")
 		}
 		if !target.CaseInsensitivePath {
 			t.Errorf("expected CaseInsensitivePath to be true, got false")
 		}
 	})
 
-	// 4. Route defines whitelist but explicitly sets ExcludeQueryString: true -> Explicit choice honored
+	// 4. Route defines allowlist but explicitly sets ExcludeQueryString: true -> Explicit choice honored
 	t.Run("RouteExplicitExcludeQueryStringTrue", func(t *testing.T) {
-		target := titip.KeyConfig{}
-		_ = applyKeyConfig(&target, globalKey)
+		target := titip.CacheKey{}
+		_ = applyCacheKey(&target, globalKey)
 
-		routeKey := &KeyConfig{
+		routeKey := &CacheKey{
 			ExcludeQueryString: boolPtr(true),
 			IncludedQueryParamValues: map[string][]string{
 				"layout": {"marketplace"},
 			},
 		}
-		_ = applyKeyConfig(&target, routeKey)
+		_ = applyCacheKey(&target, routeKey)
 		if !target.ExcludeQueryString {
 			t.Errorf("expected explicit ExcludeQueryString=true on route to take precedence, got false")
 		}
 	})
 
-	// 5. Route defines whitelist and explicitly sets ExcludeQueryString: false -> Explicit choice honored
+	// 5. Route defines allowlist and explicitly sets ExcludeQueryString: false -> Explicit choice honored
 	t.Run("RouteExplicitExcludeQueryStringFalse", func(t *testing.T) {
-		target := titip.KeyConfig{}
-		_ = applyKeyConfig(&target, globalKey)
+		target := titip.CacheKey{}
+		_ = applyCacheKey(&target, globalKey)
 
-		routeKey := &KeyConfig{
+		routeKey := &CacheKey{
 			ExcludeQueryString:  boolPtr(false),
 			IncludedQueryParams: []string{"page"},
 		}
-		_ = applyKeyConfig(&target, routeKey)
+		_ = applyCacheKey(&target, routeKey)
 		if target.ExcludeQueryString {
 			t.Errorf("expected explicit ExcludeQueryString=false on route to take precedence, got true")
 		}
@@ -1651,7 +1651,7 @@ func TestCaddyHandler_ModuleLifecycleLogging(t *testing.T) {
 	}
 }
 
-func TestCaddyHandler_GlobalExcludeQueryString_RouteWhitelistOverride_LiveExecution(t *testing.T) {
+func TestCaddyHandler_GlobalExcludeQueryString_RouteAllowlistOverride_LiveExecution(t *testing.T) {
 	var originCalls atomic.Int64
 	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		originCalls.Add(1)
@@ -1675,7 +1675,7 @@ func TestCaddyHandler_GlobalExcludeQueryString_RouteWhitelistOverride_LiveExecut
 		}
 		titip {
 			storage test
-			key {
+			cache_key {
 				exclude_query_string true
 			}
 		}
@@ -1684,7 +1684,7 @@ func TestCaddyHandler_GlobalExcludeQueryString_RouteWhitelistOverride_LiveExecut
 		route {
 			handle /items/* {
 				titip {
-					key {
+					cache_key {
 						included_query_param_values format json
 					}
 				}

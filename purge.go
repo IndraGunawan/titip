@@ -38,13 +38,13 @@ type purgeTarget struct {
 //   - "/assets/*"                  → wildcard directory purge
 //   - "https://example.com/api"    → host-scoped path sweep
 // parsePurgeTarget parses a raw purge target string into a structured purgeTarget,
-// respecting the active KeyConfig rules (query filters, sorting, trailing slashes, host exclusion).
-func parsePurgeTarget(target string, cfg *KeyConfig) (*purgeTarget, error) {
+// respecting the active CacheKey rules (query filters, sorting, trailing slashes, host exclusion).
+func parsePurgeTarget(target string, cfg *CacheKey) (*purgeTarget, error) {
 	if target == "" {
 		return nil, nil
 	}
 	if cfg == nil {
-		cfg = &KeyConfig{}
+		cfg = &CacheKey{}
 	}
 
 	pt := &purgeTarget{}
@@ -113,7 +113,7 @@ func parsePurgeTarget(target string, cfg *KeyConfig) (*purgeTarget, error) {
 	pt.path = cleanedPath
 
 	if !cfg.ExcludeQueryString && parsed.RawQuery != "" {
-		// Exact query variant — build filtered/sorted query string matching KeyConfig.
+		// Exact query variant — build filtered/sorted query string matching CacheKey.
 		fakeURL, _ := url.Parse("http://x?" + parsed.RawQuery)
 		fakeReq := &http.Request{
 			Method: http.MethodGet,
@@ -142,7 +142,7 @@ func parsePurgeTarget(target string, cfg *KeyConfig) (*purgeTarget, error) {
 //
 // When IncludeProtocol is true and no scheme is specified, two patterns are returned
 // (one for http, one for https) to honour the dual-protocol rule.
-func buildPurgePatterns(pt *purgeTarget, cfg *KeyConfig) []string {
+func buildPurgePatterns(pt *purgeTarget, cfg *CacheKey) []string {
 	if pt == nil {
 		return nil
 	}
@@ -165,7 +165,7 @@ func buildPurgePatterns(pt *purgeTarget, cfg *KeyConfig) []string {
 
 // buildExactKey constructs the full primary key string for exact-match purging.
 // This matches what generatePrimaryKey would produce for the same request.
-func buildExactKey(pt *purgeTarget, cfg *KeyConfig) string {
+func buildExactKey(pt *purgeTarget, cfg *CacheKey) string {
 	var sb strings.Builder
 	sb.WriteString("p=")
 	sb.WriteString(pt.path)
@@ -186,7 +186,7 @@ func buildExactKey(pt *purgeTarget, cfg *KeyConfig) string {
 }
 
 // buildSweepPatterns returns patterns that match a path and ALL its query/method/scheme variants.
-func buildSweepPatterns(pt *purgeTarget, cfg *KeyConfig) []string {
+func buildSweepPatterns(pt *purgeTarget, cfg *CacheKey) []string {
 	base := buildPathHostBase(pt, cfg)
 	qsSuffix := ""
 	if pt.query != "" {
@@ -210,7 +210,7 @@ func buildSweepPatterns(pt *purgeTarget, cfg *KeyConfig) []string {
 }
 
 // buildWildcardPatterns returns patterns that match all cached paths under a directory prefix.
-func buildWildcardPatterns(pt *purgeTarget, cfg *KeyConfig) []string {
+func buildWildcardPatterns(pt *purgeTarget, cfg *CacheKey) []string {
 	prefix := "p=" + pt.path
 	if pt.path != "/" {
 		prefix += "/"
@@ -235,7 +235,7 @@ func buildWildcardPatterns(pt *purgeTarget, cfg *KeyConfig) []string {
 }
 
 // buildPathHostBase builds the "p=<path>[:h=<host>]" prefix for sweep patterns.
-func buildPathHostBase(pt *purgeTarget, cfg *KeyConfig) string {
+func buildPathHostBase(pt *purgeTarget, cfg *CacheKey) string {
 	var sb strings.Builder
 	sb.WriteString("p=")
 	sb.WriteString(pt.path)

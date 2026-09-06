@@ -58,7 +58,7 @@ type config struct {
 	respectClientCacheControl     bool
 	convertHeadToGet              bool
 	autoInvalidateMutatingMethods bool
-	keyConfig                     KeyConfig
+	cacheKey                      CacheKey
 	tagHeaderName                 string
 	backgroundFetchTimeout        time.Duration
 	storageTimeout                time.Duration
@@ -130,10 +130,15 @@ func WithRespectClientCacheControl() Option {
 	}
 }
 
-// WithKeyConfig configures cache key generation rules.
-func WithKeyConfig(cfg KeyConfig) Option {
+// WithCacheKey customizes the rules for assembling canonical cache keys
+// (such as query parameter filtering, marketing tag removal, and header/cookie dimensions).
+//
+// A cache key is always automatically generated for every request. If WithCacheKey is omitted,
+// Titip applies standard default key generation (protocol-agnostic, host-aware, case-sensitive path,
+// all query parameters retained, and sorted alphabetically).
+func WithCacheKey(k CacheKey) Option {
 	return func(c *config) {
-		c.keyConfig = cfg
+		c.cacheKey = k
 	}
 }
 

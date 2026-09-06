@@ -31,8 +31,13 @@ var defaultPorts = map[string]string{
 	"https": ":443",
 }
 
-// KeyConfig defines the configuration for assembling zero-hash canonical cache keys.
-type KeyConfig struct {
+// CacheKey defines the rules for assembling zero-hash canonical cache keys.
+//
+// Every cached request automatically receives a cache key. A zero-value CacheKey{}
+// or omitting WithCacheKey applies the standard RFC-compliant default:
+// host included, protocol excluded, case-sensitive path, all query parameters
+// retained, and sorted alphabetically.
+type CacheKey struct {
 	// IncludeProtocol includes the request scheme ("http" or "https") in the cache key.
 	// When true, HTTP and HTTPS requests reference distinct cache entries.
 	IncludeProtocol bool
@@ -49,11 +54,11 @@ type KeyConfig struct {
 	// When true, query parameter order is preserved as received from the client.
 	DisableQueryStringSort bool
 
-	// IncludedQueryParams specifies a whitelist of query parameter names to include in the cache key.
+	// IncludedQueryParams specifies an allowlist of query parameter names to include in the cache key.
 	// If set, only these specific parameters are included in the cache key.
 	IncludedQueryParams []string
 
-	// ExcludedQueryParams specifies a blacklist of query parameter names to exclude from the cache key.
+	// ExcludedQueryParams specifies a denylist of query parameter names to exclude from the cache key.
 	// If set, all query parameters except these are included in the cache key.
 	ExcludedQueryParams []string
 
@@ -86,7 +91,7 @@ type KeyConfig struct {
 	// When true, requests with different path casing (e.g. /Products/Shoes vs /products/shoes) share the same cache entry.
 	CaseInsensitivePath bool
 
-	// IncludedQueryParamValues specifies an allowed whitelist of specific parameter values.
+	// IncludedQueryParamValues specifies an allowlist of specific parameter values.
 	// A parameter key in this map is only included in the cache key if its value matches one of the specified allowed values.
 	// Any value not in the list is omitted from the cache key.
 	IncludedQueryParamValues map[string][]string
@@ -98,9 +103,9 @@ type KeyConfig struct {
 //
 // Component ordering is fixed: path → host → method → scheme → query → headers → cookies.
 // All component values are percent-encoded where they contain delimiter characters (:, =).
-func generatePrimaryKey(r *http.Request, cfg *KeyConfig) string {
+func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 	if cfg == nil {
-		cfg = &KeyConfig{}
+		cfg = &CacheKey{}
 	}
 
 	buf := getBuffer()
@@ -229,7 +234,10 @@ func resolveScheme(r *http.Request) string {
 
 // buildQueryString assembles a filtered and sorted query string for inclusion in the cache key.
 // The result is a raw query string that is safe to embed in the qs= label value.
-func buildQueryString(r *http.Request, cfg *KeyConfig) string {
+func buildQueryString(r *http.Request, cfg *CacheKey) string {
+	if cfg.ExcludeQueryString {
+		return ""
+	}
 	if cfg.DisableQueryStringSort {
 		return buildUnsortedQueryString(r, cfg)
 	}
@@ -237,9 +245,9 @@ func buildQueryString(r *http.Request, cfg *KeyConfig) string {
 }
 
 // isQueryParamAllowed reports whether query param k with value v should be included per cfg.
-func isQueryParamAllowed(k, v string, cfg *KeyConfig) bool {
-	hasWhitelist := len(cfg.IncludedQueryParams) > 0 || len(cfg.IncludedQueryParamValues) > 0
-	if hasWhitelist {
+func isQueryParamAllowed(k, v string, cfg *CacheKey) bool {
+	hasIncludedParams := len(cfg.IncludedQueryParams) > 0 || len(cfg.IncludedQueryParamValues) > 0
+	if hasIncludedParams {
 		if slices.Contains(cfg.IncludedQueryParams, k) {
 			return true
 		}
@@ -260,7 +268,7 @@ func isQueryParamAllowed(k, v string, cfg *KeyConfig) bool {
 }
 
 // buildSortedQueryString parses, filters, sorts, and reassembles the query string.
-func buildSortedQueryString(r *http.Request, cfg *KeyConfig) string {
+func buildSortedQueryString(r *http.Request, cfg *CacheKey) string {
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil || len(values) == 0 {
 		return ""
@@ -307,7 +315,7 @@ func buildSortedQueryString(r *http.Request, cfg *KeyConfig) string {
 }
 
 // buildUnsortedQueryString filters query params while preserving original ordering.
-func buildUnsortedQueryString(r *http.Request, cfg *KeyConfig) string {
+func buildUnsortedQueryString(r *http.Request, cfg *CacheKey) string {
 	qsBuf := getBuffer()
 	defer putBuffer(qsBuf)
 

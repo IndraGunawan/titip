@@ -35,7 +35,7 @@ func makeReq(rawURL string) *http.Request {
 
 func TestGeneratePrimaryKey_LabeledFormat_Basic(t *testing.T) {
 	req := makeReq("http://example.com/api/items")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	expected := "p=/api/items:h=example.com:m=GET"
 	if key != expected {
 		t.Fatalf("expected %q\n     got %q", expected, key)
@@ -63,7 +63,7 @@ func TestGeneratePrimaryKey_LabeledFormat_ComponentOrder(t *testing.T) {
 	}
 	req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
 
-	cfg := &KeyConfig{
+	cfg := &CacheKey{
 		IncludeProtocol:     true,
 		IncludedHeaderNames: []string{"X-Region"},
 		IncludedCookieNames: []string{"theme"},
@@ -118,7 +118,7 @@ func indexOf(s, substr string) int {
 func TestGeneratePrimaryKey_Method_GetAlwaysPresent(t *testing.T) {
 	req := makeReq("http://example.com/page")
 	req.Method = http.MethodGet
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, ":m=GET") {
 		t.Fatalf("expected :m=GET in key, got: %s", key)
 	}
@@ -127,11 +127,11 @@ func TestGeneratePrimaryKey_Method_GetAlwaysPresent(t *testing.T) {
 func TestGeneratePrimaryKey_Method_HeadNormalisesToGet(t *testing.T) {
 	reqGet := makeReq("http://example.com/page")
 	reqGet.Method = http.MethodGet
-	keyGet := generatePrimaryKey(reqGet, &KeyConfig{})
+	keyGet := generatePrimaryKey(reqGet, &CacheKey{})
 
 	reqHead := makeReq("http://example.com/page")
 	reqHead.Method = http.MethodHead
-	keyHead := generatePrimaryKey(reqHead, &KeyConfig{})
+	keyHead := generatePrimaryKey(reqHead, &CacheKey{})
 
 	if keyGet != keyHead {
 		t.Fatalf("HEAD should produce same key as GET:\n GET:  %s\n HEAD: %s", keyGet, keyHead)
@@ -141,7 +141,7 @@ func TestGeneratePrimaryKey_Method_HeadNormalisesToGet(t *testing.T) {
 func TestGeneratePrimaryKey_Method_EmptyNormalisesToGet(t *testing.T) {
 	req := makeReq("http://example.com/page")
 	req.Method = ""
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, ":m=GET") {
 		t.Fatalf("empty method should normalise to GET, got: %s", key)
 	}
@@ -153,7 +153,7 @@ func TestGeneratePrimaryKey_Method_EmptyNormalisesToGet(t *testing.T) {
 
 func TestGeneratePrimaryKey_Path_TrailingSlashPreserved(t *testing.T) {
 	req := makeReq("http://example.com/docs/")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, "p=/docs/:") {
 		t.Fatalf("trailing slash should be preserved, got: %s", key)
 	}
@@ -161,7 +161,7 @@ func TestGeneratePrimaryKey_Path_TrailingSlashPreserved(t *testing.T) {
 
 func TestGeneratePrimaryKey_Path_RootSlashPreserved(t *testing.T) {
 	req := makeReq("http://example.com/")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	// Root "/" must never be stripped.
 	if !contains(key, "p=/:") {
 		t.Fatalf("root slash should always be preserved, got: %s", key)
@@ -171,7 +171,7 @@ func TestGeneratePrimaryKey_Path_RootSlashPreserved(t *testing.T) {
 func TestGeneratePrimaryKey_Path_DotSegmentsResolved(t *testing.T) {
 	u := &url.URL{Path: "/a/b/../c/./d"}
 	req := &http.Request{Method: http.MethodGet, Host: "example.com", URL: u, Header: http.Header{}}
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, "p=/a/c/d:") {
 		t.Fatalf("dot segments should be resolved, got: %s", key)
 	}
@@ -179,7 +179,7 @@ func TestGeneratePrimaryKey_Path_DotSegmentsResolved(t *testing.T) {
 
 func TestGeneratePrimaryKey_Path_NoURL(t *testing.T) {
 	req := &http.Request{Method: http.MethodGet, Host: "example.com", Header: http.Header{}}
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, "p=/:") {
 		t.Fatalf("nil URL should use '/' as path, got: %s", key)
 	}
@@ -191,7 +191,7 @@ func TestGeneratePrimaryKey_Path_NoURL(t *testing.T) {
 
 func TestGeneratePrimaryKey_Host_Lowercased(t *testing.T) {
 	req := makeReq("http://Example.COM/api")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, ":h=example.com:") {
 		t.Fatalf("host should be lowercased, got: %s", key)
 	}
@@ -199,7 +199,7 @@ func TestGeneratePrimaryKey_Host_Lowercased(t *testing.T) {
 
 func TestGeneratePrimaryKey_Host_DefaultHTTPPortStripped(t *testing.T) {
 	req := makeReq("http://example.com:80/api")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if contains(key, ":80") {
 		t.Fatalf("default HTTP port :80 should be stripped, got: %s", key)
 	}
@@ -217,7 +217,7 @@ func TestGeneratePrimaryKey_Host_DefaultHTTPSPortStripped(t *testing.T) {
 		TLS:    &tls.ConnectionState{},
 		Header: http.Header{},
 	}
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if contains(key, ":443") {
 		t.Fatalf("default HTTPS port :443 should be stripped, got: %s", key)
 	}
@@ -225,7 +225,7 @@ func TestGeneratePrimaryKey_Host_DefaultHTTPSPortStripped(t *testing.T) {
 
 func TestGeneratePrimaryKey_Host_NonDefaultPortPreserved(t *testing.T) {
 	req := makeReq("http://example.com:8080/api")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, ":h=example.com:8080:") {
 		t.Fatalf("non-default port :8080 should be preserved, got: %s", key)
 	}
@@ -233,7 +233,7 @@ func TestGeneratePrimaryKey_Host_NonDefaultPortPreserved(t *testing.T) {
 
 func TestGeneratePrimaryKey_Host_ExcludeHost(t *testing.T) {
 	req := makeReq("http://cdn.example.com/assets/style.css")
-	key := generatePrimaryKey(req, &KeyConfig{ExcludeHost: true})
+	key := generatePrimaryKey(req, &CacheKey{ExcludeHost: true})
 	if contains(key, ":h=") {
 		t.Fatalf("host should be excluded, got: %s", key)
 	}
@@ -251,7 +251,7 @@ func TestGeneratePrimaryKey_Host_FallbackToURLHost(t *testing.T) {
 		URL:    u,
 		Header: http.Header{},
 	}
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, ":h=fallback.example.com:") {
 		t.Fatalf("should fall back to URL.Host, got: %s", key)
 	}
@@ -270,7 +270,7 @@ func TestGeneratePrimaryKey_Scheme_TLS(t *testing.T) {
 		TLS:    &tls.ConnectionState{},
 		Header: http.Header{},
 	}
-	key := generatePrimaryKey(req, &KeyConfig{IncludeProtocol: true})
+	key := generatePrimaryKey(req, &CacheKey{IncludeProtocol: true})
 	if !contains(key, ":s=https") {
 		t.Fatalf("TLS request should have s=https, got: %s", key)
 	}
@@ -279,7 +279,7 @@ func TestGeneratePrimaryKey_Scheme_TLS(t *testing.T) {
 func TestGeneratePrimaryKey_Scheme_ForwardedProto(t *testing.T) {
 	req := makeReq("http://api.example.com/v1/data")
 	req.Header.Set("X-Forwarded-Proto", "https")
-	key := generatePrimaryKey(req, &KeyConfig{IncludeProtocol: true})
+	key := generatePrimaryKey(req, &CacheKey{IncludeProtocol: true})
 	if !contains(key, ":s=https") {
 		t.Fatalf("X-Forwarded-Proto: https should yield s=https, got: %s", key)
 	}
@@ -287,7 +287,7 @@ func TestGeneratePrimaryKey_Scheme_ForwardedProto(t *testing.T) {
 
 func TestGeneratePrimaryKey_Scheme_PlainHTTP(t *testing.T) {
 	req := makeReq("http://api.example.com/v1/data")
-	key := generatePrimaryKey(req, &KeyConfig{IncludeProtocol: true})
+	key := generatePrimaryKey(req, &CacheKey{IncludeProtocol: true})
 	if !contains(key, ":s=http") {
 		t.Fatalf("plain HTTP should have s=http, got: %s", key)
 	}
@@ -295,7 +295,7 @@ func TestGeneratePrimaryKey_Scheme_PlainHTTP(t *testing.T) {
 
 func TestGeneratePrimaryKey_Scheme_OmittedByDefault(t *testing.T) {
 	req := makeReq("http://example.com/page")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if contains(key, ":s=") {
 		t.Fatalf("scheme should be omitted by default, got: %s", key)
 	}
@@ -311,7 +311,7 @@ func TestGeneratePrimaryKey_Query_SortedByDefault(t *testing.T) {
 		"http://example.com/search?a=2&m=3&z=1",
 		"http://example.com/search?m=3&a=2&z=1",
 	}
-	cfg := &KeyConfig{}
+	cfg := &CacheKey{}
 	var first string
 	for i, rawURL := range urls {
 		key := generatePrimaryKey(makeReq(rawURL), cfg)
@@ -323,29 +323,29 @@ func TestGeneratePrimaryKey_Query_SortedByDefault(t *testing.T) {
 	}
 }
 
-func TestGeneratePrimaryKey_Query_IncludedWhitelist(t *testing.T) {
+func TestGeneratePrimaryKey_Query_IncludedParams(t *testing.T) {
 	req := makeReq("http://example.com/api/items?sort=desc&page=2&id=100&tracking=xyz")
-	key := generatePrimaryKey(req, &KeyConfig{IncludedQueryParams: []string{"id", "page"}})
+	key := generatePrimaryKey(req, &CacheKey{IncludedQueryParams: []string{"id", "page"}})
 	if !contains(key, "id=100") || !contains(key, "page=2") {
 		t.Fatalf("expected id=100 and page=2 in key, got: %s", key)
 	}
 	// tracking and sort must not appear
 	if contains(key, "sort") || contains(key, "tracking") {
-		t.Fatalf("blacklisted params must not appear in key: %s", key)
+		t.Fatalf("excluded params must not appear in key: %s", key)
 	}
 }
 
-func TestGeneratePrimaryKey_Query_ExcludedBlacklist(t *testing.T) {
+func TestGeneratePrimaryKey_Query_ExcludedParams(t *testing.T) {
 	req := makeReq("http://example.com/products?utm_source=ad&id=42&fbclid=12345")
-	key := generatePrimaryKey(req, &KeyConfig{ExcludedQueryParams: []string{"utm_source", "fbclid"}})
+	key := generatePrimaryKey(req, &CacheKey{ExcludedQueryParams: []string{"utm_source", "fbclid"}})
 	if contains(key, "utm_source") || contains(key, "fbclid") {
-		t.Fatalf("blacklisted params must be excluded, got: %s", key)
+		t.Fatalf("excluded params must not appear in key: %s", key)
 	}
 }
 
 func TestGeneratePrimaryKey_Query_MarketingParamsStripped(t *testing.T) {
 	req := makeReq("http://example.com/shoes?utm_campaign=summer&utm_source=google&gclid=999&size=10&color=blue")
-	key := generatePrimaryKey(req, &KeyConfig{ExcludeMarketingParams: true})
+	key := generatePrimaryKey(req, &CacheKey{ExcludeMarketingParams: true})
 	for _, mq := range []string{"utm_campaign", "utm_source", "gclid"} {
 		if contains(key, mq) {
 			t.Fatalf("marketing param %q must be stripped, got: %s", mq, key)
@@ -358,7 +358,7 @@ func TestGeneratePrimaryKey_Query_MarketingParamsStripped(t *testing.T) {
 
 func TestGeneratePrimaryKey_Query_ExcludeAll(t *testing.T) {
 	req := makeReq("http://example.com/articles?id=99&debug=true")
-	key := generatePrimaryKey(req, &KeyConfig{ExcludeQueryString: true})
+	key := generatePrimaryKey(req, &CacheKey{ExcludeQueryString: true})
 	if contains(key, ":qs=") {
 		t.Fatalf("query should be excluded, got: %s", key)
 	}
@@ -370,7 +370,7 @@ func TestGeneratePrimaryKey_Query_ExcludeAll(t *testing.T) {
 
 func TestGeneratePrimaryKey_Query_UnsortedPreservesOrder(t *testing.T) {
 	req := makeReq("http://example.com/search?z=3&a=1&m=2")
-	key := generatePrimaryKey(req, &KeyConfig{DisableQueryStringSort: true})
+	key := generatePrimaryKey(req, &CacheKey{DisableQueryStringSort: true})
 	// z must appear before a in the qs= section
 	qsStart := indexOf(key, ":qs=")
 	if qsStart == -1 {
@@ -390,7 +390,7 @@ func TestGeneratePrimaryKey_Query_UnsortedPreservesOrder(t *testing.T) {
 func TestGeneratePrimaryKey_Query_EmptyAfterFilter(t *testing.T) {
 	// Only marketing params — all filtered → no qs= label
 	req := makeReq("http://example.com/page?utm_source=google")
-	key := generatePrimaryKey(req, &KeyConfig{ExcludeMarketingParams: true})
+	key := generatePrimaryKey(req, &CacheKey{ExcludeMarketingParams: true})
 	if contains(key, ":qs=") {
 		t.Fatalf("qs= should be absent when all params filtered, got: %s", key)
 	}
@@ -398,7 +398,7 @@ func TestGeneratePrimaryKey_Query_EmptyAfterFilter(t *testing.T) {
 
 func TestGeneratePrimaryKey_Query_NoQueryString(t *testing.T) {
 	req := makeReq("http://example.com/page")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if contains(key, ":qs=") {
 		t.Fatalf("qs= should be absent with no query string, got: %s", key)
 	}
@@ -412,7 +412,7 @@ func TestGeneratePrimaryKey_DelimiterInjection_HeaderColonEquals(t *testing.T) {
 	// Header value "apac:sg (east)" must not insert raw : or = into the key.
 	req := makeReq("http://example.com/api")
 	req.Header.Set("X-Region", "apac:sg (east)")
-	cfg := &KeyConfig{IncludedHeaderNames: []string{"X-Region"}}
+	cfg := &CacheKey{IncludedHeaderNames: []string{"X-Region"}}
 	key := generatePrimaryKey(req, cfg)
 	// The raw characters : and = inside a header value must be percent-encoded.
 	// After the "he=x-region~" label, there must not be a raw colon from the value.
@@ -437,7 +437,7 @@ func TestGeneratePrimaryKey_DelimiterInjection_HeaderColonEquals(t *testing.T) {
 func TestGeneratePrimaryKey_DelimiterInjection_CookieColonEquals(t *testing.T) {
 	req := makeReq("http://example.com/api")
 	req.AddCookie(&http.Cookie{Name: "session", Value: "tok:en=abc"})
-	cfg := &KeyConfig{IncludedCookieNames: []string{"session"}}
+	cfg := &CacheKey{IncludedCookieNames: []string{"session"}}
 	key := generatePrimaryKey(req, cfg)
 
 	ckIdx := indexOf(key, ":ck=session~")
@@ -456,7 +456,7 @@ func TestGeneratePrimaryKey_DelimiterInjection_CookieColonEquals(t *testing.T) {
 func TestGeneratePrimaryKey_DelimiterInjection_SpaceEncoded(t *testing.T) {
 	req := makeReq("http://example.com/api")
 	req.Header.Set("X-Region", "apac sg (east)")
-	cfg := &KeyConfig{IncludedHeaderNames: []string{"X-Region"}}
+	cfg := &CacheKey{IncludedHeaderNames: []string{"X-Region"}}
 	key := generatePrimaryKey(req, cfg)
 	// url.QueryEscape encodes space as +
 	if !contains(key, "apac+sg") && !contains(key, "apac%20sg") {
@@ -479,7 +479,7 @@ func TestGeneratePrimaryKey_Headers_SortedAndLowercased(t *testing.T) {
 	req.Header.Set("X-Region", "US-WEST")
 	req.Header.Set("Accept-Language", "en-US")
 
-	cfg := &KeyConfig{IncludedHeaderNames: []string{"X-Region", "Accept-Language"}}
+	cfg := &CacheKey{IncludedHeaderNames: []string{"X-Region", "Accept-Language"}}
 	key := generatePrimaryKey(req, cfg)
 
 	// Accept-Language (a) must appear before X-Region (x) — sorted.
@@ -495,7 +495,7 @@ func TestGeneratePrimaryKey_Headers_SortedAndLowercased(t *testing.T) {
 
 func TestGeneratePrimaryKey_Headers_AbsentHeaderOmitted(t *testing.T) {
 	req := makeReq("http://example.com/api")
-	cfg := &KeyConfig{IncludedHeaderNames: []string{"X-Region"}} // not set in request
+	cfg := &CacheKey{IncludedHeaderNames: []string{"X-Region"}} // not set in request
 	key := generatePrimaryKey(req, cfg)
 	if contains(key, ":he=") {
 		t.Fatalf("absent header must be omitted, got: %s", key)
@@ -513,7 +513,7 @@ func TestGeneratePrimaryKey_Cookies_SortedAndEncoded(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
 	req.AddCookie(&http.Cookie{Name: "currency", Value: "USD"})
 
-	cfg := &KeyConfig{IncludedCookieNames: []string{"theme", "currency"}}
+	cfg := &CacheKey{IncludedCookieNames: []string{"theme", "currency"}}
 	key := generatePrimaryKey(req, cfg)
 
 	// currency (c) must appear before theme (t) — sorted.
@@ -529,7 +529,7 @@ func TestGeneratePrimaryKey_Cookies_SortedAndEncoded(t *testing.T) {
 
 func TestGeneratePrimaryKey_Cookies_AbsentCookieOmitted(t *testing.T) {
 	req := makeReq("http://example.com/store")
-	cfg := &KeyConfig{IncludedCookieNames: []string{"missing_cookie"}}
+	cfg := &CacheKey{IncludedCookieNames: []string{"missing_cookie"}}
 	key := generatePrimaryKey(req, cfg)
 	if contains(key, ":ck=") {
 		t.Fatalf("absent cookie must be omitted, got: %s", key)
@@ -544,13 +544,13 @@ func TestGeneratePrimaryKey_Golden(t *testing.T) {
 	tests := []struct {
 		name     string
 		setup    func() *http.Request
-		cfg      KeyConfig
+		cfg      CacheKey
 		expected string
 	}{
 		{
 			name:     "default zero-value config with sorted query",
 			setup:    func() *http.Request { return makeReq("http://Example.COM/api/items/?sort=desc&page=2&id=100") },
-			cfg:      KeyConfig{},
+			cfg:      CacheKey{},
 			expected: "p=/api/items/:h=example.com:m=GET:qs=id=100&page=2&sort=desc",
 		},
 		{
@@ -559,19 +559,19 @@ func TestGeneratePrimaryKey_Golden(t *testing.T) {
 				u := mustParse("https://secure.example.com/user/profile")
 				return &http.Request{Method: "GET", Host: "secure.example.com", URL: u, Header: http.Header{}, TLS: &tls.ConnectionState{}}
 			},
-			cfg:      KeyConfig{IncludeProtocol: true},
+			cfg:      CacheKey{IncludeProtocol: true},
 			expected: "p=/user/profile:h=secure.example.com:m=GET:s=https",
 		},
 		{
 			name:     "ExcludeHost",
 			setup:    func() *http.Request { return makeReq("http://cdn.example.com/assets/style.css") },
-			cfg:      KeyConfig{ExcludeHost: true},
+			cfg:      CacheKey{ExcludeHost: true},
 			expected: "p=/assets/style.css:m=GET",
 		},
 		{
 			name:     "ExcludeQueryString",
 			setup:    func() *http.Request { return makeReq("http://example.com/articles?id=99&debug=true") },
-			cfg:      KeyConfig{ExcludeQueryString: true},
+			cfg:      CacheKey{ExcludeQueryString: true},
 			expected: "p=/articles:h=example.com:m=GET",
 		},
 		{
@@ -583,7 +583,7 @@ func TestGeneratePrimaryKey_Golden(t *testing.T) {
 				req.AddCookie(&http.Cookie{Name: "currency", Value: "USD"})
 				return req
 			},
-			cfg:      KeyConfig{IncludedHeaderNames: []string{"X-Region"}, IncludedCookieNames: []string{"currency"}},
+			cfg:      CacheKey{IncludedHeaderNames: []string{"X-Region"}, IncludedCookieNames: []string{"currency"}},
 			expected: "p=/store:h=example.com:m=GET:he=x-region~US-WEST:ck=currency~USD",
 		},
 	}
@@ -679,7 +679,7 @@ func TestGenerateVariantKey_Deterministic(t *testing.T) {
 func TestGeneratePrimaryKey_MultipleQueryValues(t *testing.T) {
 	// Same key multiple times — sorted values
 	req := makeReq("http://example.com/q?tag=b&tag=a&tag=c")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	if !contains(key, ":qs=") {
 		t.Fatalf("expected qs= segment, got: %s", key)
 	}
@@ -699,7 +699,7 @@ func TestGeneratePrimaryKey_MultipleQueryValues(t *testing.T) {
 
 func TestGeneratePrimaryKey_EmptyQueryValueParam(t *testing.T) {
 	req := makeReq("http://example.com/page?flag")
-	key := generatePrimaryKey(req, &KeyConfig{})
+	key := generatePrimaryKey(req, &CacheKey{})
 	// flag with no value should still appear
 	if !contains(key, ":qs=") {
 		t.Fatalf("flag param should produce qs= segment, got: %s", key)
@@ -715,7 +715,7 @@ func TestGeneratePrimaryKey_SchemeFromURLField(t *testing.T) {
 		Header: http.Header{},
 		// No TLS, no X-Forwarded-Proto — scheme comes from URL.Scheme
 	}
-	key := generatePrimaryKey(req, &KeyConfig{IncludeProtocol: true})
+	key := generatePrimaryKey(req, &CacheKey{IncludeProtocol: true})
 	if !contains(key, ":s=https") {
 		t.Fatalf("should detect https from URL.Scheme, got: %s", key)
 	}
@@ -739,7 +739,7 @@ func BenchmarkGeneratePrimaryKey(b *testing.B) {
 		TLS:    &tls.ConnectionState{},
 		Header: http.Header{},
 	}
-	cfg := &KeyConfig{}
+	cfg := &CacheKey{}
 
 	for b.Loop() {
 		_ = generatePrimaryKey(req, cfg)
@@ -754,7 +754,7 @@ func BenchmarkGeneratePrimaryKey_WithQuerySort(b *testing.B) {
 		URL:    u,
 		Header: http.Header{},
 	}
-	cfg := &KeyConfig{}
+	cfg := &CacheKey{}
 
 	for b.Loop() {
 		_ = generatePrimaryKey(req, cfg)
@@ -775,7 +775,7 @@ func BenchmarkGeneratePrimaryKey_WithHeadersAndCookies(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: "theme", Value: "dark"})
 	req.AddCookie(&http.Cookie{Name: "currency", Value: "USD"})
 
-	cfg := &KeyConfig{
+	cfg := &CacheKey{
 		IncludedHeaderNames: []string{"X-Region", "Accept-Language"},
 		IncludedCookieNames: []string{"theme", "currency"},
 	}
@@ -798,7 +798,7 @@ func BenchmarkGeneratePrimaryKey_AllOptions(b *testing.B) {
 	}
 	req.AddCookie(&http.Cookie{Name: "ab_group", Value: "control"})
 
-	cfg := &KeyConfig{
+	cfg := &CacheKey{
 		IncludeProtocol:        true,
 		ExcludeMarketingParams: true,
 		IncludedHeaderNames:    []string{"X-Region"},
@@ -812,7 +812,7 @@ func BenchmarkGeneratePrimaryKey_AllOptions(b *testing.B) {
 
 func BenchmarkGeneratePrimaryKey_CaseInsensitive(b *testing.B) {
 	req := makeReq("http://example.com/Products/Shoes/Running?id=123")
-	cfg := &KeyConfig{CaseInsensitivePath: true}
+	cfg := &CacheKey{CaseInsensitivePath: true}
 
 	for b.Loop() {
 		_ = generatePrimaryKey(req, cfg)
@@ -821,7 +821,7 @@ func BenchmarkGeneratePrimaryKey_CaseInsensitive(b *testing.B) {
 
 func BenchmarkGeneratePrimaryKey_QueryParamValues(b *testing.B) {
 	req := makeReq("http://example.com/items?format=json&page=2&sort=asc&utm_source=fb")
-	cfg := &KeyConfig{
+	cfg := &CacheKey{
 		IncludedQueryParams: []string{"page", "sort"},
 		IncludedQueryParamValues: map[string][]string{
 			"format": {"json"},
@@ -849,13 +849,13 @@ func BenchmarkGenerateVariantKey(b *testing.B) {
 
 func TestGeneratePrimaryKey_TrailingSlash(t *testing.T) {
 	reqWithoutSlash := makeReq("http://example.com/api")
-	keyWithout := generatePrimaryKey(reqWithoutSlash, &KeyConfig{})
+	keyWithout := generatePrimaryKey(reqWithoutSlash, &CacheKey{})
 	if keyWithout != "p=/api:h=example.com:m=GET" {
 		t.Errorf("expected p=/api, got %s", keyWithout)
 	}
 
 	reqWithSlash := makeReq("http://example.com/api/")
-	keyWith := generatePrimaryKey(reqWithSlash, &KeyConfig{})
+	keyWith := generatePrimaryKey(reqWithSlash, &CacheKey{})
 	if keyWith != "p=/api/:h=example.com:m=GET" {
 		t.Errorf("expected p=/api/, got %s", keyWith)
 	}
@@ -865,7 +865,7 @@ func TestGeneratePrimaryKey_TrailingSlash(t *testing.T) {
 	}
 
 	reqQueryWithSlash := makeReq("http://example.com/api/?zone=abc")
-	keyQueryWith := generatePrimaryKey(reqQueryWithSlash, &KeyConfig{})
+	keyQueryWith := generatePrimaryKey(reqQueryWithSlash, &CacheKey{})
 	if keyQueryWith != "p=/api/:h=example.com:m=GET:qs=zone=abc" {
 		t.Errorf("expected p=/api/:h=example.com:m=GET:qs=zone=abc, got %s", keyQueryWith)
 	}
@@ -885,7 +885,7 @@ func TestGenerateVariantKey_PreservesCasing(t *testing.T) {
 
 func TestGeneratePrimaryKey_Query_MarketingParams_CaseInsensitive(t *testing.T) {
 	req := makeReq("http://example.com/shoes?UTM_CAMPAIGN=summer&Utm_Source=google&GCLID=999&FBCLID=123&size=10&color=blue")
-	key := generatePrimaryKey(req, &KeyConfig{ExcludeMarketingParams: true})
+	key := generatePrimaryKey(req, &CacheKey{ExcludeMarketingParams: true})
 	for _, mq := range []string{"UTM_CAMPAIGN", "Utm_Source", "GCLID", "FBCLID"} {
 		if contains(key, mq) {
 			t.Fatalf("uppercase marketing param %q must be stripped, got: %s", mq, key)
@@ -900,8 +900,8 @@ func TestGeneratePrimaryKey_Path_CaseInsensitive(t *testing.T) {
 	reqUpper := makeReq("http://example.com/Products/Shoes/Running?token=AbC123")
 	reqLower := makeReq("http://example.com/products/shoes/running?token=AbC123")
 
-	keyUpper := generatePrimaryKey(reqUpper, &KeyConfig{CaseInsensitivePath: true})
-	keyLower := generatePrimaryKey(reqLower, &KeyConfig{CaseInsensitivePath: true})
+	keyUpper := generatePrimaryKey(reqUpper, &CacheKey{CaseInsensitivePath: true})
+	keyLower := generatePrimaryKey(reqLower, &CacheKey{CaseInsensitivePath: true})
 
 	expected := "p=/products/shoes/running:h=example.com:m=GET:qs=token=AbC123"
 	if keyUpper != expected {
@@ -918,7 +918,7 @@ func TestGeneratePrimaryKey_Path_CaseInsensitive(t *testing.T) {
 }
 
 func TestGeneratePrimaryKey_Query_IncludedQueryParamValues(t *testing.T) {
-	cfg := &KeyConfig{
+	cfg := &CacheKey{
 		IncludedQueryParamValues: map[string][]string{
 			"format": {"json"},
 		},
@@ -931,7 +931,7 @@ func TestGeneratePrimaryKey_Query_IncludedQueryParamValues(t *testing.T) {
 		t.Errorf("expected format=json to be included, got: %s", keyJSON)
 	}
 	if contains(keyJSON, "utm_source") {
-		t.Errorf("unwhitelisted param utm_source must be dropped, got: %s", keyJSON)
+		t.Errorf("excluded param utm_source must be dropped, got: %s", keyJSON)
 	}
 
 	// 2. Disallowed / unknown value dropped completely -> matches default page!
@@ -943,8 +943,8 @@ func TestGeneratePrimaryKey_Query_IncludedQueryParamValues(t *testing.T) {
 		t.Errorf("disallowed format value should drop qs and match no-query key: %q != %q", keyXML, keyNoQuery)
 	}
 
-	// 3. Combined with IncludedQueryParams (name-based whitelist)
-	cfgCombined := &KeyConfig{
+	// 3. Combined with IncludedQueryParams
+	cfgCombined := &CacheKey{
 		IncludedQueryParams: []string{"page", "sort"},
 		IncludedQueryParamValues: map[string][]string{
 			"format": {"json"},
@@ -957,7 +957,7 @@ func TestGeneratePrimaryKey_Query_IncludedQueryParamValues(t *testing.T) {
 		t.Errorf("expected %q in key, got: %s", expectedQS, keyCombined)
 	}
 	if contains(keyCombined, "extra") {
-		t.Errorf("unwhitelisted param extra must be dropped, got: %s", keyCombined)
+		t.Errorf("excluded param extra must be dropped, got: %s", keyCombined)
 	}
 
 	// 4. Combined with Disallowed format value

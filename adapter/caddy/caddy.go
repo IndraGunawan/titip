@@ -97,8 +97,8 @@ func getEngines() []*titip.Titip {
 	return list
 }
 
-// KeyConfig defines the cache key generation parameters in Caddy.
-type KeyConfig struct {
+// CacheKey defines the cache key generation parameters in Caddy.
+type CacheKey struct {
 	IncludeProtocol          *bool               `json:"include_protocol,omitempty"`
 	ExcludeHost              *bool               `json:"exclude_host,omitempty"`
 	ExcludeQueryString       *bool               `json:"exclude_query_string,omitempty"`
@@ -137,7 +137,7 @@ type Handler struct {
 	BackgroundFetchTimeout        string          `json:"background_fetch_timeout,omitempty"`
 	StorageTimeout                string          `json:"storage_timeout,omitempty"`
 	TagHeader                     string          `json:"tag_header,omitempty"`
-	Key                           *KeyConfig      `json:"key,omitempty"`
+	CacheKey                      *CacheKey       `json:"cache_key,omitempty"`
 	ESI                           *ESIConfig      `json:"esi,omitempty"`
 	UseRewrittenURL               *bool           `json:"use_rewritten_url,omitempty"`
 
@@ -217,7 +217,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusSimpleToken))
 	case "rfc9211":
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusRFC9211))
-	case "none", "disabled":
+	case "none":
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusNone))
 	default:
 		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
@@ -290,20 +290,20 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 	h.useRewrittenURL = useRewritten
 
-	// Key configuration: default -> global App defaults -> route overrides
-	if (app != nil && app.KeyConfig != nil) || h.Key != nil {
-		keyCfg := titip.KeyConfig{}
-		if app != nil && app.KeyConfig != nil {
-			if err := applyKeyConfig(&keyCfg, app.KeyConfig); err != nil {
+	// CacheKey configuration: default -> global App defaults -> route overrides
+	if (app != nil && app.CacheKey != nil) || h.CacheKey != nil {
+		keyCfg := titip.CacheKey{}
+		if app != nil && app.CacheKey != nil {
+			if err := applyCacheKey(&keyCfg, app.CacheKey); err != nil {
 				return err
 			}
 		}
-		if h.Key != nil {
-			if err := applyKeyConfig(&keyCfg, h.Key); err != nil {
+		if h.CacheKey != nil {
+			if err := applyCacheKey(&keyCfg, h.CacheKey); err != nil {
 				return err
 			}
 		}
-		opts = append(opts, titip.WithKeyConfig(keyCfg))
+		opts = append(opts, titip.WithCacheKey(keyCfg))
 	}
 
 	// ESI configuration: default -> global App defaults -> route overrides
@@ -532,11 +532,11 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				h.TagHeader = d.Val()
-			case "key":
-				if h.Key == nil {
-					h.Key = new(KeyConfig)
+			case "cache_key":
+				if h.CacheKey == nil {
+					h.CacheKey = new(CacheKey)
 				}
-				if err := h.Key.unmarshalCaddyfile(d); err != nil {
+				if err := h.CacheKey.unmarshalCaddyfile(d); err != nil {
 					return err
 				}
 			case "esi":
@@ -564,7 +564,7 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	return nil
 }
 
-func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
+func (kc *CacheKey) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.NextBlock(1) {
 		switch d.Val() {
 		case "include_protocol":
@@ -585,16 +585,6 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("invalid boolean value for exclude_host: %v", err)
 			}
 			kc.ExcludeHost = &val
-		case "include_host": // backward compatibility
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			val, err := strconv.ParseBool(d.Val())
-			if err != nil {
-				return d.Errf("invalid boolean value for include_host: %v", err)
-			}
-			inv := !val
-			kc.ExcludeHost = &inv
 		case "exclude_query_string":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -613,11 +603,11 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("invalid boolean value for disable_query_string_sort: %v", err)
 			}
 			kc.DisableQueryStringSort = &val
-		case "included_query_params", "query_whitelist":
+		case "included_query_params":
 			kc.IncludedQueryParams = append(kc.IncludedQueryParams, d.RemainingArgs()...)
-		case "excluded_query_params", "query_blacklist":
+		case "excluded_query_params":
 			kc.ExcludedQueryParams = append(kc.ExcludedQueryParams, d.RemainingArgs()...)
-		case "exclude_marketing_params", "ignore_marketing_params":
+		case "exclude_marketing_params":
 			val := true
 			if d.NextArg() {
 				var err error
@@ -627,11 +617,11 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 			}
 			kc.ExcludeMarketingParams = &val
-		case "included_header_names", "include_headers":
+		case "included_header_names":
 			kc.IncludedHeaderNames = append(kc.IncludedHeaderNames, d.RemainingArgs()...)
-		case "included_cookie_names", "include_cookies":
+		case "included_cookie_names":
 			kc.IncludedCookieNames = append(kc.IncludedCookieNames, d.RemainingArgs()...)
-		case "case_insensitive_path", "lowercase_path":
+		case "case_insensitive_path":
 			val := true
 			if d.NextArg() {
 				var err error
@@ -641,7 +631,7 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 			}
 			kc.CaseInsensitivePath = &val
-		case "included_query_param_values", "query_enum":
+		case "included_query_param_values":
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
@@ -654,25 +644,7 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				kc.IncludedQueryParamValues = make(map[string][]string)
 			}
 			kc.IncludedQueryParamValues[param] = append(kc.IncludedQueryParamValues[param], vals...)
-		case "query":
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			mode := d.Val()
-			switch strings.ToLower(mode) {
-			case "all":
-				f := false
-				kc.ExcludeQueryString = &f
-			case "none", "exclude_all":
-				t := true
-				kc.ExcludeQueryString = &t
-			case "whitelist":
-				kc.IncludedQueryParams = append(kc.IncludedQueryParams, d.RemainingArgs()...)
-			case "blacklist":
-				kc.ExcludedQueryParams = append(kc.ExcludedQueryParams, d.RemainingArgs()...)
-			default:
-				return d.Errf("unknown query mode %q (allowed: all, none, whitelist <params...>, blacklist <params...>)", mode)
-			}
+
 		default:
 			return d.Errf("unknown key subdirective %q", d.Val())
 		}
@@ -808,7 +780,7 @@ func parseByteSize(s string) (int64, error) {
 	return val * multi, nil
 }
 
-func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
+func applyCacheKey(target *titip.CacheKey, src *CacheKey) error {
 	if src == nil {
 		return nil
 	}

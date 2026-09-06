@@ -45,7 +45,7 @@ type Config struct {
 	// AllowedHosts restricts external HTTP includes to matching domain patterns (default: empty = all public).
 	AllowedHosts []string
 
-	// AllowPrivateIPsForAllowedHosts allows internal IPs for explicitly whitelisted hosts (default: false).
+	// AllowPrivateIPsForAllowedHosts allows internal IPs for explicitly allowed hosts (default: false).
 	AllowPrivateIPsForAllowedHosts bool
 
 	// MaxResponseSize caps the maximum allowed fragment body size in bytes (default: 10MB, 0 = unlimited).

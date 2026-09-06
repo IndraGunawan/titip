@@ -19,7 +19,7 @@ func init() {
 
 // RedisStorage implements a Caddy storage guest module under the "titip.storage.redis" namespace.
 type RedisStorage struct {
-	Addresses         []string `json:"addresses,omitempty"`
+	Address           []string `json:"address,omitempty"`
 	KeyPrefix         string   `json:"key_prefix,omitempty"`
 	Username          string   `json:"username,omitempty"`
 	Password          string   `json:"password,omitempty"`
@@ -42,7 +42,7 @@ func (RedisStorage) CaddyModule() caddy.ModuleInfo {
 func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	repl := caddy.NewReplacer()
 	var addrs []string
-	for _, raw := range r.Addresses {
+	for _, raw := range r.Address {
 		replaced := repl.ReplaceKnown(raw, "")
 		for a := range strings.SplitSeq(replaced, ",") {
 			trimmed := strings.TrimSpace(a)
@@ -111,7 +111,7 @@ func (r *RedisStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
-			case "address", "addresses":
+			case "address":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
 					return d.ArgErr()
@@ -120,7 +120,7 @@ func (r *RedisStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					for a := range strings.SplitSeq(arg, ",") {
 						trimmed := strings.TrimSpace(a)
 						if trimmed != "" {
-							r.Addresses = append(r.Addresses, trimmed)
+							r.Address = append(r.Address, trimmed)
 						}
 					}
 				}

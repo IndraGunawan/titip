@@ -18,7 +18,7 @@ var (
 	ErrSSRFBlocked = errors.New("titip: esi: request blocked by ssrf protection")
 	// ErrInvalidScheme is returned when an include URL has an unapproved scheme.
 	ErrInvalidScheme = errors.New("titip: esi: invalid or dangerous url scheme")
-	// ErrHostNotAllowed is returned when an include host is not in the allowed hosts whitelist.
+	// ErrHostNotAllowed is returned when an include host is not in the allowed hosts list.
 	ErrHostNotAllowed = errors.New("titip: esi: host is not allowed")
 	// ErrInvalidMethod is returned when a non-GET/HEAD method is attempted.
 	ErrInvalidMethod = errors.New("titip: esi: only GET and HEAD methods are permitted")
@@ -176,7 +176,7 @@ func NewSSRFSafeTransport(cfg SSRFConfig, dialTimeout time.Duration) http.RoundT
 					return nil, fmt.Errorf("%w: %q", ErrHostNotAllowed, host)
 				}
 				if cfg.AllowPrivateIPsForAllowedHosts {
-					// Direct dial without IP blocking for specifically whitelisted hosts
+					// Direct dial without IP blocking for specifically allowed hosts
 					rawDialer := &net.Dialer{Timeout: dialTimeout}
 					return rawDialer.DialContext(ctx, network, addr)
 				}
