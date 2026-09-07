@@ -425,33 +425,6 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 
 	freshness := calculateFreshness(rec.Code, ctx.r.Header, headersClone, reqTime, respTime, respTime)
 
-	// If origin returned uncacheable (e.g. private, no-store), serve direct bypass
-	if !freshness.IsCacheable {
-		t.recordRequest(ctx, statusBypass)
-		for k, vv := range headersClone {
-			for _, v := range vv {
-				ctx.w.Header().Add(k, v)
-			}
-		}
-		t.emitCacheStatus(ctx.w, tokenDynamic, fmt.Sprintf("fwd=bypass; fwd-status=%d", rec.Code))
-		if hasConditionalHeaders && rec.Code >= 200 && rec.Code < 300 {
-			var lmUnix int64
-			if lm, err := parseDate(headersClone.Get(headerLastModified)); err == nil && !lm.IsZero() {
-				lmUnix = lm.UnixNano()
-			}
-			status, proceed := t.evaluatePreconditionsHeaders(ctx.r, headersClone.Get(headerETag), lmUnix)
-			if !proceed && status == http.StatusNotModified {
-				ctx.w.WriteHeader(http.StatusNotModified)
-				return nil
-			}
-		}
-		ctx.w.WriteHeader(rec.Code)
-		if ctx.r.Method != http.MethodHead {
-			_, _ = ctx.w.Write(bodyBytes)
-		}
-		return nil
-	}
-
 	// Cache if eligible and not closed (skip saving 0-byte variant if HEAD and ConvertHeadToGet is disabled)
 	shouldCache := freshness.IsCacheable && !t.closed.Load()
 	if ctx.r.Method == http.MethodHead && !t.cfg.convertHeadToGet {
