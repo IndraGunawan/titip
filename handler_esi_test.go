@@ -1512,4 +1512,72 @@ func TestESI_PageWithoutESI_PreservesETagAndAllows304(t *testing.T) {
 	}
 }
 
+// TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring verifies that when an origin response
+// is uncacheable (e.g. Cache-Control: private, no-store) but contains ESI tags, Titip splices fragments
+// on-the-fly, emits fwd=bypass, and does not store the uncacheable document in Redis.
+func TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring(t *testing.T) {
+	var pageHits atomic.Int32
+	var fragHits atomic.Int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dynamic-page", func(w http.ResponseWriter, r *http.Request) {
+		pageHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><h1>Dynamic</h1><esi:include src="/api/counter" /></body></html>`))
+	})
+
+	mux.HandleFunc("/api/counter", func(w http.ResponseWriter, r *http.Request) {
+		hits := fragHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "<span>Count: %d</span>", hits)
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithMaxTimeout(5*time.Second),
+		),
+	)
+
+	handler := mw.testHandler(mux)
+
+	// 1. First Request: Uncacheable page with ESI include
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/dynamic-page", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK, got %d", rec1.Code)
+	}
+	if !strings.Contains(rec1.Body.String(), "<span>Count: 1</span>") {
+		t.Errorf("expected spliced fragment Count: 1, got: %s", rec1.Body.String())
+	}
+	if status := rec1.Header().Get("Cache-Status"); !strings.Contains(status, "fwd=bypass") {
+		t.Errorf("expected Cache-Status to indicate bypass, got: %s", status)
+	}
+
+	// 2. Second Request: Must re-hit origin (not stored in cache) and re-splice fresh fragment
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/dynamic-page", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK on second request, got %d", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), "<span>Count: 2</span>") {
+		t.Errorf("expected fresh spliced fragment Count: 2, got: %s", rec2.Body.String())
+	}
+	if pageHits.Load() != 2 {
+		t.Errorf("expected origin to be called twice (not cached), got %d hits", pageHits.Load())
+	}
+	if fragHits.Load() != 2 {
+		t.Errorf("expected fragment to be invoked twice, got %d hits", fragHits.Load())
+	}
+}
+
+
 

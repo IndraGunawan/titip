@@ -3114,3 +3114,240 @@ func TestBackgroundFetchTimeout_Configuration(t *testing.T) {
 	}
 }
 
+// TestConditionalMiss_CacheWarming_AndServes304ToClient verifies that when a client sends conditional headers
+// on a cold cache miss, Titip strips conditional headers to fetch the full representation from origin,
+// warms the cache in storage, and responds with 304 Not Modified downstream to the client.
+func TestConditionalMiss_CacheWarming_AndServes304ToClient(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int32
+	var originReceivedIfNoneMatch atomic.Pointer[string]
+
+	originNow := time.Now().UTC().Truncate(time.Second)
+	lastModStr := originNow.Add(-10 * time.Minute).Format(http.TimeFormat)
+
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		inm := r.Header.Get("If-None-Match")
+		originReceivedIfNoneMatch.Store(&inm)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("ETag", `"v1.0.0"`)
+		w.Header().Set("Last-Modified", lastModStr)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","version":"1.0.0"}`))
+	})
+
+	handler := mw.testHandler(origin)
+
+	// 1. First Request: Cold Miss with matching If-None-Match header
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/article", nil)
+	req1.Header.Set("If-None-Match", `"v1.0.0"`)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	// Verify origin received request WITHOUT If-None-Match (stripped to fetch full representation)
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+	if inm := originReceivedIfNoneMatch.Load(); inm == nil || *inm != "" {
+		t.Errorf("expected origin to receive request with stripped If-None-Match, got %q", *inm)
+	}
+
+	// Verify downstream client received 304 Not Modified with 0 body bytes
+	if rec1.Code != http.StatusNotModified {
+		t.Fatalf("expected downstream client to receive 304 Not Modified, got %d", rec1.Code)
+	}
+	if rec1.Body.Len() != 0 {
+		t.Errorf("expected 0 body bytes on 304, got %d bytes: %s", rec1.Body.Len(), rec1.Body.String())
+	}
+	if etag := rec1.Header().Get("ETag"); etag != `"v1.0.0"` {
+		t.Errorf("expected ETag \"v1.0.0\" on 304, got %s", etag)
+	}
+
+	// 2. Second Request: Unconditional GET from another client -> must be served from warmed cache!
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/article", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cache hit with 0 additional origin calls, got %d calls", originCalls.Load())
+	}
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from warmed cache, got %d", rec2.Code)
+	}
+	if rec2.Body.String() != `{"status":"ok","version":"1.0.0"}` {
+		t.Errorf("unexpected body from warmed cache: %s", rec2.Body.String())
+	}
+
+	// 3. Third Request: Conditional GET matching ETag -> must be served 304 from storage with 0 origin calls
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/article", nil)
+	req3.Header.Set("If-None-Match", `"v1.0.0"`)
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 304 hit with 0 additional origin calls, got %d calls", originCalls.Load())
+	}
+	if rec3.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified from cache hit, got %d", rec3.Code)
+	}
+}
+
+// TestConditionalMiss_MismatchingETag_Serves200WithBody verifies that when client sends an outdated ETag,
+// Titip fetches fresh from origin, warms the cache, and delivers 200 OK with the new body.
+func TestConditionalMiss_MismatchingETag_Serves200WithBody(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int32
+
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("ETag", `"v2.0.0"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"version":"2.0.0"}`))
+	})
+
+	handler := mw.testHandler(origin)
+
+	// Client sends outdated ETag "v1.0.0"
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	req.Header.Set("If-None-Match", `"v1.0.0"`)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for mismatching ETag, got %d", rec.Code)
+	}
+	if rec.Body.String() != `{"version":"2.0.0"}` {
+		t.Errorf("unexpected body: %s", rec.Body.String())
+	}
+	if rec.Header().Get("ETag") != `"v2.0.0"` {
+		t.Errorf("expected ETag \"v2.0.0\", got %s", rec.Header().Get("ETag"))
+	}
+
+	// Verify cache was warmed: subsequent request with "v2.0.0" gets 304 from cache
+	reqHit := httptest.NewRequest(http.MethodGet, "http://example.com/resource", nil)
+	reqHit.Header.Set("If-None-Match", `"v2.0.0"`)
+	recHit := httptest.NewRecorder()
+	handler.ServeHTTP(recHit, reqHit)
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 0 additional origin calls, got %d", originCalls.Load())
+	}
+	if recHit.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 from warmed cache, got %d", recHit.Code)
+	}
+}
+
+// TestConditionalMiss_IfModifiedSince_CacheWarming verifies conditional miss handling for If-Modified-Since.
+func TestConditionalMiss_IfModifiedSince_CacheWarming(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int32
+	var originReceivedIMS atomic.Pointer[string]
+
+	lastModTime := time.Now().UTC().Truncate(time.Second).Add(-1 * time.Hour)
+	lastModStr := lastModTime.Format(http.TimeFormat)
+
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		ims := r.Header.Get("If-Modified-Since")
+		originReceivedIMS.Store(&ims)
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Cache-Control", "public, max-age=120")
+		w.Header().Set("Last-Modified", lastModStr)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("unmodified text content"))
+	})
+
+	handler := mw.testHandler(origin)
+
+	// Client sends If-Modified-Since matching or after Last-Modified
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/doc", nil)
+	req.Header.Set("If-Modified-Since", lastModStr)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+	if ims := originReceivedIMS.Load(); ims == nil || *ims != "" {
+		t.Errorf("expected stripped If-Modified-Since on origin request, got %q", *ims)
+	}
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified, got %d", rec.Code)
+	}
+
+	// Verify subsequent request without conditional headers is served from warmed cache
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/doc", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected cache hit with 1 origin call, got %d", originCalls.Load())
+	}
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from warmed cache, got %d", rec2.Code)
+	}
+	if rec2.Body.String() != "unmodified text content" {
+		t.Errorf("unexpected body: %s", rec2.Body.String())
+	}
+}
+
+// TestConditionalMiss_UncacheableOrigin_Serves304WithoutStoring verifies that uncacheable origin responses
+// deliver 304 to client if validators match, but do not populate storage.
+func TestConditionalMiss_UncacheableOrigin_Serves304WithoutStoring(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int32
+
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("ETag", `"secret-v1"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"private":"data"}`))
+	})
+
+	handler := mw.testHandler(origin)
+
+	// Client sends matching ETag
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/private", nil)
+	req1.Header.Set("If-None-Match", `"secret-v1"`)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
+	}
+	if rec1.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified downstream, got %d", rec1.Code)
+	}
+
+	// Next request from another user without ETag: must hit origin again because response was uncacheable!
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/private", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if originCalls.Load() != 2 {
+		t.Fatalf("expected second request to hit origin (uncacheable), got %d origin calls", originCalls.Load())
+	}
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec2.Code)
+	}
+}
+
+
