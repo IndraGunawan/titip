@@ -34,7 +34,7 @@ func New(opts ...Option) (*Titip, error) {
 		cacheStatusMode:           CacheStatusSimpleToken,
 		respectClientCacheControl: false,
 		convertHeadToGet:          true,
-		keyConfig:                 KeyConfig{},
+		cacheKey:                  CacheKey{},
 		tagHeaderName:             headerCacheTag,
 		backgroundFetchTimeout:    125 * time.Second,
 		storageTimeout:            1 * time.Second,
@@ -100,7 +100,7 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 
 	mode := purgeModeString(cfg.soft)
 
-	pt, err := parsePurgeTarget(target, &t.cfg.keyConfig)
+	pt, err := parsePurgeTarget(target, &t.cfg.cacheKey)
 	if err != nil {
 		t.metrics.recordPurge("url", mode, "error", 0)
 		return 0, fmt.Errorf("titip: purge parse error: %w", err)
@@ -109,7 +109,7 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 		return 0, nil
 	}
 
-	patterns := buildPurgePatterns(pt, &t.cfg.keyConfig)
+	patterns := buildPurgePatterns(pt, &t.cfg.cacheKey)
 
 	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
 		t.logger.DebugContext(ctx, "purge path",
@@ -135,7 +135,7 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 
 // executePurge dispatches a single pattern to the appropriate storage operation.
 func (t *Titip) executePurge(ctx context.Context, pt *purgeTarget, pattern string, soft bool) (int64, error) {
-	if pt.mode == purgeModeExact && (t.cfg.keyConfig.ExcludeHost || pt.host != "") {
+	if pt.mode == purgeModeExact && (t.cfg.cacheKey.ExcludeHost || pt.host != "") {
 		// pattern is a full exact primary key — use direct Purge.
 		n, err := t.storage.Purge(ctx, pattern, soft)
 		if err != nil {

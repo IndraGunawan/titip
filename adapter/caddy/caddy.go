@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,17 +97,19 @@ func getEngines() []*titip.Titip {
 	return list
 }
 
-// KeyConfig defines the cache key generation parameters in Caddy.
-type KeyConfig struct {
-	IncludeProtocol        *bool    `json:"include_protocol,omitempty"`
-	ExcludeHost            *bool    `json:"exclude_host,omitempty"`
-	ExcludeQueryString     *bool    `json:"exclude_query_string,omitempty"`
-	DisableQueryStringSort *bool    `json:"disable_query_string_sort,omitempty"`
-	IncludedQueryParams    []string `json:"included_query_params,omitempty"`
-	ExcludedQueryParams    []string `json:"excluded_query_params,omitempty"`
-	ExcludeMarketingParams *bool    `json:"exclude_marketing_params,omitempty"`
-	IncludedHeaderNames    []string `json:"included_header_names,omitempty"`
-	IncludedCookieNames    []string `json:"included_cookie_names,omitempty"`
+// CacheKey defines the cache key generation parameters in Caddy.
+type CacheKey struct {
+	IncludeProtocol          *bool               `json:"include_protocol,omitempty"`
+	ExcludeHost              *bool               `json:"exclude_host,omitempty"`
+	ExcludeQueryString       *bool               `json:"exclude_query_string,omitempty"`
+	DisableQueryStringSort   *bool               `json:"disable_query_string_sort,omitempty"`
+	IncludedQueryParams      []string            `json:"included_query_params,omitempty"`
+	ExcludedQueryParams      []string            `json:"excluded_query_params,omitempty"`
+	ExcludeMarketingParams   *bool               `json:"exclude_marketing_params,omitempty"`
+	IncludedHeaderNames      []string            `json:"included_header_names,omitempty"`
+	IncludedCookieNames      []string            `json:"included_cookie_names,omitempty"`
+	CaseInsensitivePath      *bool               `json:"case_insensitive_path,omitempty"`
+	IncludedQueryParamValues map[string][]string `json:"included_query_param_values,omitempty"`
 }
 
 // ESIConfig defines ESI parameters in Caddy.
@@ -133,12 +137,15 @@ type Handler struct {
 	BackgroundFetchTimeout        string          `json:"background_fetch_timeout,omitempty"`
 	StorageTimeout                string          `json:"storage_timeout,omitempty"`
 	TagHeader                     string          `json:"tag_header,omitempty"`
-	Key                           *KeyConfig      `json:"key,omitempty"`
+	CacheKey                      *CacheKey       `json:"cache_key,omitempty"`
 	ESI                           *ESIConfig      `json:"esi,omitempty"`
+	UseRewrittenURL               *bool           `json:"use_rewritten_url,omitempty"`
 
-	storageMod StorageModule
-	engine     *titip.Titip
-	id         string
+	storageMod      StorageModule
+	engine          *titip.Titip
+	id              string
+	useRewrittenURL bool
+	logger          *slog.Logger
 }
 
 // CaddyModule returns the Caddy module information.
@@ -152,6 +159,9 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the Titip caching engine and guest storage module.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	h.id = fmt.Sprintf("titip-%p", h)
+	if h.logger == nil {
+		h.logger = ctx.Slogger()
+	}
 
 	// Check for global App defaults
 	var app *App
@@ -177,8 +187,8 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 		h.storageMod = sMod
 		store = sMod.Storage()
-	} else if app != nil && app.storage != nil {
-		store = app.storage
+	} else if app != nil && app.storageMod != nil {
+		store = app.storageMod.Storage()
 	} else {
 		return fmt.Errorf("titip: storage configuration is required (neither route nor global storage provided)")
 	}
@@ -193,14 +203,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		titip.WithMetrics(ctx.GetMetricsRegistry()),
 	}
 
-	func() {
-		defer func() {
-			_ = recover()
-		}()
-		if l := ctx.Slogger(); l != nil {
-			opts = append(opts, titip.WithLogger(l))
-		}
-	}()
+	if h.logger != nil {
+		opts = append(opts, titip.WithLogger(h.logger))
+	}
 
 	// Cache-Status header mode (inherit from app if not set)
 	cacheStatus := h.CacheStatus
@@ -212,7 +217,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusSimpleToken))
 	case "rfc9211":
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusRFC9211))
-	case "none", "disabled":
+	case "none":
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusNone))
 	default:
 		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
@@ -275,20 +280,30 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithTagHeaderName(h.TagHeader))
 	}
 
-	// Key configuration: default -> global App defaults -> route overrides
-	if (app != nil && app.KeyConfig != nil) || h.Key != nil {
-		keyCfg := titip.KeyConfig{}
-		if app != nil && app.KeyConfig != nil {
-			if err := applyKeyConfig(&keyCfg, app.KeyConfig); err != nil {
+	// UseRewrittenURL (inherit from app if not set)
+	useRewritten := false
+	if app != nil && app.UseRewrittenURL != nil {
+		useRewritten = *app.UseRewrittenURL
+	}
+	if h.UseRewrittenURL != nil {
+		useRewritten = *h.UseRewrittenURL
+	}
+	h.useRewrittenURL = useRewritten
+
+	// CacheKey configuration: default -> global App defaults -> route overrides
+	if (app != nil && app.CacheKey != nil) || h.CacheKey != nil {
+		keyCfg := titip.CacheKey{}
+		if app != nil && app.CacheKey != nil {
+			if err := applyCacheKey(&keyCfg, app.CacheKey); err != nil {
 				return err
 			}
 		}
-		if h.Key != nil {
-			if err := applyKeyConfig(&keyCfg, h.Key); err != nil {
+		if h.CacheKey != nil {
+			if err := applyCacheKey(&keyCfg, h.CacheKey); err != nil {
 				return err
 			}
 		}
-		opts = append(opts, titip.WithKeyConfig(keyCfg))
+		opts = append(opts, titip.WithCacheKey(keyCfg))
 	}
 
 	// ESI configuration: default -> global App defaults -> route overrides
@@ -358,6 +373,38 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.engine = engine
 	registerEngine(h.id, engine)
 
+	storageName := "unknown"
+	if h.storageMod != nil {
+		if mod, ok := h.storageMod.(caddy.Module); ok {
+			storageName = strings.TrimPrefix(string(mod.CaddyModule().ID), "titip.storage.")
+		}
+	} else if app != nil && app.storageMod != nil {
+		if mod, ok := app.storageMod.(caddy.Module); ok {
+			storageName = strings.TrimPrefix(string(mod.CaddyModule().ID), "titip.storage.")
+		}
+	}
+	if storageName == "unknown" {
+		tName := strings.TrimPrefix(fmt.Sprintf("%T", store), "*")
+		if before, _, ok := strings.Cut(tName, "."); ok {
+			storageName = strings.ToLower(before)
+		} else {
+			storageName = strings.ToLower(tName)
+		}
+	}
+
+	if h.logger != nil {
+		if h.logger.Enabled(ctx, slog.LevelInfo) {
+			h.logger.InfoContext(ctx, "module initialized",
+				slog.String("storage", storageName),
+			)
+		}
+		if h.logger.Enabled(ctx, slog.LevelDebug) {
+			h.logger.DebugContext(ctx, "module registered",
+				slog.String("id", h.id),
+			)
+		}
+	}
+
 	return nil
 }
 
@@ -372,6 +419,11 @@ func (h *Handler) Validate() error {
 // Cleanup gracefully shuts down the caching engine.
 func (h *Handler) Cleanup() error {
 	unregisterEngine(h.id)
+	if h.logger != nil && h.logger.Enabled(context.Background(), slog.LevelDebug) {
+		h.logger.DebugContext(context.Background(), "module cleaned up",
+			slog.String("id", h.id),
+		)
+	}
 	if h.engine != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -388,14 +440,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// un-rewritten request in the context under caddyhttp.OriginalRequestCtxKey.
 	//
 	// We extract the original request URL for Titip's cache key generation so that distinct
-	// client-facing paths (e.g. "/about", "/users") do not collapse into the same cache key,
+	// client-facing paths (e.g. "/about", "/products") do not collapse into the same cache key,
 	// while preserving the current request's headers, context, and body.
 	engineReq := r
-	if origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request); ok && origReq.URL != nil {
-		rCopy := *r
-		rCopy.URL = origReq.URL
-		rCopy.RequestURI = origReq.RequestURI
-		engineReq = &rCopy
+	if !h.useRewrittenURL {
+		if origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request); ok && origReq.URL != nil {
+			rCopy := *r
+			rCopy.URL = origReq.URL
+			rCopy.RequestURI = origReq.RequestURI
+			engineReq = &rCopy
+		}
 	}
 
 	// Bridge caddyhttp.Handler to standard http.Handler.
@@ -478,11 +532,11 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				h.TagHeader = d.Val()
-			case "key":
-				if h.Key == nil {
-					h.Key = new(KeyConfig)
+			case "cache_key":
+				if h.CacheKey == nil {
+					h.CacheKey = new(CacheKey)
 				}
-				if err := h.Key.unmarshalCaddyfile(d); err != nil {
+				if err := h.CacheKey.unmarshalCaddyfile(d); err != nil {
 					return err
 				}
 			case "esi":
@@ -492,6 +546,16 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err := h.ESI.unmarshalCaddyfile(d); err != nil {
 					return err
 				}
+			case "use_rewritten_url":
+				val := true
+				if d.NextArg() {
+					var err error
+					val, err = strconv.ParseBool(d.Val())
+					if err != nil {
+						return d.Errf("invalid boolean value %q: %v", d.Val(), err)
+					}
+				}
+				h.UseRewrittenURL = &val
 			default:
 				return d.Errf("unknown titip directive %q", d.Val())
 			}
@@ -500,7 +564,7 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	return nil
 }
 
-func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
+func (kc *CacheKey) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.NextBlock(1) {
 		switch d.Val() {
 		case "include_protocol":
@@ -521,16 +585,6 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("invalid boolean value for exclude_host: %v", err)
 			}
 			kc.ExcludeHost = &val
-		case "include_host": // backward compatibility
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			val, err := strconv.ParseBool(d.Val())
-			if err != nil {
-				return d.Errf("invalid boolean value for include_host: %v", err)
-			}
-			inv := !val
-			kc.ExcludeHost = &inv
 		case "exclude_query_string":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -549,11 +603,11 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("invalid boolean value for disable_query_string_sort: %v", err)
 			}
 			kc.DisableQueryStringSort = &val
-		case "included_query_params", "query_whitelist":
+		case "included_query_params":
 			kc.IncludedQueryParams = append(kc.IncludedQueryParams, d.RemainingArgs()...)
-		case "excluded_query_params", "query_blacklist":
+		case "excluded_query_params":
 			kc.ExcludedQueryParams = append(kc.ExcludedQueryParams, d.RemainingArgs()...)
-		case "exclude_marketing_params", "ignore_marketing_params":
+		case "exclude_marketing_params":
 			val := true
 			if d.NextArg() {
 				var err error
@@ -563,29 +617,34 @@ func (kc *KeyConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 			}
 			kc.ExcludeMarketingParams = &val
-		case "included_header_names", "include_headers":
+		case "included_header_names":
 			kc.IncludedHeaderNames = append(kc.IncludedHeaderNames, d.RemainingArgs()...)
-		case "included_cookie_names", "include_cookies":
+		case "included_cookie_names":
 			kc.IncludedCookieNames = append(kc.IncludedCookieNames, d.RemainingArgs()...)
-		case "query":
+		case "case_insensitive_path":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for case_insensitive_path: %v", err)
+				}
+			}
+			kc.CaseInsensitivePath = &val
+		case "included_query_param_values":
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
-			mode := d.Val()
-			switch strings.ToLower(mode) {
-			case "all":
-				f := false
-				kc.ExcludeQueryString = &f
-			case "none", "exclude_all":
-				t := true
-				kc.ExcludeQueryString = &t
-			case "whitelist":
-				kc.IncludedQueryParams = append(kc.IncludedQueryParams, d.RemainingArgs()...)
-			case "blacklist":
-				kc.ExcludedQueryParams = append(kc.ExcludedQueryParams, d.RemainingArgs()...)
-			default:
-				return d.Errf("unknown query mode %q (allowed: all, none, whitelist <params...>, blacklist <params...>)", mode)
+			param := d.Val()
+			vals := d.RemainingArgs()
+			if len(vals) == 0 {
+				return d.Errf("included_query_param_values requires at least one allowed value for parameter %q", param)
 			}
+			if kc.IncludedQueryParamValues == nil {
+				kc.IncludedQueryParamValues = make(map[string][]string)
+			}
+			kc.IncludedQueryParamValues[param] = append(kc.IncludedQueryParamValues[param], vals...)
+
 		default:
 			return d.Errf("unknown key subdirective %q", d.Val())
 		}
@@ -721,7 +780,7 @@ func parseByteSize(s string) (int64, error) {
 	return val * multi, nil
 }
 
-func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
+func applyCacheKey(target *titip.CacheKey, src *CacheKey) error {
 	if src == nil {
 		return nil
 	}
@@ -733,6 +792,8 @@ func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
 	}
 	if src.ExcludeQueryString != nil {
 		target.ExcludeQueryString = *src.ExcludeQueryString
+	} else if len(src.IncludedQueryParams) > 0 || len(src.IncludedQueryParamValues) > 0 {
+		target.ExcludeQueryString = false
 	}
 	if src.DisableQueryStringSort != nil {
 		target.DisableQueryStringSort = *src.DisableQueryStringSort
@@ -751,6 +812,17 @@ func applyKeyConfig(target *titip.KeyConfig, src *KeyConfig) error {
 	}
 	if len(src.IncludedCookieNames) > 0 {
 		target.IncludedCookieNames = src.IncludedCookieNames
+	}
+	if src.CaseInsensitivePath != nil {
+		target.CaseInsensitivePath = *src.CaseInsensitivePath
+	}
+	if len(src.IncludedQueryParamValues) > 0 {
+		if target.IncludedQueryParamValues == nil {
+			target.IncludedQueryParamValues = make(map[string][]string, len(src.IncludedQueryParamValues))
+		}
+		for k, v := range src.IncludedQueryParamValues {
+			target.IncludedQueryParamValues[k] = slices.Clone(v)
+		}
 	}
 	return nil
 }

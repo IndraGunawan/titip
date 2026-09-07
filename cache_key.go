@@ -31,8 +31,13 @@ var defaultPorts = map[string]string{
 	"https": ":443",
 }
 
-// KeyConfig defines the configuration for assembling zero-hash canonical cache keys.
-type KeyConfig struct {
+// CacheKey defines the rules for assembling zero-hash canonical cache keys.
+//
+// Every cached request automatically receives a cache key. A zero-value CacheKey{}
+// or omitting WithCacheKey applies the standard RFC-compliant default:
+// host included, protocol excluded, case-sensitive path, all query parameters
+// retained, and sorted alphabetically.
+type CacheKey struct {
 	// IncludeProtocol includes the request scheme ("http" or "https") in the cache key.
 	// When true, HTTP and HTTPS requests reference distinct cache entries.
 	IncludeProtocol bool
@@ -49,11 +54,11 @@ type KeyConfig struct {
 	// When true, query parameter order is preserved as received from the client.
 	DisableQueryStringSort bool
 
-	// IncludedQueryParams specifies a whitelist of query parameter names to include in the cache key.
+	// IncludedQueryParams specifies an allowlist of query parameter names to include in the cache key.
 	// If set, only these specific parameters are included in the cache key.
 	IncludedQueryParams []string
 
-	// ExcludedQueryParams specifies a blacklist of query parameter names to exclude from the cache key.
+	// ExcludedQueryParams specifies a denylist of query parameter names to exclude from the cache key.
 	// If set, all query parameters except these are included in the cache key.
 	ExcludedQueryParams []string
 
@@ -81,6 +86,15 @@ type KeyConfig struct {
 	//
 	// Best used for low-cardinality user preferences or A/B testing groups (e.g. "ab_group", "currency", "theme", "locale").
 	IncludedCookieNames []string
+
+	// CaseInsensitivePath normalizes the URL path to lowercase in the primary cache key.
+	// When true, requests with different path casing (e.g. /Products/Shoes vs /products/shoes) share the same cache entry.
+	CaseInsensitivePath bool
+
+	// IncludedQueryParamValues specifies an allowlist of specific parameter values.
+	// A parameter key in this map is only included in the cache key if its value matches one of the specified allowed values.
+	// Any value not in the list is omitted from the cache key.
+	IncludedQueryParamValues map[string][]string
 }
 
 // generatePrimaryKey constructs a canonical, zero-hash primary cache key for a request.
@@ -89,9 +103,9 @@ type KeyConfig struct {
 //
 // Component ordering is fixed: path → host → method → scheme → query → headers → cookies.
 // All component values are percent-encoded where they contain delimiter characters (:, =).
-func generatePrimaryKey(r *http.Request, cfg *KeyConfig) string {
+func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 	if cfg == nil {
-		cfg = &KeyConfig{}
+		cfg = &CacheKey{}
 	}
 
 	buf := getBuffer()
@@ -111,6 +125,9 @@ func generatePrimaryKey(r *http.Request, cfg *KeyConfig) string {
 		cleanedPath = "/"
 	} else if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(cleanedPath, "/") {
 		cleanedPath += "/"
+	}
+	if cfg.CaseInsensitivePath {
+		cleanedPath = strings.ToLower(cleanedPath)
 	}
 
 	buf.WriteString("p=")
@@ -217,37 +234,56 @@ func resolveScheme(r *http.Request) string {
 
 // buildQueryString assembles a filtered and sorted query string for inclusion in the cache key.
 // The result is a raw query string that is safe to embed in the qs= label value.
-func buildQueryString(r *http.Request, cfg *KeyConfig) string {
+func buildQueryString(r *http.Request, cfg *CacheKey) string {
+	if cfg.ExcludeQueryString {
+		return ""
+	}
 	if cfg.DisableQueryStringSort {
 		return buildUnsortedQueryString(r, cfg)
 	}
 	return buildSortedQueryString(r, cfg)
 }
 
-// isQueryAllowed reports whether query param k should be included per cfg.
-func isQueryAllowed(k string, cfg *KeyConfig) bool {
-	if len(cfg.IncludedQueryParams) > 0 {
-		return slices.Contains(cfg.IncludedQueryParams, k)
+// isQueryParamAllowed reports whether query param k with value v should be included per cfg.
+func isQueryParamAllowed(k, v string, cfg *CacheKey) bool {
+	hasIncludedParams := len(cfg.IncludedQueryParams) > 0 || len(cfg.IncludedQueryParamValues) > 0
+	if hasIncludedParams {
+		if slices.Contains(cfg.IncludedQueryParams, k) {
+			return true
+		}
+		if len(cfg.IncludedQueryParamValues) > 0 {
+			if allowedVals, ok := cfg.IncludedQueryParamValues[k]; ok {
+				return slices.Contains(allowedVals, v)
+			}
+		}
+		return false
 	}
 	if slices.Contains(cfg.ExcludedQueryParams, k) {
 		return false
 	}
-	if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, k) {
+	if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, strings.ToLower(k)) {
 		return false
 	}
 	return true
 }
 
 // buildSortedQueryString parses, filters, sorts, and reassembles the query string.
-func buildSortedQueryString(r *http.Request, cfg *KeyConfig) string {
+func buildSortedQueryString(r *http.Request, cfg *CacheKey) string {
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil || len(values) == 0 {
 		return ""
 	}
 
 	keys := make([]string, 0, len(values))
-	for k := range values {
-		if isQueryAllowed(k, cfg) {
+	for k, vals := range values {
+		filteredVals := vals[:0]
+		for _, v := range vals {
+			if isQueryParamAllowed(k, v, cfg) {
+				filteredVals = append(filteredVals, v)
+			}
+		}
+		if len(filteredVals) > 0 {
+			values[k] = filteredVals
 			keys = append(keys, k)
 		}
 	}
@@ -279,7 +315,7 @@ func buildSortedQueryString(r *http.Request, cfg *KeyConfig) string {
 }
 
 // buildUnsortedQueryString filters query params while preserving original ordering.
-func buildUnsortedQueryString(r *http.Request, cfg *KeyConfig) string {
+func buildUnsortedQueryString(r *http.Request, cfg *CacheKey) string {
 	qsBuf := getBuffer()
 	defer putBuffer(qsBuf)
 
@@ -294,16 +330,16 @@ func buildUnsortedQueryString(r *http.Request, cfg *KeyConfig) string {
 			k = rawKey
 		}
 
-		if !isQueryAllowed(k, cfg) {
-			continue
-		}
-
 		v := ""
 		if hasVal {
 			v, err = url.QueryUnescape(rawVal)
 			if err != nil {
 				v = rawVal
 			}
+		}
+
+		if !isQueryParamAllowed(k, v, cfg) {
+			continue
 		}
 
 		if !first {
