@@ -378,14 +378,14 @@ func TestCaddyHandler_CacheKey_LiveExecution(t *testing.T) {
 	defer cleanup()
 
 	var originCalls atomic.Int64
-	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls := originCalls.Add(1)
 		w.Header().Set("Cache-Control", "public, max-age=60")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintf(w, `{"call":%d,"query":%q}`, calls, r.URL.RawQuery)
 	})
 	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
-		downstream.ServeHTTP(w, r)
+		originHandler.ServeHTTP(w, r)
 		return nil
 	})
 
@@ -428,6 +428,7 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 			allowed_hosts cdn.example.com api.partner.com
 			max_response_size 5MB
 			forward_fragment_cookies true
+			preserve_etag true
 			error_marker "<!-- error -->"
 		}
 	}`
@@ -443,6 +444,9 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 	}
 	if h.ESI.Enabled == nil || !*h.ESI.Enabled {
 		t.Errorf("expected ESI.Enabled to be true")
+	}
+	if h.ESI.PreserveETag == nil || !*h.ESI.PreserveETag {
+		t.Errorf("expected PreserveETag true, got %v", h.ESI.PreserveETag)
 	}
 	if h.ESI.MaxDepth == nil || *h.ESI.MaxDepth != 3 {
 		t.Errorf("expected MaxDepth 3, got %v", h.ESI.MaxDepth)
@@ -1011,7 +1015,7 @@ func TestCaddyHandler_SWR_PreservesReplacerContext(t *testing.T) {
 	var currentPayload atomic.Value
 	currentPayload.Store("v1")
 
-	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+	nextHandler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		if repl, ok := r.Context().Value(caddymain.ReplacerCtxKey).(*caddymain.Replacer); ok && repl != nil {
 			replacerFound.Store(true)
 		}
@@ -1026,7 +1030,7 @@ func TestCaddyHandler_SWR_PreservesReplacerContext(t *testing.T) {
 	repl1 := caddymain.NewReplacer()
 	req1 = req1.WithContext(context.WithValue(req1.Context(), caddymain.ReplacerCtxKey, repl1))
 	rec1 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec1, req1, downstream)
+	_ = h.ServeHTTP(rec1, req1, nextHandler)
 
 	// Wait to enter SWR window
 	time.Sleep(1100 * time.Millisecond)
@@ -1038,7 +1042,7 @@ func TestCaddyHandler_SWR_PreservesReplacerContext(t *testing.T) {
 	repl2 := caddymain.NewReplacer()
 	req2 = req2.WithContext(context.WithValue(req2.Context(), caddymain.ReplacerCtxKey, repl2))
 	rec2 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec2, req2, downstream)
+	_ = h.ServeHTTP(rec2, req2, nextHandler)
 
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("expected 200 on stale hit, got %d", rec2.Code)
@@ -1068,13 +1072,13 @@ func TestCaddyHandler_OriginalRequestRewrite(t *testing.T) {
 	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
 	defer cleanup()
 
-	var downstreamCalls atomic.Int32
-	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
-		// Downstream (e.g. FrankenPHP) must see the rewritten URL "index.php"
+	var nextCalls atomic.Int32
+	nextHandler := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		// Next handler (e.g. FrankenPHP) must see the rewritten URL "index.php"
 		if r.URL.Path != "/index.php" {
-			t.Errorf("expected downstream to receive rewritten path /index.php, got %s", r.URL.Path)
+			t.Errorf("expected nextHandler to receive rewritten path /index.php, got %s", r.URL.Path)
 		}
-		downstreamCalls.Add(1)
+		nextCalls.Add(1)
 
 		// Simulating PHP front-controller reading OriginalRequestCtxKey or REQUEST_URI
 		origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request)
@@ -1100,37 +1104,37 @@ func TestCaddyHandler_OriginalRequestRewrite(t *testing.T) {
 		return req.WithContext(ctx)
 	}
 
-	// 1. Request /articles (Miss -> downstream call 1)
+	// 1. Request /articles (Miss -> next call 1)
 	req1 := makeRewrittenReq("/articles")
 	rec1 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec1, req1, downstream)
+	_ = h.ServeHTTP(rec1, req1, nextHandler)
 	if rec1.Body.String() != `{"page":"articles"}` {
 		t.Fatalf("expected page articles, got %s", rec1.Body.String())
 	}
-	if downstreamCalls.Load() != 1 {
-		t.Fatalf("expected 1 downstream call, got %d", downstreamCalls.Load())
+	if nextCalls.Load() != 1 {
+		t.Fatalf("expected 1 next call, got %d", nextCalls.Load())
 	}
 
-	// 2. Request /products (Different original URL -> Must be a MISS, NOT collision with /articles)
+	// 2. Request /products (Different original URL -> Must be a MISS, NOT collided with /articles)
 	req2 := makeRewrittenReq("/products")
 	rec2 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec2, req2, downstream)
+	_ = h.ServeHTTP(rec2, req2, nextHandler)
 	if rec2.Body.String() != `{"page":"products"}` {
 		t.Fatalf("expected page products (not collided with articles), got %s", rec2.Body.String())
 	}
-	if downstreamCalls.Load() != 2 {
-		t.Fatalf("expected 2 downstream calls (separate cache entries), got %d", downstreamCalls.Load())
+	if nextCalls.Load() != 2 {
+		t.Fatalf("expected 2 next calls (separate cache entries), got %d", nextCalls.Load())
 	}
 
-	// 3. Request /articles again (Same original URL -> HIT, no downstream call)
+	// 3. Request /articles again (Same original URL -> HIT, no next call)
 	req3 := makeRewrittenReq("/articles")
 	rec3 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec3, req3, downstream)
+	_ = h.ServeHTTP(rec3, req3, nextHandler)
 	if rec3.Body.String() != `{"page":"articles"}` {
 		t.Fatalf("expected cached page articles, got %s", rec3.Body.String())
 	}
-	if downstreamCalls.Load() != 2 {
-		t.Fatalf("expected cache hit to not invoke downstream, got %d calls", downstreamCalls.Load())
+	if nextCalls.Load() != 2 {
+		t.Fatalf("expected cache hit to not invoke next handler, got %d calls", nextCalls.Load())
 	}
 }
 

@@ -188,13 +188,16 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	// Fresh Cache Hit & Downstream Precondition Evaluation (RFC 9110 §13.2.2 & RFC 9111 §4.3.2)
 	// Preconditions are ONLY evaluated if the cached representation is strictly fresh.
 	if isFresh {
-		status, proceed := t.evaluatePreconditions(ctx.r, ctx.varInfo)
-		if !proceed {
-			if status == http.StatusNotModified {
-				return stateServe304
-			}
-			if status == http.StatusPreconditionFailed {
-				return stateServe412
+		hasESI := t.cfg.esi.Enabled && len(ctx.varInfo.EsiFragments) > 0
+		if !hasESI || t.cfg.esi.PreserveETag {
+			status, proceed := t.evaluatePreconditions(ctx.r, ctx.varInfo)
+			if !proceed {
+				if status == http.StatusNotModified {
+					return stateServe304
+				}
+				if status == http.StatusPreconditionFailed {
+					return stateServe412
+				}
 			}
 		}
 		return stateServeCachedHit
@@ -222,6 +225,7 @@ func stateServe304(t *Titip, ctx *requestContext) stateFn {
 	t.recordRequest(ctx, statusHit)
 	t.emitCacheStatus(ctx.w, tokenHit, "hit")
 	t.copyProtoHeaders(ctx.w, ctx.varInfo.ResponseHeaders)
+	t.adjustESIHeaders(ctx.w, ctx.varInfo)
 	residentSec := max((ctx.nowNano-ctx.meta.CreatedAtUnixNano)/int64(time.Second), 0)
 	age := ctx.meta.CorrectedInitialAgeSeconds + residentSec
 	ctx.w.Header().Set(headerAge, strconv.FormatInt(age, 10))
@@ -245,6 +249,7 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 		ttlStr := strconv.FormatInt(t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano), 10)
 		t.emitCacheStatus(ctx.w, tokenHit, "hit; ttl="+ttlStr)
 		t.copyProtoHeaders(ctx.w, ctx.varInfo.ResponseHeaders)
+		t.adjustESIHeaders(ctx.w, ctx.varInfo)
 		ctx.w.WriteHeader(int(ctx.varInfo.StatusCode))
 		return nil
 	}
@@ -665,18 +670,22 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	if (res.isFallback || res.is304Origin) && res.fallback != nil {
 		// If origin confirmed 304 and downstream client requested conditional revalidation matching refreshed entry
 		if res.is304Origin {
-			status, proceed := t.evaluatePreconditions(ctx.r, res.fallback.varInfo)
-			if !proceed && status == http.StatusNotModified {
-				t.recordRequest(ctx, statusRevalidated)
-				t.emitCacheStatus(ctx.w, tokenRevalidated, fmt.Sprintf("fwd=stale; fwd-status=304%s; stored; detail=304-refreshed", collapsedToken))
-				t.copyProtoHeaders(ctx.w, res.fallback.varInfo.ResponseHeaders)
-				if res.fallback.meta != nil {
-					residentSec := max((time.Now().UnixNano()-res.fallback.meta.CreatedAtUnixNano)/int64(time.Second), 0)
-					age := res.fallback.meta.CorrectedInitialAgeSeconds + residentSec
-					ctx.w.Header().Set(headerAge, strconv.FormatInt(age, 10))
+			hasESI := t.cfg.esi.Enabled && len(res.fallback.varInfo.EsiFragments) > 0
+			if !hasESI || t.cfg.esi.PreserveETag {
+				status, proceed := t.evaluatePreconditions(ctx.r, res.fallback.varInfo)
+				if !proceed && status == http.StatusNotModified {
+					t.recordRequest(ctx, statusRevalidated)
+					t.emitCacheStatus(ctx.w, tokenRevalidated, fmt.Sprintf("fwd=stale; fwd-status=304%s; stored; detail=304-refreshed", collapsedToken))
+					t.copyProtoHeaders(ctx.w, res.fallback.varInfo.ResponseHeaders)
+					t.adjustESIHeaders(ctx.w, res.fallback.varInfo)
+					if res.fallback.meta != nil {
+						residentSec := max((time.Now().UnixNano()-res.fallback.meta.CreatedAtUnixNano)/int64(time.Second), 0)
+						age := res.fallback.meta.CorrectedInitialAgeSeconds + residentSec
+						ctx.w.Header().Set(headerAge, strconv.FormatInt(age, 10))
+					}
+					ctx.w.WriteHeader(http.StatusNotModified)
+					return nil
 				}
-				ctx.w.WriteHeader(http.StatusNotModified)
-				return nil
 			}
 		}
 
@@ -1199,6 +1208,20 @@ func (t *Titip) copyProtoHeaders(w http.ResponseWriter, protoHeaders map[string]
 		for _, v := range hv.Values {
 			w.Header().Add(k, v)
 		}
+	}
+}
+
+func (t *Titip) adjustESIHeaders(w http.ResponseWriter, varInfo *pb.VariantInfo) {
+	if !t.cfg.esi.Enabled || varInfo == nil || len(varInfo.EsiFragments) == 0 {
+		return
+	}
+	if t.cfg.esi.PreserveETag {
+		if etag := w.Header().Get(headerETag); etag != "" && !strings.HasPrefix(etag, "W/") {
+			w.Header().Set(headerETag, "W/"+etag)
+		}
+	} else {
+		w.Header().Del(headerETag)
+		w.Header().Del(headerLastModified)
 	}
 }
 

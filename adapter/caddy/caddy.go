@@ -124,6 +124,7 @@ type ESIConfig struct {
 	AllowPrivateIPsForAllowedHosts *bool    `json:"allow_private_ips_for_allowed_hosts,omitempty"`
 	MaxResponseSize                string   `json:"max_response_size,omitempty"`
 	ForwardFragmentCookies         *bool    `json:"forward_fragment_cookies,omitempty"`
+	PreserveETag                   *bool    `json:"preserve_etag,omitempty"`
 	ErrorMarker                    string   `json:"error_marker,omitempty"`
 }
 
@@ -453,20 +454,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	}
 
 	// Bridge caddyhttp.Handler to standard http.Handler.
-	// Downstream handlers must receive the rewritten request so downstream route matchers
+	// Next handlers must receive the rewritten request so downstream route matchers
 	// and backend handlers see their expected target path.
-	downstream := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		downstreamReq := req
+	nextHandler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		nextReq := req
 		if req.URL != r.URL {
 			rCopy := *req
 			rCopy.URL = r.URL
 			rCopy.RequestURI = r.RequestURI
-			downstreamReq = &rCopy
+			nextReq = &rCopy
 		}
-		_ = next.ServeHTTP(rw, downstreamReq)
+		_ = next.ServeHTTP(rw, nextReq)
 	})
 
-	h.engine.ServeHTTP(w, engineReq, downstream)
+	h.engine.ServeHTTP(w, engineReq, nextHandler)
 	return nil
 }
 
@@ -736,6 +737,16 @@ func (e *ESIConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 			}
 			e.ForwardFragmentCookies = &val
+		case "preserve_etag":
+			val := true
+			if d.NextArg() {
+				var err error
+				val, err = strconv.ParseBool(d.Val())
+				if err != nil {
+					return d.Errf("invalid boolean value for preserve_etag: %v", err)
+				}
+			}
+			e.PreserveETag = &val
 		case "error_marker":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -865,6 +876,9 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	}
 	if src.ForwardFragmentCookies != nil {
 		*opts = append(*opts, esi.WithDisableForwardCookies(!*src.ForwardFragmentCookies))
+	}
+	if src.PreserveETag != nil {
+		*opts = append(*opts, esi.WithPreserveETag(*src.PreserveETag))
 	}
 	if src.ErrorMarker != "" {
 		*opts = append(*opts, esi.WithIncludeErrorMarker(src.ErrorMarker))
