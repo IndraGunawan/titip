@@ -203,11 +203,19 @@ func (t *Titip) processESI(
 	// Strip ESI/edge internal headers
 	reconciledHeaders.Del(headerSurrogateControl)
 
-	// Weaken or recalculate ETag
-	if etag := reconciledHeaders.Get(headerETag); etag != "" {
-		if !strings.HasPrefix(etag, "W/") && !strings.HasPrefix(etag, "w/") {
-			reconciledHeaders.Set(headerETag, "W/"+etag)
+	// ETag & Last-Modified handling for composite ESI documents:
+	// By default (PreserveETag == false), strip ETag and Last-Modified to prevent downstream clients
+	// from sending conditional requests that would skip live fragment assembly.
+	// When PreserveETag == true (opt-in for static ESI), weaken ETag to W/"..." per RFC 9110 §8.8.3.2.
+	if t.cfg.esi.PreserveETag {
+		if etag := reconciledHeaders.Get(headerETag); etag != "" {
+			if !strings.HasPrefix(etag, "W/") && !strings.HasPrefix(etag, "w/") {
+				reconciledHeaders.Set(headerETag, "W/"+etag)
+			}
 		}
+	} else {
+		reconciledHeaders.Del(headerETag)
+		reconciledHeaders.Del(headerLastModified)
 	}
 
 	// Update Content-Length only if the origin explicitly provided one

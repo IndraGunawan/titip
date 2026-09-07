@@ -54,6 +54,10 @@ type Config struct {
 	// DisableForwardCookies disables forwarding Set-Cookie headers from subrequests to the client (default: false = forwarded).
 	DisableForwardCookies bool
 
+	// PreserveETag preserves downstream ETag (weakened) and Last-Modified on ESI documents,
+	// allowing downstream 304 Not Modified responses (default: false = headers stripped, 304 bypassed).
+	PreserveETag bool
+
 	// IncludeErrorMarker is the HTML placeholder rendered on unhandled fetch errors (default: "").
 	IncludeErrorMarker string
 }
@@ -143,6 +147,14 @@ func WithDisableForwardCookies(disable bool) Option {
 func WithIncludeErrorMarker(marker string) Option {
 	return func(c *Config) {
 		c.IncludeErrorMarker = marker
+	}
+}
+
+// WithPreserveETag configures whether downstream ETag (weakened) and Last-Modified are preserved on ESI documents
+// (default: false = headers stripped, downstream 304 bypassed).
+func WithPreserveETag(preserve bool) Option {
+	return func(c *Config) {
+		c.PreserveETag = preserve
 	}
 }
 

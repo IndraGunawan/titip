@@ -277,6 +277,7 @@ cache, err := titip.New(
 | `esi.WithAllowPrivateIPsForAllowedHosts(bool)` | `false` | Permits private IPs specifically for explicitly allowed hosts. |
 | `esi.WithMaxResponseSize(int64)` | `10MB` | Maximum allowed fragment body size in bytes. |
 | `esi.WithDisableForwardCookies(bool)` | `false` | When false (default), forwards `Set-Cookie` headers from fragments to the client. |
+| `esi.WithPreserveETag(bool)` | `false` | When true, weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. When false (default), strips `ETag`/`Last-Modified` downstream to guarantee fresh fragment execution. |
 | `esi.WithIncludeErrorMarker(string)` | `""` | HTML placeholder rendered on unhandled fetch errors. |
 
 ## Observability & Metrics

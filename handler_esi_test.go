@@ -84,9 +84,9 @@ func TestESI_InProcessVirtualSubrequests(t *testing.T) {
 		t.Errorf("expected Set-Cookie forwarded from subrequest, got: %s", cookie)
 	}
 
-	// Verify ETag was weakened
-	if etag := rec1.Header().Get("ETag"); etag != `W/"dash-v1"` {
-		t.Errorf("expected weak ETag W/\"dash-v1\", got: %s", etag)
+	// Verify ETag was stripped by default (PreserveETag=false)
+	if etag := rec1.Header().Get("ETag"); etag != "" {
+		t.Errorf("expected stripped ETag by default, got: %s", etag)
 	}
 
 	// Verify Surrogate-Control was stripped
@@ -1299,5 +1299,217 @@ func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
 	if mw.cfg.esi.DisableForwardCookies != false {
 		t.Errorf("expected default DisableForwardCookies=false, got true")
 	}
+	if mw.cfg.esi.PreserveETag != false {
+		t.Errorf("expected default PreserveETag=false, got true")
+	}
 }
+
+func TestESI_PreserveETag_Default_StripsHeadersAndBypasses304(t *testing.T) {
+	var pageHits atomic.Int32
+	var fragHits atomic.Int32
+
+	now := time.Now().UTC().Truncate(time.Second)
+	lastMod := now.Add(-10 * time.Minute).Format(http.TimeFormat)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		pageHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("ETag", `"dash-v1"`)
+		w.Header().Set("Last-Modified", lastMod)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><h1>Dashboard</h1><esi:include src="/api/counter" /></body></html>`))
+	})
+
+	mux.HandleFunc("/api/counter", func(w http.ResponseWriter, r *http.Request) {
+		hits := fragHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "<span>Count: %d</span>", hits)
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithMaxTimeout(5*time.Second),
+		),
+	)
+
+	handler := mw.testHandler(mux)
+
+	// 1. First Request: Cold Miss on Dashboard
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/dashboard", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK, got %d", rec1.Code)
+	}
+	if !strings.Contains(rec1.Body.String(), "<span>Count: 1</span>") {
+		t.Errorf("expected Count: 1, got %s", rec1.Body.String())
+	}
+	// Verify ETag and Last-Modified are stripped downstream by default
+	if etag := rec1.Header().Get("ETag"); etag != "" {
+		t.Errorf("expected ETag to be stripped downstream, got: %s", etag)
+	}
+	if lm := rec1.Header().Get("Last-Modified"); lm != "" {
+		t.Errorf("expected Last-Modified to be stripped downstream, got: %s", lm)
+	}
+
+	// 2. Second Request: Client sends conditional headers matching origin's stored ETag / Last-Modified.
+	// Since PreserveETag=false (default), 304 MUST be bypassed downstream and fragments spliced fresh.
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/dashboard", nil)
+	req2.Header.Set("If-None-Match", `"dash-v1"`)
+	req2.Header.Set("If-Modified-Since", lastMod)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK (304 bypassed), got %d", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), "<span>Count: 2</span>") {
+		t.Errorf("expected Count: 2 (fresh fragment), got %s", rec2.Body.String())
+	}
+	if etag := rec2.Header().Get("ETag"); etag != "" {
+		t.Errorf("expected ETag to be stripped on hit, got: %s", etag)
+	}
+	if lm := rec2.Header().Get("Last-Modified"); lm != "" {
+		t.Errorf("expected Last-Modified to be stripped on hit, got: %s", lm)
+	}
+	if pageHits.Load() != 1 {
+		t.Errorf("expected dashboard main page to be served from cache (1 hit), got %d hits", pageHits.Load())
+	}
+	if fragHits.Load() != 2 {
+		t.Errorf("expected fragment to be invoked twice, got %d hits", fragHits.Load())
+	}
+}
+
+func TestESI_PreserveETag_True_WeakensETagAndAllows304(t *testing.T) {
+	var pageHits atomic.Int32
+	var fragHits atomic.Int32
+
+	now := time.Now().UTC().Truncate(time.Second)
+	lastMod := now.Add(-10 * time.Minute).Format(http.TimeFormat)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		pageHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("ETag", `"dash-v1"`)
+		w.Header().Set("Last-Modified", lastMod)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><h1>Dashboard</h1><esi:include src="/api/counter" /></body></html>`))
+	})
+
+	mux.HandleFunc("/api/counter", func(w http.ResponseWriter, r *http.Request) {
+		hits := fragHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "<span>Count: %d</span>", hits)
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithMaxTimeout(5*time.Second),
+			esi.WithPreserveETag(true),
+		),
+	)
+
+	handler := mw.testHandler(mux)
+
+	// 1. First Request: Cold Miss on Dashboard
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/dashboard", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK, got %d", rec1.Code)
+	}
+	if !strings.Contains(rec1.Body.String(), "<span>Count: 1</span>") {
+		t.Errorf("expected Count: 1, got %s", rec1.Body.String())
+	}
+	// Verify ETag is weakened to W/"dash-v1" and Last-Modified is preserved
+	if etag := rec1.Header().Get("ETag"); etag != `W/"dash-v1"` {
+		t.Errorf("expected weakened ETag W/\"dash-v1\", got: %s", etag)
+	}
+	if lm := rec1.Header().Get("Last-Modified"); lm != lastMod {
+		t.Errorf("expected Last-Modified %s, got: %s", lastMod, lm)
+	}
+
+	// 2. Second Request: Client sends conditional request with weak ETag W/"dash-v1"
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/dashboard", nil)
+	req2.Header.Set("If-None-Match", `W/"dash-v1"`)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("expected status 304 Not Modified, got %d", rec2.Code)
+	}
+	if etag := rec2.Header().Get("ETag"); etag != `W/"dash-v1"` {
+		t.Errorf("expected weakened ETag on 304, got: %s", etag)
+	}
+	if pageHits.Load() != 1 {
+		t.Errorf("expected dashboard main page hit count 1, got %d", pageHits.Load())
+	}
+	// When downstream receives 304, fragment is not executed again
+	if fragHits.Load() != 1 {
+		t.Errorf("expected fragment hit count 1 on 304, got %d", fragHits.Load())
+	}
+}
+
+func TestESI_PageWithoutESI_PreservesETagAndAllows304(t *testing.T) {
+	var pageHits atomic.Int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/static-page", func(w http.ResponseWriter, r *http.Request) {
+		pageHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("ETag", `"static-v1"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body><h1>No ESI Tags Here</h1></body></html>`))
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+			esi.WithMaxTimeout(5*time.Second),
+			// Default PreserveETag = false
+		),
+	)
+
+	handler := mw.testHandler(mux)
+
+	// 1. First Request: Cold Miss on page without ESI tags
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/static-page", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK, got %d", rec1.Code)
+	}
+	// ETag should be preserved unmodified since there are no ESI tags in the document
+	if etag := rec1.Header().Get("ETag"); etag != `"static-v1"` {
+		t.Errorf("expected original ETag \"static-v1\", got: %s", etag)
+	}
+
+	// 2. Second Request: Client conditional request
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/static-page", nil)
+	req2.Header.Set("If-None-Match", `"static-v1"`)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("expected status 304 Not Modified, got %d", rec2.Code)
+	}
+	if pageHits.Load() != 1 {
+		t.Errorf("expected page hits = 1, got %d", pageHits.Load())
+	}
+}
+
 

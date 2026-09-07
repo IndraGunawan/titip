@@ -110,6 +110,7 @@ Configure cache key assembly inside the `cache_key { ... }` block:
 | `block_private_ips <bool>` | `true` | SSRF protection: block private/loopback/cloud metadata IPs on external includes. |
 | `allowed_hosts <hosts...>` | `(all)` | List of allowed external hosts for ESI includes. |
 | `forward_fragment_cookies <bool>` | `true` | Forward `Set-Cookie` headers from fragments to downstream client. |
+| `preserve_etag <bool>` | `false` | When true, weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. When false (default), strips `ETag`/`Last-Modified` downstream to force dynamic fragment re-evaluation. |
 
 ## 3. Caddy Admin Purge API (`POST /titip/purge`)
 
