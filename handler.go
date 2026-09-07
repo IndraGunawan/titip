@@ -350,9 +350,18 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	defer putResponseRecorder(rec)
 
 	originReq := ctx.r
-	if ctx.r.Method == http.MethodHead && t.cfg.convertHeadToGet {
+	hasConditionalHeaders := ctx.r.Header.Get(headerIfNoneMatch) != "" || ctx.r.Header.Get(headerIfModifiedSince) != ""
+	needsClone := (ctx.r.Method == http.MethodHead && t.cfg.convertHeadToGet) || hasConditionalHeaders
+	if needsClone {
 		originReq = ctx.r.Clone(originCtx)
-		originReq.Method = http.MethodGet
+		if ctx.r.Method == http.MethodHead && t.cfg.convertHeadToGet {
+			originReq.Method = http.MethodGet
+		}
+		// Strip conditional validator headers so origin returns full representation body to warm cache
+		if hasConditionalHeaders {
+			originReq.Header.Del(headerIfNoneMatch)
+			originReq.Header.Del(headerIfModifiedSince)
+		}
 	}
 
 	reqTime := time.Now()
@@ -425,6 +434,17 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 			}
 		}
 		t.emitCacheStatus(ctx.w, tokenDynamic, fmt.Sprintf("fwd=bypass; fwd-status=%d", rec.Code))
+		if hasConditionalHeaders && rec.Code >= 200 && rec.Code < 300 {
+			var lmUnix int64
+			if lm, err := parseDate(headersClone.Get(headerLastModified)); err == nil && !lm.IsZero() {
+				lmUnix = lm.UnixNano()
+			}
+			status, proceed := t.evaluatePreconditionsHeaders(ctx.r, headersClone.Get(headerETag), lmUnix)
+			if !proceed && status == http.StatusNotModified {
+				ctx.w.WriteHeader(http.StatusNotModified)
+				return nil
+			}
+		}
 		ctx.w.WriteHeader(rec.Code)
 		if ctx.r.Method != http.MethodHead {
 			_, _ = ctx.w.Write(bodyBytes)
@@ -480,6 +500,19 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	} else {
 		t.recordRequest(ctx, statusBypass)
 		t.emitCacheStatus(ctx.w, tokenDynamic, fmt.Sprintf("fwd=bypass; fwd-status=%d", rec.Code))
+	}
+
+	// Evaluate client preconditions (cache warming: downstream gets 304 if validator matches)
+	if hasConditionalHeaders && rec.Code >= 200 && rec.Code < 300 {
+		var lmUnix int64
+		if lm, err := parseDate(headersClone.Get(headerLastModified)); err == nil && !lm.IsZero() {
+			lmUnix = lm.UnixNano()
+		}
+		status, proceed := t.evaluatePreconditionsHeaders(ctx.r, headersClone.Get(headerETag), lmUnix)
+		if !proceed && status == http.StatusNotModified {
+			ctx.w.WriteHeader(http.StatusNotModified)
+			return nil
+		}
 	}
 
 	ctx.w.WriteHeader(rec.Code)
@@ -1020,14 +1053,18 @@ func (t *Titip) evaluatePreconditions(r *http.Request, varInfo *pb.VariantInfo) 
 	if varInfo == nil {
 		return 0, true
 	}
+	return t.evaluatePreconditionsHeaders(r, varInfo.Etag, varInfo.LastModifiedUnixNano)
+}
 
+// evaluatePreconditionsHeaders evaluates HTTP conditional request headers directly from raw header metadata.
+func (t *Titip) evaluatePreconditionsHeaders(r *http.Request, etag string, lastModifiedUnixNano int64) (int, bool) {
 	// 1. If-Match (Strong comparison per RFC 9110 §13.1.1 & §13.2.2)
 	if ifMatch := r.Header.Get(headerIfMatch); ifMatch != "" {
 		trimmed := strings.TrimSpace(ifMatch)
 		if trimmed != "*" {
 			matched := false
 			for tag := range strings.SplitSeq(ifMatch, ",") {
-				if strongETagMatches(tag, varInfo.Etag) {
+				if strongETagMatches(tag, etag) {
 					matched = true
 					break
 				}
@@ -1036,10 +1073,10 @@ func (t *Titip) evaluatePreconditions(r *http.Request, varInfo *pb.VariantInfo) 
 				return http.StatusPreconditionFailed, false
 			}
 		}
-	} else if ifUnmodSince := r.Header.Get(headerIfUnmodifiedSince); ifUnmodSince != "" && varInfo.LastModifiedUnixNano > 0 {
+	} else if ifUnmodSince := r.Header.Get(headerIfUnmodifiedSince); ifUnmodSince != "" && lastModifiedUnixNano > 0 {
 		// 2. If-Unmodified-Since (RFC 9110 §13.1.4 & §13.2.2: only if If-Match is absent)
 		if clientTime, err := parseDate(ifUnmodSince); err == nil && !clientTime.IsZero() {
-			cachedSec := time.Unix(0, varInfo.LastModifiedUnixNano).Truncate(time.Second)
+			cachedSec := time.Unix(0, lastModifiedUnixNano).Truncate(time.Second)
 			clientSec := clientTime.Truncate(time.Second)
 			if cachedSec.After(clientSec) {
 				return http.StatusPreconditionFailed, false
@@ -1053,18 +1090,18 @@ func (t *Titip) evaluatePreconditions(r *http.Request, varInfo *pb.VariantInfo) 
 		if trimmed == "*" {
 			return http.StatusNotModified, false
 		}
-		if varInfo.Etag != "" {
+		if etag != "" {
 			for tag := range strings.SplitSeq(ifNoneMatch, ",") {
-				if etagMatches(tag, varInfo.Etag) {
+				if etagMatches(tag, etag) {
 					return http.StatusNotModified, false
 				}
 			}
 		}
 		return 0, true
-	} else if ifModSince := r.Header.Get(headerIfModifiedSince); ifModSince != "" && varInfo.LastModifiedUnixNano > 0 {
+	} else if ifModSince := r.Header.Get(headerIfModifiedSince); ifModSince != "" && lastModifiedUnixNano > 0 {
 		// 4. If-Modified-Since (RFC 9110 §13.1.3 & §13.2.2: only if If-None-Match is absent)
 		if clientTime, err := parseDate(ifModSince); err == nil && !clientTime.IsZero() {
-			cachedSec := time.Unix(0, varInfo.LastModifiedUnixNano).Truncate(time.Second)
+			cachedSec := time.Unix(0, lastModifiedUnixNano).Truncate(time.Second)
 			clientSec := clientTime.Truncate(time.Second)
 			if !cachedSec.After(clientSec) {
 				return http.StatusNotModified, false

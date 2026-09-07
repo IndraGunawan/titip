@@ -183,7 +183,8 @@ func isResponseCacheable(statusCode int, reqHeaders, respHeaders http.Header, di
 	// 1xx (Informational), 205 (Reset Content), 206 (Partial Content), 303 (See Other),
 	// 401 (Unauthorized), 407 (Proxy Authentication Required), 421 (Misdirected Request), 426 (Upgrade Required)
 	switch statusCode {
-	case http.StatusResetContent,
+	case http.StatusNotModified,
+		http.StatusResetContent,
 		http.StatusPartialContent,
 		http.StatusSeeOther,
 		http.StatusUnauthorized,
