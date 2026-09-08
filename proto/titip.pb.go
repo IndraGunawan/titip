@@ -67,14 +67,15 @@ func (x *HeaderValues) GetValues() []string {
 
 type EsiFragment struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	StartPos      int32                  `protobuf:"varint,1,opt,name=start_pos,json=startPos,proto3" json:"start_pos,omitempty"`
-	EndPos        int32                  `protobuf:"varint,2,opt,name=end_pos,json=endPos,proto3" json:"end_pos,omitempty"`
+	StartPos      int64                  `protobuf:"varint,1,opt,name=start_pos,json=startPos,proto3" json:"start_pos,omitempty"`
+	EndPos        int64                  `protobuf:"varint,2,opt,name=end_pos,json=endPos,proto3" json:"end_pos,omitempty"`
 	Src           string                 `protobuf:"bytes,3,opt,name=src,proto3" json:"src,omitempty"`
 	Alt           string                 `protobuf:"bytes,4,opt,name=alt,proto3" json:"alt,omitempty"`
 	OnError       string                 `protobuf:"bytes,5,opt,name=on_error,json=onError,proto3" json:"on_error,omitempty"`
 	MaxDepth      uint32                 `protobuf:"varint,6,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
-	TimeoutMs     uint32                 `protobuf:"varint,7,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
-	FallbackBody  []byte                 `protobuf:"bytes,8,opt,name=fallback_body,json=fallbackBody,proto3" json:"fallback_body,omitempty"`
+	TimeoutMs     int64                  `protobuf:"varint,7,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	InnerStartPos int64                  `protobuf:"varint,8,opt,name=inner_start_pos,json=innerStartPos,proto3" json:"inner_start_pos,omitempty"`
+	InnerEndPos   int64                  `protobuf:"varint,9,opt,name=inner_end_pos,json=innerEndPos,proto3" json:"inner_end_pos,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -109,14 +110,14 @@ func (*EsiFragment) Descriptor() ([]byte, []int) {
 	return file_titip_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *EsiFragment) GetStartPos() int32 {
+func (x *EsiFragment) GetStartPos() int64 {
 	if x != nil {
 		return x.StartPos
 	}
 	return 0
 }
 
-func (x *EsiFragment) GetEndPos() int32 {
+func (x *EsiFragment) GetEndPos() int64 {
 	if x != nil {
 		return x.EndPos
 	}
@@ -151,18 +152,25 @@ func (x *EsiFragment) GetMaxDepth() uint32 {
 	return 0
 }
 
-func (x *EsiFragment) GetTimeoutMs() uint32 {
+func (x *EsiFragment) GetTimeoutMs() int64 {
 	if x != nil {
 		return x.TimeoutMs
 	}
 	return 0
 }
 
-func (x *EsiFragment) GetFallbackBody() []byte {
+func (x *EsiFragment) GetInnerStartPos() int64 {
 	if x != nil {
-		return x.FallbackBody
+		return x.InnerStartPos
 	}
-	return nil
+	return 0
+}
+
+func (x *EsiFragment) GetInnerEndPos() int64 {
+	if x != nil {
+		return x.InnerEndPos
+	}
+	return 0
 }
 
 // VariantInfo stores metadata for a specific Vary header combination
@@ -373,17 +381,18 @@ const file_titip_proto_rawDesc = "" +
 	"\n" +
 	"\vtitip.proto\x12\x05titip\"&\n" +
 	"\fHeaderValues\x12\x16\n" +
-	"\x06values\x18\x01 \x03(\tR\x06values\"\xe3\x01\n" +
+	"\x06values\x18\x01 \x03(\tR\x06values\"\x8a\x02\n" +
 	"\vEsiFragment\x12\x1b\n" +
-	"\tstart_pos\x18\x01 \x01(\x05R\bstartPos\x12\x17\n" +
-	"\aend_pos\x18\x02 \x01(\x05R\x06endPos\x12\x10\n" +
+	"\tstart_pos\x18\x01 \x01(\x03R\bstartPos\x12\x17\n" +
+	"\aend_pos\x18\x02 \x01(\x03R\x06endPos\x12\x10\n" +
 	"\x03src\x18\x03 \x01(\tR\x03src\x12\x10\n" +
 	"\x03alt\x18\x04 \x01(\tR\x03alt\x12\x19\n" +
 	"\bon_error\x18\x05 \x01(\tR\aonError\x12\x1b\n" +
 	"\tmax_depth\x18\x06 \x01(\rR\bmaxDepth\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\a \x01(\rR\ttimeoutMs\x12#\n" +
-	"\rfallback_body\x18\b \x01(\fR\ffallbackBody\"\xac\x04\n" +
+	"timeout_ms\x18\a \x01(\x03R\ttimeoutMs\x12&\n" +
+	"\x0finner_start_pos\x18\b \x01(\x03R\rinnerStartPos\x12\"\n" +
+	"\rinner_end_pos\x18\t \x01(\x03R\vinnerEndPos\"\xac\x04\n" +
 	"\vVariantInfo\x12\x1f\n" +
 	"\vvariant_key\x18\x01 \x01(\tR\n" +
 	"variantKey\x12F\n" +

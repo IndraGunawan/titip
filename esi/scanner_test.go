@@ -3,6 +3,8 @@ package esi
 import (
 	"bytes"
 	"testing"
+
+	proto "github.com/indragunawan/titip/proto"
 )
 
 func TestScanner_BasicSelfClosing(t *testing.T) {
@@ -26,8 +28,8 @@ func TestScanner_BasicSelfClosing(t *testing.T) {
 	if frag.EndPos != 58 {
 		t.Errorf("expected EndPos 58, got %d", frag.EndPos)
 	}
-	if frag.FallbackBody != nil {
-		t.Errorf("expected nil fallback body, got %s", frag.FallbackBody)
+	if frag.InnerStartPos != 0 || frag.InnerEndPos != 0 {
+		t.Errorf("expected 0 inner positions, got start=%d end=%d", frag.InnerStartPos, frag.InnerEndPos)
 	}
 }
 
@@ -55,9 +57,91 @@ func TestScanner_PairedWithFallback(t *testing.T) {
 	if f.OnError != "continue" {
 		t.Errorf("expected OnError continue, got %s", f.OnError)
 	}
-	if string(f.FallbackBody) != "<span>Default Cart</span>" {
-		t.Errorf("expected fallback body '<span>Default Cart</span>', got %q", string(f.FallbackBody))
+	if f.StartPos != 5 || f.EndPos != 135 {
+		t.Errorf("expected bounds [5:135], got [%d:%d]", f.StartPos, f.EndPos)
 	}
+	if f.InnerStartPos != 96 || f.InnerEndPos != 121 {
+		t.Errorf("expected inner bounds [96:121], got [%d:%d]", f.InnerStartPos, f.InnerEndPos)
+	}
+	if string(html[f.InnerStartPos:f.InnerEndPos]) != "<span>Default Cart</span>" {
+		t.Errorf("expected inner content '<span>Default Cart</span>', got %q", string(html[f.InnerStartPos:f.InnerEndPos]))
+	}
+}
+
+func TestScanner_InnerContentPositions(t *testing.T) {
+	t.Run("multiple paired tags in single document", func(t *testing.T) {
+		html := []byte(`<header><esi:include src="/nav">Fallback Nav</esi:include></header><main><esi:include src="/content">Fallback Content</esi:include></main><footer><esi:include src="/footer" /></footer>`)
+		hasESI, frags := Scan(html)
+		if !hasESI || len(frags) != 3 {
+			t.Fatalf("expected 3 fragments, got %d", len(frags))
+		}
+
+		// First paired tag
+		if string(html[frags[0].InnerStartPos:frags[0].InnerEndPos]) != "Fallback Nav" {
+			t.Errorf("tag 0 inner content mismatch: %q", string(html[frags[0].InnerStartPos:frags[0].InnerEndPos]))
+		}
+
+		// Second paired tag
+		if string(html[frags[1].InnerStartPos:frags[1].InnerEndPos]) != "Fallback Content" {
+			t.Errorf("tag 1 inner content mismatch: %q", string(html[frags[1].InnerStartPos:frags[1].InnerEndPos]))
+		}
+
+		// Third self-closing tag
+		if frags[2].InnerStartPos != 0 || frags[2].InnerEndPos != 0 {
+			t.Errorf("expected self-closing tag to have zero inner positions, got start=%d end=%d", frags[2].InnerStartPos, frags[2].InnerEndPos)
+		}
+	})
+
+	t.Run("empty paired tag", func(t *testing.T) {
+		html := []byte(`<div><esi:include src="/empty"></esi:include></div>`)
+		hasESI, frags := Scan(html)
+		if !hasESI || len(frags) != 1 {
+			t.Fatalf("expected 1 fragment, got %d", len(frags))
+		}
+		f := frags[0]
+		if f.InnerStartPos != f.InnerEndPos {
+			t.Errorf("expected equal InnerStartPos and InnerEndPos for empty paired tag, got start=%d end=%d", f.InnerStartPos, f.InnerEndPos)
+		}
+		if len(html[f.InnerStartPos:f.InnerEndPos]) != 0 {
+			t.Errorf("expected empty slice, got %q", string(html[f.InnerStartPos:f.InnerEndPos]))
+		}
+	})
+
+	t.Run("paired tag nested inside inline comment wrapper", func(t *testing.T) {
+		html := []byte(`<div class="wrap"><!--esi <esi:include src="/user"><strong>Default User</strong></esi:include> --></div>`)
+		hasESI, frags := Scan(html)
+		if !hasESI {
+			t.Fatal("expected ESI detected")
+		}
+		var includeFrag *proto.EsiFragment
+		for _, f := range frags {
+			if f.Src == "/user" {
+				includeFrag = f
+				break
+			}
+		}
+		if includeFrag == nil {
+			t.Fatal("nested include fragment not found")
+		}
+		if string(html[includeFrag.InnerStartPos:includeFrag.InnerEndPos]) != "<strong>Default User</strong>" {
+			t.Errorf("nested inner content mismatch: got %q, want %q",
+				string(html[includeFrag.InnerStartPos:includeFrag.InnerEndPos]), "<strong>Default User</strong>")
+		}
+	})
+
+	t.Run("multiline complex inner HTML", func(t *testing.T) {
+		inner := "\n  <div class=\"widget\" data-id=\"42\">\n    <p>Loading...</p>\n  </div>\n"
+		html := []byte(`<esi:include src="/widget">` + inner + `</esi:include>`)
+		hasESI, frags := Scan(html)
+		if !hasESI || len(frags) != 1 {
+			t.Fatalf("expected 1 fragment, got %d", len(frags))
+		}
+		f := frags[0]
+		got := string(html[f.InnerStartPos:f.InnerEndPos])
+		if got != inner {
+			t.Errorf("multiline inner content mismatch:\ngot:  %q\nwant: %q", got, inner)
+		}
+	})
 }
 
 func TestScanner_MaxDepth_EdgeCases(t *testing.T) {
@@ -103,8 +187,8 @@ func TestScanner_RemoveBlock(t *testing.T) {
 	if !hasESI || len(frags) != 1 {
 		t.Fatalf("expected 1 fragment for remove, got %d", len(frags))
 	}
-	if frags[0].Src != "" || frags[0].FallbackBody != nil {
-		t.Errorf("remove tag should have empty src and nil fallback body")
+	if frags[0].Src != "" || frags[0].InnerStartPos != 0 || frags[0].InnerEndPos != 0 {
+		t.Errorf("remove tag should have empty src and zero inner positions")
 	}
 	if string(html[frags[0].StartPos:frags[0].EndPos]) != "<esi:remove><p>This should be removed</p></esi:remove>" {
 		t.Errorf("unexpected range for remove block: %s", html[frags[0].StartPos:frags[0].EndPos])
@@ -240,7 +324,7 @@ func TestScanner_AttributeVariations(t *testing.T) {
 func TestScanner_TimeoutFormats(t *testing.T) {
 	tests := []struct {
 		timeoutStr string
-		wantMs     uint32
+		wantMs     int64
 	}{
 		{"500ms", 500},
 		{"2s", 2000},
@@ -277,8 +361,8 @@ func TestScanner_MalformedAndUnclosed(t *testing.T) {
 		if frags[0].Src != "/stream" {
 			t.Errorf("unexpected src: %s", frags[0].Src)
 		}
-		if frags[0].FallbackBody != nil {
-			t.Errorf("expected nil fallback body for unclosed paired tag")
+		if frags[0].InnerStartPos != 0 || frags[0].InnerEndPos != 0 {
+			t.Errorf("expected zero inner positions for unclosed paired tag")
 		}
 	})
 
@@ -464,6 +548,18 @@ func BenchmarkESI_PreCompiled_CacheHit_PooledBuffer(b *testing.B) {
 		}
 		if lastPos < len(parentData) {
 			pooledBuf.Write(parentData[lastPos:])
+		}
+	}
+}
+
+func BenchmarkESIScanner_PairedWithInnerContent(b *testing.B) {
+	html := []byte(`<div><esi:include src="/cart" alt="/cached" timeout="500ms"><div class="cart-fallback">Default Fallback Content That Used To Be Cloned</div></esi:include></div>`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		hasESI, frags := Scan(html)
+		if !hasESI || len(frags) != 1 {
+			b.Fatal("scan failed")
 		}
 	}
 }

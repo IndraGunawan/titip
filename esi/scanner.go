@@ -52,8 +52,8 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 		// Check for <!--esi unescaping
 		if tagStart+len(tagESIInlineComment) <= bufLen && bytes.Equal(b[tagStart:tagStart+len(tagESIInlineComment)], tagESIInlineComment) {
 			// Strip <!--esi opening wrapper
-			stripStart := int32(tagStart)
-			stripEnd := int32(tagStart + len(tagESIInlineComment))
+			stripStart := int64(tagStart)
+			stripEnd := int64(tagStart + len(tagESIInlineComment))
 			fragments = append(fragments, &proto.EsiFragment{
 				StartPos: stripStart,
 				EndPos:   stripEnd,
@@ -71,16 +71,20 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 				innerBlock := b[contentStart:commentCloseStart]
 				if innerHasESI, innerFrags := Scan(innerBlock); innerHasESI {
 					for _, ifrag := range innerFrags {
-						ifrag.StartPos += int32(contentStart)
-						ifrag.EndPos += int32(contentStart)
+						ifrag.StartPos += int64(contentStart)
+						ifrag.EndPos += int64(contentStart)
+						if ifrag.InnerStartPos > 0 {
+							ifrag.InnerStartPos += int64(contentStart)
+							ifrag.InnerEndPos += int64(contentStart)
+						}
 						fragments = append(fragments, ifrag)
 					}
 				}
 
 				// Strip --> closing wrapper
 				fragments = append(fragments, &proto.EsiFragment{
-					StartPos: int32(commentCloseStart),
-					EndPos:   int32(commentCloseEnd),
+					StartPos: int64(commentCloseStart),
+					EndPos:   int64(commentCloseEnd),
 				})
 
 				pos = commentCloseEnd
@@ -114,8 +118,8 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 				if closeIdx != -1 {
 					tagEnd := tagStart + closeIdx + len(tagESIRemoveClose)
 					fragments = append(fragments, &proto.EsiFragment{
-						StartPos: int32(tagStart),
-						EndPos:   int32(tagEnd),
+						StartPos: int64(tagStart),
+						EndPos:   int64(tagEnd),
 					})
 					hasESI = true
 					pos = tagEnd
@@ -132,8 +136,8 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 				if closingBracket != -1 {
 					if isSelfClosing {
 						fragments = append(fragments, &proto.EsiFragment{
-							StartPos: int32(tagStart),
-							EndPos:   int32(closingBracket),
+							StartPos: int64(tagStart),
+							EndPos:   int64(closingBracket),
 						})
 						hasESI = true
 						pos = closingBracket
@@ -144,8 +148,8 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 					if closeIdx != -1 {
 						tagEnd := closingBracket + closeIdx + len(tagESICommentClose)
 						fragments = append(fragments, &proto.EsiFragment{
-							StartPos: int32(tagStart),
-							EndPos:   int32(tagEnd),
+							StartPos: int64(tagStart),
+							EndPos:   int64(tagEnd),
 						})
 						hasESI = true
 						pos = tagEnd
@@ -181,7 +185,7 @@ func parseESIInclude(b []byte, tagStart int) (*proto.EsiFragment, int) {
 	maxDepthBytes := extractAttributeBytes(tagHeader, attrMaxDepth)
 	onError := extractAttribute(tagHeader, attrOnError)
 
-	var timeoutMs uint32
+	var timeoutMs int64
 	if len(timeoutBytes) > 0 {
 		timeoutMs = parseTimeoutBytes(timeoutBytes)
 	}
@@ -195,8 +199,8 @@ func parseESIInclude(b []byte, tagStart int) (*proto.EsiFragment, int) {
 
 	if isSelfClosing {
 		return &proto.EsiFragment{
-			StartPos:  int32(tagStart),
-			EndPos:    int32(tagEndBracket),
+			StartPos:  int64(tagStart),
+			EndPos:    int64(tagEndBracket),
 			Src:       src,
 			Alt:       alt,
 			OnError:   onError,
@@ -210,24 +214,24 @@ func parseESIInclude(b []byte, tagStart int) (*proto.EsiFragment, int) {
 	if closeIdx != -1 {
 		bodyEnd := tagEndBracket + closeIdx
 		fullEnd := bodyEnd + len(tagESIIncludeClose)
-		fallbackBody := b[tagEndBracket:bodyEnd]
 
 		return &proto.EsiFragment{
-			StartPos:     int32(tagStart),
-			EndPos:       int32(fullEnd),
-			Src:          src,
-			Alt:          alt,
-			OnError:      onError,
-			MaxDepth:     maxDepth,
-			TimeoutMs:    timeoutMs,
-			FallbackBody: bytes.Clone(fallbackBody),
+			StartPos:      int64(tagStart),
+			EndPos:        int64(fullEnd),
+			Src:           src,
+			Alt:           alt,
+			OnError:       onError,
+			MaxDepth:      maxDepth,
+			TimeoutMs:     timeoutMs,
+			InnerStartPos: int64(tagEndBracket),
+			InnerEndPos:   int64(bodyEnd),
 		}, fullEnd
 	}
 
 	// Unclosed paired tag, treat as self-closing
 	return &proto.EsiFragment{
-		StartPos:  int32(tagStart),
-		EndPos:    int32(tagEndBracket),
+		StartPos:  int64(tagStart),
+		EndPos:    int64(tagEndBracket),
 		Src:       src,
 		Alt:       alt,
 		OnError:   onError,
@@ -352,7 +356,7 @@ func extractAttribute(tagHeader []byte, attrName []byte) string {
 
 // parseTimeoutBytes parses timeout strings like "0.5", "2.5s", "500ms" into milliseconds.
 // stdlib time.ParseDuration covers this; fallback bare seconds → ms.
-func parseTimeoutBytes(b []byte) uint32 {
+func parseTimeoutBytes(b []byte) int64 {
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 {
 		return 0
@@ -363,13 +367,13 @@ func parseTimeoutBytes(b []byte) uint32 {
 		if d <= 0 {
 			return 0
 		}
-		return uint32(d.Milliseconds())
+		return d.Milliseconds()
 	}
 	if d, err := time.ParseDuration(s + "s"); err == nil {
 		if d <= 0 {
 			return 0
 		}
-		return uint32(d.Milliseconds())
+		return d.Milliseconds()
 	}
 	return 0
 }

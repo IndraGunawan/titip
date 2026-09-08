@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/indragunawan/titip/esi"
+	pb "github.com/indragunawan/titip/proto"
 )
 
 func TestESI_InProcessVirtualSubrequests(t *testing.T) {
@@ -1678,4 +1680,149 @@ func TestESI_MaxResponseSize_InProcessAndOutbound(t *testing.T) {
 			t.Errorf("expected outbound fragment to be included when limit is 0 (unlimited), got %q", rec2.Body.String())
 		}
 	})
+}
+
+func TestSafeSlice_BoundsAndSafety(t *testing.T) {
+	b := []byte("<div><esi:include src=\"/api\">Fallback Text</esi:include></div>")
+
+	tests := []struct {
+		name     string
+		body     []byte
+		start    int64
+		end      int64
+		expected string
+	}{
+		{"valid_inner_content", b, 29, 42, "Fallback Text"},
+		{"zero_start_pos", b, 0, 42, ""},
+		{"negative_start_pos", b, -5, 42, ""},
+		{"negative_end_pos", b, 29, -1, ""},
+		{"end_equals_start", b, 29, 29, ""},
+		{"end_less_than_start", b, 42, 29, ""},
+		{"end_exceeds_body_len", b, 29, int64(len(b) + 100), ""},
+		{"math_max_int64", b, 0, math.MaxInt64, ""},
+		{"nil_body", nil, 10, 20, ""},
+		{"empty_body", []byte{}, 10, 20, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := safeSlice(tt.body, tt.start, tt.end)
+			if string(got) != tt.expected {
+				t.Errorf("safeSlice() = %q, want %q", string(got), tt.expected)
+			}
+		})
+	}
+}
+
+func TestESI_InnerContentFallback_ZeroDuplication(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/page-with-fallback", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/failing-api"><span class="fallback">Default Fallback Content</span></esi:include></div>`))
+	})
+	mux.HandleFunc("/failing-api", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
+	)
+	h := mw.testHandler(mux)
+
+	// 1. Cold miss: include fails and fallback content is rendered from parentBody
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/page-with-fallback", nil)
+	rec1 := httptest.NewRecorder()
+	h.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec1.Code)
+	}
+	expected := `<div><span class="fallback">Default Fallback Content</span></div>`
+	if rec1.Body.String() != expected {
+		t.Fatalf("expected %q, got %q", expected, rec1.Body.String())
+	}
+
+	// 2. Cache hit: served from cache, verify inner positions are stored and zero-duplication works
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/page-with-fallback", nil)
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 on cache hit, got %d", rec2.Code)
+	}
+	if rec2.Body.String() != expected {
+		t.Fatalf("expected %q on cache hit, got %q", expected, rec2.Body.String())
+	}
+
+	// 3. Corrupted inner offsets: verify safeSlice prevents panic and fails open
+	corruptFrag := &pb.EsiFragment{
+		InnerStartPos: -99,
+		InnerEndPos:   9999999,
+	}
+	rawParent := []byte(`<div><esi:include src="/failing-api">fallback</esi:include></div>`)
+	if safeSlice(rawParent, corruptFrag.InnerStartPos, corruptFrag.InnerEndPos) != nil {
+		t.Fatalf("expected corrupt bounds to result in nil slice")
+	}
+}
+
+func TestESI_SharedSrc_DifferentFallbacks(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			`<header><esi:include src="/api/failing"><span>Header Fallback</span></esi:include></header>` +
+				`<main><esi:include src="/api/failing" onerror="continue" /></main>` +
+				`<footer><esi:include src="/api/failing"><p>Footer Fallback</p></esi:include></footer>`,
+		))
+	})
+	apiCallCount := 0
+	mux.HandleFunc("/api/failing", func(w http.ResponseWriter, r *http.Request) {
+		apiCallCount++
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
+	)
+	h := mw.testHandler(mux)
+
+	// Cold miss: all 3 fragments share /api/failing, but deduplication should ensure only 1 fetch attempt,
+	// while assembleResults accurately uses each tag's own inner fallback or onerror attribute.
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
+	rec1 := httptest.NewRecorder()
+	h.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec1.Code)
+	}
+	expected := `<header><span>Header Fallback</span></header><main></main><footer><p>Footer Fallback</p></footer>`
+	if rec1.Body.String() != expected {
+		t.Fatalf("expected %q, got %q", expected, rec1.Body.String())
+	}
+	if apiCallCount != 1 {
+		t.Fatalf("expected 1 call to /api/failing due to deduplication, got %d", apiCallCount)
+	}
+
+	// Cache hit: verify same assembled result from cached metadata
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 on cache hit, got %d", rec2.Code)
+	}
+	if rec2.Body.String() != expected {
+		t.Fatalf("expected %q on cache hit, got %q", expected, rec2.Body.String())
+	}
+	if apiCallCount != 2 { // 1 additional fetch for cache hit's dynamic include execution
+		t.Fatalf("expected 2 total calls to /api/failing, got %d", apiCallCount)
+	}
 }

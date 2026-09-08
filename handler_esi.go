@@ -47,10 +47,18 @@ type fragmentResult struct {
 type fetchTarget struct {
 	src       string
 	alt       string
-	timeoutMs uint32
+	timeoutMs int64
 	maxDepth  uint32
-	onError   string
-	fallback  []byte
+}
+
+// safeSlice slices body from start to end with defensive bounds checking against corrupt offsets.
+// A valid tag's inner content cannot start at index 0 because the opening tag precedes it.
+func safeSlice(body []byte, start, end int64) []byte {
+	bodyLen := int64(len(body))
+	if start <= 0 || end <= start || end > bodyLen {
+		return nil
+	}
+	return body[start:end]
 }
 
 // shared helpers to avoid duplicating ESI collect/fetch/assemble across processESI and processNestedESI
@@ -59,24 +67,57 @@ func collectTargets(fragments []*pb.EsiFragment) map[string]fetchTarget {
 	for _, frag := range fragments {
 		if frag.Src != "" {
 			if _, exists := m[frag.Src]; !exists {
-				m[frag.Src] = fetchTarget{src: frag.Src, alt: frag.Alt, timeoutMs: frag.TimeoutMs, maxDepth: frag.MaxDepth, onError: frag.OnError, fallback: frag.FallbackBody}
+				m[frag.Src] = fetchTarget{
+					src:       frag.Src,
+					alt:       frag.Alt,
+					timeoutMs: frag.TimeoutMs,
+					maxDepth:  frag.MaxDepth,
+				}
 			}
 		}
 	}
 	return m
 }
 
-func assembleResults(fragments []*pb.EsiFragment, fetched map[string]*fragmentResult) []*fragmentResult {
+func (t *Titip) assembleResults(parentBody []byte, fragments []*pb.EsiFragment, fetched map[string]*fragmentResult) []*fragmentResult {
 	results := make([]*fragmentResult, len(fragments))
 	for i, frag := range fragments {
 		if frag.Src == "" {
-			results[i] = &fragmentResult{spec: frag}
+			inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
+			body := t.resolveFallback(inner, frag.OnError)
+			results[i] = &fragmentResult{spec: frag, body: body}
 			continue
 		}
-		if res, ok := fetched[frag.Src]; ok {
-			results[i] = &fragmentResult{spec: frag, body: res.body, err: res.err, setCookies: res.setCookies, duration: res.duration, mode: res.mode}
+		res, ok := fetched[frag.Src]
+		if ok && res.err == nil {
+			results[i] = &fragmentResult{
+				spec:       frag,
+				body:       res.body,
+				setCookies: res.setCookies,
+				duration:   res.duration,
+				mode:       res.mode,
+			}
 		} else {
-			results[i] = &fragmentResult{spec: frag, body: frag.FallbackBody}
+			var resErr error
+			var cookies []string
+			var dur time.Duration
+			var mode string
+			if ok {
+				resErr = res.err
+				cookies = res.setCookies
+				dur = res.duration
+				mode = res.mode
+			}
+			inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
+			body := t.resolveFallback(inner, frag.OnError)
+			results[i] = &fragmentResult{
+				spec:       frag,
+				body:       body,
+				err:        resErr,
+				setCookies: cookies,
+				duration:   dur,
+				mode:       mode,
+			}
 		}
 	}
 	return results
@@ -163,7 +204,7 @@ func (t *Titip) processESI(
 	}
 
 	fetchedBodies, allCookies := t.fetchAllTargets(ctx, uniqueTargets, execState)
-	results := assembleResults(fragments, fetchedBodies)
+	results := t.assembleResults(parentBody, fragments, fetchedBodies)
 
 	// 4. Pre-sized output buffer splicing
 	outBuf := getBuffer()
@@ -241,27 +282,10 @@ func (t *Titip) processESI(
 func (t *Titip) executeInclude(
 	parentCtx *requestContext,
 	src string,
-	target struct {
-		src       string
-		alt       string
-		timeoutMs uint32
-		maxDepth  uint32
-		onError   string
-		fallback  []byte
-	},
+	target fetchTarget,
 	state esiExecutionState,
 ) (res *fragmentResult) {
-	res = &fragmentResult{
-		spec: &pb.EsiFragment{
-			Src:          target.src,
-			Alt:          target.alt,
-			TimeoutMs:    target.timeoutMs,
-			MaxDepth:     target.maxDepth,
-			OnError:      target.onError,
-			FallbackBody: target.fallback,
-		},
-		body: target.fallback,
-	}
+	res = &fragmentResult{}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -274,7 +298,6 @@ func (t *Titip) executeInclude(
 			}
 			t.metrics.recordESIFragment("error")
 			res.err = fmt.Errorf("titip: esi: panic: %v", r)
-			res.body = t.resolveFallback(target.fallback, target.onError)
 		}
 	}()
 
@@ -287,7 +310,6 @@ func (t *Titip) executeInclude(
 	if state.depth >= effectiveMaxDepth {
 		t.metrics.recordESIFragment("fallback")
 		res.err = errESIMaxDepthExceeded
-		res.body = t.resolveFallback(target.fallback, target.onError)
 		return res
 	}
 
@@ -301,7 +323,6 @@ func (t *Titip) executeInclude(
 			)
 		}
 		res.err = errESICircularInclude
-		res.body = t.resolveFallback(target.fallback, target.onError)
 		return res
 	}
 
@@ -319,7 +340,7 @@ func (t *Titip) executeInclude(
 		visitedURLs: append(slices.Clone(state.visitedURLs), src),
 	}
 
-	// Attempt primary src fetch
+	// 1. Attempt primary src fetch
 	body, cookies, mode, err := t.fetchFragment(parentCtx, src, effectiveTimeout, childState)
 	if err == nil {
 		body, cookies = t.expandNestedESI(parentCtx, body, cookies, childState)
@@ -381,18 +402,16 @@ func (t *Titip) executeInclude(
 		}
 	}
 
-	// 3. Both primary and alt failed: Resolve fallback body or onError=continue
+	// 3. Both primary and alt failed
 	t.metrics.recordESIFragment("fallback")
 	res.err = err
-	res.body = t.resolveFallback(target.fallback, target.onError)
 	res.duration = time.Since(fetchStart)
 
 	if t.logger.Enabled(parentCtx.r.Context(), slog.LevelDebug) {
-		t.logger.DebugContext(parentCtx.r.Context(), "esi: fragment resolved via fallback",
+		t.logger.DebugContext(parentCtx.r.Context(), "esi: fragment fetch failed",
 			slog.String("src", src),
 			slog.Any("error", err),
 			slog.Duration("duration", res.duration),
-			slog.Int("bytes", len(res.body)),
 		)
 	}
 	return res
@@ -407,7 +426,7 @@ func (t *Titip) processNestedESI(
 ) ([]byte, []string) {
 	uniqueTargets := collectTargets(fragments)
 	fetchedBodies, allCookies := t.fetchAllTargets(parentCtx, uniqueTargets, state)
-	results := assembleResults(fragments, fetchedBodies)
+	results := t.assembleResults(body, fragments, fetchedBodies)
 	outBuf := getBuffer()
 	defer putBuffer(outBuf)
 	t.spliceFragments(body, results, outBuf)
@@ -650,9 +669,9 @@ func (t *Titip) spliceFragments(parent []byte, results []*fragmentResult, out *b
 }
 
 // resolveFallback returns the appropriate fallback HTML based on inner body, onerror, and configured error marker.
-func (t *Titip) resolveFallback(fallbackBody []byte, onError string) []byte {
-	if len(fallbackBody) > 0 {
-		return fallbackBody
+func (t *Titip) resolveFallback(innerBody []byte, onError string) []byte {
+	if len(innerBody) > 0 {
+		return innerBody
 	}
 	if strings.EqualFold(onError, "continue") {
 		return nil
