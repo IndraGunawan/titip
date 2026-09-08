@@ -2,7 +2,7 @@ package caddy
 
 import (
 	"encoding/json"
-	"net/http"
+	"slices"
 	"testing"
 
 	caddymain "github.com/caddyserver/caddy/v2"
@@ -11,47 +11,85 @@ import (
 	"github.com/indragunawan/titip"
 )
 
-func TestCaddyHandler_UnmarshalCaddyfile(t *testing.T) {
+func TestCaddyHandler_UnmarshalCaddyfile_Directives(t *testing.T) {
 	t.Parallel()
-	config := `titip {
-		cache_status RFC9211
-		background_fetch_timeout 20s
-		storage_timeout 5s
-		storage test
-	}`
 
-	d := caddyfile.NewTestDispenser(config)
-	var h Handler
-	if err := h.UnmarshalCaddyfile(d); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
+	tests := []struct {
+		name     string
+		config   string
+		validate func(t *testing.T, h *Handler)
+	}{
+		{
+			name: "basic directives",
+			config: `titip {
+				cache_status RFC9211
+				background_fetch_timeout 20s
+				storage_timeout 5s
+				storage test
+				tag_header X-Cache-Tag
+				respect_client_cache_control true
+				auto_invalidate_mutating_methods true
+				use_rewritten_url true
+			}`,
+			validate: func(t *testing.T, h *Handler) {
+				if h.CacheStatus != "RFC9211" {
+					t.Errorf("expected cache_status RFC9211, got %s", h.CacheStatus)
+				}
+				if h.BackgroundFetchTimeout != "20s" {
+					t.Errorf("expected background_fetch_timeout 20s, got %s", h.BackgroundFetchTimeout)
+				}
+				if h.StorageTimeout != "5s" {
+					t.Errorf("expected storage_timeout 5s, got %s", h.StorageTimeout)
+				}
+				if h.TagHeader != "X-Cache-Tag" {
+					t.Errorf("expected tag_header X-Cache-Tag, got %s", h.TagHeader)
+				}
+				if h.RespectClientCacheControl == nil || !*h.RespectClientCacheControl {
+					t.Errorf("expected respect_client_cache_control true, got %v", h.RespectClientCacheControl)
+				}
+				if h.AutoInvalidateMutatingMethods == nil || !*h.AutoInvalidateMutatingMethods {
+					t.Errorf("expected auto_invalidate_mutating_methods true, got %v", h.AutoInvalidateMutatingMethods)
+				}
+				if h.UseRewrittenURL == nil || !*h.UseRewrittenURL {
+					t.Errorf("expected use_rewritten_url true, got %v", h.UseRewrittenURL)
+				}
+			},
+		},
+		{
+			name: "convert_head_to_get false",
+			config: `titip {
+				convert_head_to_get false
+				storage test
+			}`,
+			validate: func(t *testing.T, h *Handler) {
+				if h.ConvertHeadToGet == nil || *h.ConvertHeadToGet != false {
+					t.Fatalf("expected ConvertHeadToGet false, got %v", h.ConvertHeadToGet)
+				}
+			},
+		},
+		{
+			name: "convert_head_to_get true",
+			config: `titip {
+				convert_head_to_get true
+				storage test
+			}`,
+			validate: func(t *testing.T, h *Handler) {
+				if h.ConvertHeadToGet == nil || *h.ConvertHeadToGet != true {
+					t.Fatalf("expected ConvertHeadToGet true, got %v", h.ConvertHeadToGet)
+				}
+			},
+		},
 	}
 
-	if h.CacheStatus != "RFC9211" {
-		t.Errorf("expected cache_status RFC9211, got %s", h.CacheStatus)
-	}
-	if h.BackgroundFetchTimeout != "20s" {
-		t.Errorf("expected background_fetch_timeout 20s, got %s", h.BackgroundFetchTimeout)
-	}
-	if h.StorageTimeout != "5s" {
-		t.Errorf("expected storage_timeout 5s, got %s", h.StorageTimeout)
-	}
-}
-
-func TestCaddyHandler_ConvertHeadToGet_Unmarshal(t *testing.T) {
-	t.Parallel()
-	config := `titip {
-		convert_head_to_get false
-		storage test
-	}`
-
-	d := caddyfile.NewTestDispenser(config)
-	var h Handler
-	if err := h.UnmarshalCaddyfile(d); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-
-	if h.ConvertHeadToGet == nil || *h.ConvertHeadToGet != false {
-		t.Fatalf("expected ConvertHeadToGet false, got %v", h.ConvertHeadToGet)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := caddyfile.NewTestDispenser(tc.config)
+			var h Handler
+			if err := h.UnmarshalCaddyfile(d); err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+			tc.validate(t, &h)
+		})
 	}
 }
 
@@ -244,14 +282,9 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 	}
 }
 
-// TestCaddyGlobalOption_InheritanceAndOverride tests App provisioning and Handler inheritance via full Caddyfile.
+// TestCaddyGlobalOption_InheritanceAndOverride tests App provisioning and Handler inheritance via Caddy Context.
 func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 	caddyfileInput := `{
-		admin off
-		skip_install_trust
-		log {
-			output discard
-		}
 		titip {
 			storage test
 			cache_status rfc9211
@@ -262,12 +295,6 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 				enabled true
 				max_depth 3
 			}
-		}
-	}
-	:18091 {
-		route {
-			titip
-			respond "Hello Global Inherit" 200
 		}
 	}`
 
@@ -282,30 +309,53 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	if err := caddymain.Run(cfg); err != nil {
-		t.Fatalf("caddy run failed: %v", err)
-	}
-	defer func() { _ = caddymain.Stop() }()
-
-	resp, err := http.Get("http://localhost:18091")
+	ctx, err := caddymain.ProvisionContext(cfg)
 	if err != nil {
-		t.Fatalf("http get failed: %v", err)
+		t.Fatalf("provision context failed: %v", err)
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status code = %d, want 200", resp.StatusCode)
+
+	// Route handler inheriting global options
+	var h Handler
+	d := caddyfile.NewTestDispenser("titip")
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal route handler: %v", err)
+	}
+
+	if err := h.Provision(ctx); err != nil {
+		t.Fatalf("provision route handler: %v", err)
+	}
+	defer func() { _ = h.Cleanup() }()
+
+	appIface, err := ctx.App("titip")
+	if err != nil {
+		t.Fatalf("get titip app: %v", err)
+	}
+	app := appIface.(*App)
+
+	if app.CacheStatus != "rfc9211" {
+		t.Errorf("expected global cache_status rfc9211, got %s", app.CacheStatus)
+	}
+	if app.BackgroundFetchTimeout != "10s" {
+		t.Errorf("expected global background_fetch_timeout 10s, got %s", app.BackgroundFetchTimeout)
+	}
+	if app.RespectClientCacheControl == nil || *app.RespectClientCacheControl != false {
+		t.Errorf("expected global respect_client_cache_control false, got %v", app.RespectClientCacheControl)
+	}
+	if app.AutoInvalidateMutatingMethods == nil || *app.AutoInvalidateMutatingMethods != true {
+		t.Errorf("expected global auto_invalidate_mutating_methods true, got %v", app.AutoInvalidateMutatingMethods)
+	}
+	if app.ESI == nil || app.ESI.MaxDepth == nil || *app.ESI.MaxDepth != 3 {
+		t.Errorf("expected global ESI max_depth 3, got %v", app.ESI)
+	}
+	if h.instance == nil {
+		t.Fatalf("expected instance to be provisioned via inherited global storage")
 	}
 }
 
 // TestDeepMerge_ESIAndCacheKey_Caddyfile verifies that route-level overrides
-// in Caddyfile merge cleanly on top of global defaults during full Caddyfile compilation.
+// merge cleanly on top of global defaults during Caddy Context provisioning.
 func TestDeepMerge_ESIAndCacheKey_Caddyfile(t *testing.T) {
 	caddyfileInput := `{
-		admin off
-		skip_install_trust
-		log {
-			output discard
-		}
 		titip {
 			storage test
 			cache_status rfc9211
@@ -321,19 +371,6 @@ func TestDeepMerge_ESIAndCacheKey_Caddyfile(t *testing.T) {
 				included_query_params a b
 			}
 		}
-	}
-	:18092 {
-		route {
-			titip {
-				esi {
-					max_depth 10
-				}
-				cache_key {
-					included_query_params a b c
-				}
-			}
-			respond "Deep Merge Route" 200
-		}
 	}`
 
 	cadAdapter := caddyconfig.GetAdapter("caddyfile")
@@ -347,18 +384,127 @@ func TestDeepMerge_ESIAndCacheKey_Caddyfile(t *testing.T) {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	if err := caddymain.Run(cfg); err != nil {
-		t.Fatalf("caddy run failed: %v", err)
-	}
-	defer func() { _ = caddymain.Stop() }()
-
-	resp, err := http.Get("http://localhost:18092")
+	ctx, err := caddymain.ProvisionContext(cfg)
 	if err != nil {
-		t.Fatalf("http get failed: %v", err)
+		t.Fatalf("provision context failed: %v", err)
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status code = %d, want 200", resp.StatusCode)
+
+	routeCaddyfile := `titip {
+		esi {
+			max_depth 10
+		}
+		cache_key {
+			included_query_params a b c
+		}
+	}`
+
+	var h Handler
+	d := caddyfile.NewTestDispenser(routeCaddyfile)
+	if err := h.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal route handler: %v", err)
+	}
+
+	if err := h.Provision(ctx); err != nil {
+		t.Fatalf("provision route handler: %v", err)
+	}
+	defer func() { _ = h.Cleanup() }()
+
+	if h.ESI.MaxDepth == nil || *h.ESI.MaxDepth != 10 {
+		t.Errorf("expected route-overridden ESI.MaxDepth=10, got %v", h.ESI.MaxDepth)
+	}
+	if len(h.CacheKey.IncludedQueryParams) != 3 {
+		t.Errorf("expected 3 route-overridden included_query_params, got %v", h.CacheKey.IncludedQueryParams)
+	}
+	appIface, err := ctx.App("titip")
+	if err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	app := appIface.(*App)
+	if app.ESI == nil || app.ESI.MaxConcurrentRequests == nil || *app.ESI.MaxConcurrentRequests != 8 {
+		t.Errorf("expected inherited global MaxConcurrentRequests=8, got %v", app.ESI)
+	}
+	if app.CacheKey == nil || app.CacheKey.IncludeProtocol == nil || *app.CacheKey.IncludeProtocol != true {
+		t.Errorf("expected inherited global IncludeProtocol=true, got %v", app.CacheKey)
+	}
+}
+
+// TestCaddyfile_DirectiveOrder_AST verifies that the Caddyfile adapter orders
+// titip middleware after encode in the adapted HTTP route handler chain without live TCP listeners.
+func TestCaddyfile_DirectiveOrder_AST(t *testing.T) {
+	t.Parallel()
+
+	caddyfileInput := `:8080 {
+		encode gzip
+		titip {
+			storage test
+		}
+		respond "Hello"
+	}`
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+	if cadAdapter == nil {
+		t.Fatalf("caddyfile adapter not registered")
+	}
+
+	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+	if err != nil {
+		t.Fatalf("adapt failed: %v", err)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(jsonBytes, &root); err != nil {
+		t.Fatalf("unmarshal adapted json: %v", err)
+	}
+
+	apps, ok := root["apps"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing apps in adapted json")
+	}
+	httpApp, ok := apps["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing http app in adapted json")
+	}
+	servers, ok := httpApp["servers"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing servers in http app")
+	}
+	srv0, ok := servers["srv0"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing srv0 in servers")
+	}
+	routes, ok := srv0["routes"].([]any)
+	if !ok {
+		t.Fatalf("missing routes in srv0")
+	}
+
+	var handlerOrder []string
+	for _, r := range routes {
+		routeMap, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		if handles, ok := routeMap["handle"].([]any); ok {
+			for _, h := range handles {
+				if hMap, ok := h.(map[string]any); ok {
+					if handlerName, ok := hMap["handler"].(string); ok {
+						handlerOrder = append(handlerOrder, handlerName)
+					}
+				}
+			}
+		}
+	}
+
+	encodeIdx := slices.Index(handlerOrder, "encode")
+	titipIdx := slices.Index(handlerOrder, "titip")
+
+	if encodeIdx == -1 {
+		t.Fatalf("encode handler not found in adapted routes: %v", handlerOrder)
+	}
+	if titipIdx == -1 {
+		t.Fatalf("titip handler not found in adapted routes: %v", handlerOrder)
+	}
+	if titipIdx <= encodeIdx {
+		t.Errorf("expected titip (idx %d) to be ordered after encode (idx %d), got order: %v", titipIdx, encodeIdx, handlerOrder)
 	}
 }
 

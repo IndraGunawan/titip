@@ -8,7 +8,6 @@
 
 	metrics
 
-	# 🌐 Global Titip Cache Configuration (Shared Redis Storage & Default Policies)
 	titip {
 		storage redis {
 			address 127.0.0.1:6379
@@ -30,23 +29,20 @@
 }
 
 :8080 {
-	route {
-		# 🚀 Inherits all global Titip settings & shared storage automatically!
-		titip
+	titip
 
-		# 1. Separate Route for Static Fragment (Caddy Native Respond)
-		handle /api/esi/caddy-static {
-			header Content-Type "text/html; charset=utf-8"
-			respond `<div class="card" style="border-left: 4px solid #f59e0b;">
-    <h2>⚡ Caddy Native Respond Component <span class="tag" style="background:#b45309;color:#fef3c7;">Caddy Respond</span></h2>
-    <p>Served directly by Caddy's built-in <code>respond</code> directive without touching any upstream origin server!</p>
-    <div style="font-size:0.85em;margin-top:8px;"><a href="/api/esi/caddy-static" target="_blank" style="color:#f59e0b;">🔗 Open Fragment Directly: <code>/api/esi/caddy-static</code></a></div>
-</div>` 200
-		}
+	# 1. Separate Route for Static Fragment (Caddy Native Respond)
+	handle /api/esi/caddy-static {
+		header Content-Type "text/html; charset=utf-8"
+		respond `<div class="card" style="border-left: 4px solid #f59e0b;">
+				<h2>⚡ Caddy Native Respond Component <span class="tag" style="background:#b45309;color:#fef3c7;">Caddy Respond</span></h2>
+				<p>Served directly by Caddy's built-in <code>respond</code> directive without touching any upstream origin server!</p>
+				<div style="font-size:0.85em;margin-top:8px;"><a href="/api/esi/caddy-static" target="_blank" style="color:#f59e0b;">🔗 Open Fragment Directly: <code>/api/esi/caddy-static</code></a></div>
+				</div>` 200
+	}
 
-		# 2. Default catch-all proxy to mock origin :9000
-		handle {
-			reverse_proxy localhost:9000
-		}
+	# 2. Default catch-all proxy to mock origin :9000
+	handle {
+		reverse_proxy localhost:9000
 	}
 }

@@ -137,7 +137,6 @@ func (rec *responseRecorder) Reset() {
 	}
 }
 
-
 // --- LZ4 Compression Pipeline & Pools ---
 
 var lz4WriterPool = sync.Pool{
@@ -255,5 +254,3 @@ func releaseRequestContext(ctx *requestContext) {
 	ctx.Reset()
 	requestContextPool.Put(ctx)
 }
-
-

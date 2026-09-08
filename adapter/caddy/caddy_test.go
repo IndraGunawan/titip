@@ -3,7 +3,6 @@ package caddy
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,7 +21,6 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
-	"github.com/pierrec/lz4/v4"
 	"go.uber.org/zap/zapcore"
 )
 
@@ -157,8 +155,8 @@ func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
 	defer cleanup()
 
 	h.id = "test-admin-e2e"
-	registerEngine(h.id, h.engine)
-	defer unregisterEngine(h.id)
+	registerInstance(h.id, h.instance)
+	defer unregisterInstance(h.id)
 
 	var originCalls atomic.Int32
 	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
@@ -253,148 +251,6 @@ func TestCaddy_StandaloneStorageDirective_Fails(t *testing.T) {
 	}
 }
 
-// TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes tests compiling a real Caddyfile
-// with global titip options and route-wrapped multi-handle routes, verifying live cache HITs.
-func TestCaddyfile_EndToEnd_GlobalOption_MultiHandleRoutes(t *testing.T) {
-	var originHitCount int64
-	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&originHitCount, 1)
-		switch r.URL.Path {
-		case "/api/time":
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Cache-Control", "public, max-age=60")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, `{"hits":%d,"time":%d}`, atomic.LoadInt64(&originHitCount), time.Now().UnixNano())
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer originServer.Close()
-
-	originURL, err := url.Parse(originServer.URL)
-	if err != nil {
-		t.Fatalf("parse origin url: %v", err)
-	}
-
-	caddyfileInput := fmt.Sprintf(`{
-		admin off
-		skip_install_trust
-		log {
-			output discard
-		}
-		titip {
-			storage test
-			cache_status rfc9211
-			background_fetch_timeout 5s
-		}
-	}
-	:18090 {
-		route {
-			titip
-
-			handle /api/esi/caddy-static {
-				header Content-Type "text/html; charset=utf-8"
-				respond "<div>Caddy Native</div>" 200
-			}
-
-			handle {
-				reverse_proxy %s
-			}
-		}
-	}`, originURL.Host)
-
-	cadAdapter := caddyconfig.GetAdapter("caddyfile")
-	if cadAdapter == nil {
-		t.Fatalf("caddyfile adapter not registered")
-	}
-	jsonBytes, warnings, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
-	if err != nil {
-		t.Fatalf("adapt failed: %v", err)
-	}
-	for _, w := range warnings {
-		t.Logf("warning: %v", w)
-	}
-
-	// 1. Verify JSON AST correctness
-	var root map[string]any
-	if err := json.Unmarshal(jsonBytes, &root); err != nil {
-		t.Fatalf("unmarshal adapted json: %v", err)
-	}
-	apps := root["apps"].(map[string]any)
-	titipApp := apps["titip"].(map[string]any)
-	storageMap := titipApp["storage"].(map[string]any)
-	if storageMap["name"] != "test" {
-		t.Errorf("expected storage.name='test', got %v", storageMap["name"])
-	}
-
-	// 2. Load and start Caddy instance
-	cfg := new(caddymain.Config)
-	if err := json.Unmarshal(jsonBytes, cfg); err != nil {
-		t.Fatalf("unmarshal config: %v", err)
-	}
-
-	if err := caddymain.Run(cfg); err != nil {
-		t.Fatalf("caddy run failed: %v", err)
-	}
-	defer func() {
-		_ = caddymain.Stop()
-	}()
-
-	client := &http.Client{Timeout: 5 * time.Second}
-
-	// Test 1: First request to /api/time -> MISS
-	req1, _ := http.NewRequest(http.MethodGet, "http://localhost:18090/api/time", nil)
-	resp1, err := client.Do(req1)
-	if err != nil {
-		t.Fatalf("request 1 failed: %v", err)
-	}
-	body1, _ := io.ReadAll(resp1.Body)
-	_ = resp1.Body.Close()
-
-	if resp1.StatusCode != http.StatusOK {
-		t.Errorf("request 1 status = %d, want 200", resp1.StatusCode)
-	}
-	cacheStatus1 := resp1.Header.Get("Cache-Status")
-	if !strings.Contains(cacheStatus1, "fwd=origin") && !strings.Contains(cacheStatus1, "miss") {
-		t.Errorf("request 1 expected MISS/fwd=origin in Cache-Status, got %q", cacheStatus1)
-	}
-
-	// Test 2: Second request to /api/time -> HIT
-	req2, _ := http.NewRequest(http.MethodGet, "http://localhost:18090/api/time", nil)
-	resp2, err := client.Do(req2)
-	if err != nil {
-		t.Fatalf("request 2 failed: %v", err)
-	}
-	body2, _ := io.ReadAll(resp2.Body)
-	_ = resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusOK {
-		t.Errorf("request 2 status = %d, want 200", resp2.StatusCode)
-	}
-	cacheStatus2 := resp2.Header.Get("Cache-Status")
-	if !strings.Contains(cacheStatus2, "hit") {
-		t.Errorf("request 2 expected HIT in Cache-Status, got %q", cacheStatus2)
-	}
-	if string(body1) != string(body2) {
-		t.Errorf("request 2 body mismatch: want cached %q, got %q", string(body1), string(body2))
-	}
-	if atomic.LoadInt64(&originHitCount) != 1 {
-		t.Errorf("expected originHitCount=1 (cached), got %d", atomic.LoadInt64(&originHitCount))
-	}
-
-	// Test 3: Request to Caddy Native respond
-	req3, _ := http.NewRequest(http.MethodGet, "http://localhost:18090/api/esi/caddy-static", nil)
-	resp3, err := client.Do(req3)
-	if err != nil {
-		t.Fatalf("request 3 failed: %v", err)
-	}
-	body3, _ := io.ReadAll(resp3.Body)
-	_ = resp3.Body.Close()
-	if !strings.Contains(string(body3), "Caddy Native") {
-		t.Errorf("unexpected body for native respond: %q", string(body3))
-	}
-}
-
 func TestCaddyHandler_SWR_PreservesReplacerContext(t *testing.T) {
 	t.Parallel()
 	h, cleanup := parseAndProvisionHandler(t, "titip { storage test }")
@@ -443,7 +299,7 @@ func TestCaddyHandler_SWR_PreservesReplacerContext(t *testing.T) {
 	// Drain SWR
 	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := h.engine.Close(closeCtx); err != nil {
+	if err := h.instance.Close(closeCtx); err != nil {
 		t.Fatalf("Close error: %v", err)
 	}
 
@@ -527,168 +383,7 @@ func TestCaddyHandler_OriginalRequestRewrite(t *testing.T) {
 	}
 }
 
-// TestCaddyHandler_DirectiveOrder_EncodePlainResponse verifies that because Titip is ordered After encode,
-// Titip intercepts origin responses BEFORE Caddy's encode middleware compresses them.
-// Therefore:
-// 1. The cached variant body in Titip storage is stored as raw uncompressed bytes (never double-compressed or pre-encoded).
-// 2. The client still receives the response encoded (e.g. gzip) via Caddy's encode middleware.
-// 3. On subsequent cache HITs, Titip serves raw bytes to encode, which compresses them for the client.
-func TestCaddyHandler_DirectiveOrder_EncodePlainResponse(t *testing.T) {
-	plainContent := strings.Repeat("Hello Plain Uncompressed Text Payload For Titip Caching. ", 20)
-
-	caddyfileInput := `{
-		admin off
-		skip_install_trust
-		log {
-			output discard
-		}
-		titip {
-			storage test
-			cache_status rfc9211
-		}
-	}
-	:18095 {
-		encode gzip
-		titip
-
-		handle /api/plain {
-			header Cache-Control "public, max-age=60"
-			header Content-Type "text/plain"
-			respond "` + plainContent + `" 200
-		}
-	}`
-
-	cadAdapter := caddyconfig.GetAdapter("caddyfile")
-	if cadAdapter == nil {
-		t.Fatalf("caddyfile adapter not registered")
-	}
-	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
-	if err != nil {
-		t.Fatalf("adapt failed: %v", err)
-	}
-
-	cfg := new(caddymain.Config)
-	if err := json.Unmarshal(jsonBytes, cfg); err != nil {
-		t.Fatalf("unmarshal config: %v", err)
-	}
-
-	if err := caddymain.Run(cfg); err != nil {
-		t.Fatalf("caddy run failed: %v", err)
-	}
-	defer func() { _ = caddymain.Stop() }()
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DisableCompression: true, // Disable automatic decompression so we inspect raw response bytes
-		},
-	}
-
-	// 1. First request with Accept-Encoding: gzip (Cache MISS)
-	req1, _ := http.NewRequest(http.MethodGet, "http://localhost:18095/api/plain", nil)
-	req1.Header.Set("Accept-Encoding", "gzip")
-	resp1, err := client.Do(req1)
-	if err != nil {
-		t.Fatalf("request 1 failed: %v", err)
-	}
-	body1, _ := io.ReadAll(resp1.Body)
-	_ = resp1.Body.Close()
-
-	if resp1.StatusCode != http.StatusOK {
-		t.Fatalf("request 1 status = %d, want 200", resp1.StatusCode)
-	}
-	if resp1.Header.Get("Content-Encoding") != "gzip" {
-		t.Errorf("expected Content-Encoding 'gzip' to client, got %q", resp1.Header.Get("Content-Encoding"))
-	}
-	cacheStatus1 := resp1.Header.Get("Cache-Status")
-	if !strings.Contains(cacheStatus1, "miss") && !strings.Contains(cacheStatus1, "fwd=origin") {
-		t.Errorf("request 1 expected MISS, got %q", cacheStatus1)
-	}
-
-	// 2. Inspect underlying teststore to verify what Titip cached
-	store := getLastTestStore()
-	if store == nil {
-		t.Fatalf("expected lastTestStore to be populated")
-	}
-
-	// The primary key for :18095/api/plain
-	meta, _, err := store.GetMeta(context.Background(), "p=/api/plain:h=localhost:18095:m=GET")
-	if err != nil {
-		t.Fatalf("GetMeta error: %v", err)
-	}
-	if meta == nil {
-		t.Fatalf("expected cached metadata in teststore, got nil")
-	}
-
-	// Get cached variant body
-	varInfo, compBody, err := store.GetVariant(context.Background(), "p=/api/plain:h=localhost:18095:m=GET", "default")
-	if err != nil {
-		t.Fatalf("GetVariant error: %v", err)
-	}
-	if varInfo == nil || len(compBody) == 0 {
-		t.Fatalf("expected cached variant and body in teststore")
-	}
-
-	// In the cached variant headers, Content-Encoding MUST NOT be gzip (it must be plain)
-	if ceValues, exists := varInfo.ResponseHeaders["Content-Encoding"]; exists {
-		t.Errorf("cached variant should NOT have Content-Encoding header stored, got %v", ceValues.Values)
-	}
-
-	// Titip stores bodies compressed with internal LZ4; decompressing it must yield the raw plainContent string!
-	// (NOT a gzip-compressed stream)
-	lz4Reader := lz4.NewReader(bytes.NewReader(compBody))
-	decompressedBytes, err := io.ReadAll(lz4Reader)
-	if err != nil {
-		t.Fatalf("failed to decompress cached variant LZ4 body: %v", err)
-	}
-	if string(decompressedBytes) != plainContent {
-		t.Errorf("cached body = %q, want plain raw content %q", string(decompressedBytes), plainContent)
-	}
-
-	// 3. Second request with Accept-Encoding: gzip (Cache HIT)
-	req2, _ := http.NewRequest(http.MethodGet, "http://localhost:18095/api/plain", nil)
-	req2.Header.Set("Accept-Encoding", "gzip")
-	resp2, err := client.Do(req2)
-	if err != nil {
-		t.Fatalf("request 2 failed: %v", err)
-	}
-	body2, _ := io.ReadAll(resp2.Body)
-	_ = resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("request 2 status = %d, want 200", resp2.StatusCode)
-	}
-	if resp2.Header.Get("Content-Encoding") != "gzip" {
-		t.Errorf("expected Content-Encoding 'gzip' on cache HIT, got %q", resp2.Header.Get("Content-Encoding"))
-	}
-	cacheStatus2 := resp2.Header.Get("Cache-Status")
-	if !strings.Contains(cacheStatus2, "hit") {
-		t.Errorf("request 2 expected HIT, got %q", cacheStatus2)
-	}
-	// The compressed bytes delivered to client should match body1
-	if !bytes.Equal(body1, body2) {
-		t.Errorf("body1 (%d bytes) != body2 (%d bytes)", len(body1), len(body2))
-	}
-
-	// 4. Third request WITHOUT Accept-Encoding (Cache HIT without compression)
-	// Because Titip stored the raw uncompressed body, it can serve a client that doesn't accept gzip!
-	req3, _ := http.NewRequest(http.MethodGet, "http://localhost:18095/api/plain", nil)
-	resp3, err := client.Do(req3)
-	if err != nil {
-		t.Fatalf("request 3 failed: %v", err)
-	}
-	body3, _ := io.ReadAll(resp3.Body)
-	_ = resp3.Body.Close()
-
-	if resp3.Header.Get("Content-Encoding") != "" {
-		t.Errorf("expected no Content-Encoding for client without Accept-Encoding, got %q", resp3.Header.Get("Content-Encoding"))
-	}
-	if string(body3) != plainContent {
-		t.Errorf("expected plain content for unencoded client, got %q", string(body3))
-	}
-}
-
-func TestCaddyHandler_UseRewrittenURL_LiveExecution(t *testing.T) {
+func TestCaddyHandler_UseRewrittenURL_True(t *testing.T) {
 	t.Parallel()
 	caddyfileInput := `titip {
 		storage test

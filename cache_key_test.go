@@ -399,12 +399,12 @@ func TestGeneratePrimaryKey_Query(t *testing.T) {
 	})
 
 	tests := []struct {
-		name       string
-		url        string
-		cfg        *CacheKey
-		mustHave   []string
-		mustNot    []string
-		exactKey   string
+		name     string
+		url      string
+		cfg      *CacheKey
+		mustHave []string
+		mustNot  []string
+		exactKey string
 	}{
 		{
 			name:     "included params keep only specified",
@@ -442,16 +442,16 @@ func TestGeneratePrimaryKey_Query(t *testing.T) {
 			mustNot:  []string{":qs="},
 		},
 		{
-			name:     "empty query after all params filtered",
-			url:      "http://example.com/page?utm_source=google",
-			cfg:      &CacheKey{ExcludeMarketingParams: true},
-			mustNot:  []string{":qs="},
+			name:    "empty query after all params filtered",
+			url:     "http://example.com/page?utm_source=google",
+			cfg:     &CacheKey{ExcludeMarketingParams: true},
+			mustNot: []string{":qs="},
 		},
 		{
-			name:     "no query string has no qs label",
-			url:      "http://example.com/page",
-			cfg:      &CacheKey{},
-			mustNot:  []string{":qs="},
+			name:    "no query string has no qs label",
+			url:     "http://example.com/page",
+			cfg:     &CacheKey{},
+			mustNot: []string{":qs="},
 		},
 		{
 			name:     "multiple values for same param are sorted",

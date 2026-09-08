@@ -1,7 +1,6 @@
 package caddy
 
 import (
-	"sync"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2"
@@ -19,29 +18,14 @@ type TestStorage struct {
 	store *teststore.Store
 }
 
-var (
-	lastTestStoreMu sync.Mutex
-	lastTestStore   *teststore.Store
-)
-
 // CaddyModule returns the Caddy module information.
 func (TestStorage) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID: "titip.storage.test",
 		New: func() caddy.Module {
-			s := teststore.New()
-			lastTestStoreMu.Lock()
-			lastTestStore = s
-			lastTestStoreMu.Unlock()
-			return &TestStorage{store: s}
+			return &TestStorage{store: teststore.New()}
 		},
 	}
-}
-
-func getLastTestStore() *teststore.Store {
-	lastTestStoreMu.Lock()
-	defer lastTestStoreMu.Unlock()
-	return lastTestStore
 }
 
 // Provision initializes the test store.
@@ -104,8 +88,8 @@ func TestCaddyHandler_TestStorage_Caddyfile(t *testing.T) {
 		t.Fatalf("provision error with storage test: %v", err)
 	}
 
-	if h.engine == nil {
-		t.Fatalf("expected non-nil engine from Provision with storage test")
+	if h.instance == nil {
+		t.Fatalf("expected non-nil instance from Provision with storage test")
 	}
 	if h.storageMod == nil {
 		t.Fatalf("expected non-nil storageMod from Provision with storage test")

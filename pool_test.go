@@ -135,7 +135,6 @@ func TestResponseRecorderImplicitStatus200(t *testing.T) {
 	}
 }
 
-
 func TestLZ4CompressionRoundtrip(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -283,7 +282,6 @@ func BenchmarkResponseRecorderPool(b *testing.B) {
 		putResponseRecorder(rec)
 	}
 }
-
 
 func BenchmarkLZ4CompressDecompress(b *testing.B) {
 	payload := make([]byte, 4096)

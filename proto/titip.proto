@@ -27,9 +27,8 @@ message VariantInfo {
   map<string, HeaderValues> response_headers = 4;
   string etag = 5;
   int64 last_modified_unix_nano = 6;
-  uint32 raw_body_size = 7;
-  uint32 compressed_body_size = 8;
-  repeated EsiFragment esi_fragments = 10;
+  int64 raw_body_size = 7;
+  repeated EsiFragment esi_fragments = 8;
 }
 
 // CacheMetadata stores the primary URL index and variant registry

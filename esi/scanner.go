@@ -329,7 +329,10 @@ func extractAttributeBytes(tagHeader []byte, attrName []byte) []byte {
 
 		// Unquoted value
 		valStart := curr
-		for curr < headerLen && !isWhitespace(tagHeader[curr]) && tagHeader[curr] != '/' && tagHeader[curr] != '>' {
+		for curr < headerLen && !isWhitespace(tagHeader[curr]) && tagHeader[curr] != '>' {
+			if tagHeader[curr] == '/' && (curr+1 >= headerLen || tagHeader[curr+1] == '>') {
+				break
+			}
 			curr++
 		}
 		return tagHeader[valStart:curr]
@@ -357,14 +360,19 @@ func parseTimeoutBytes(b []byte) uint32 {
 	s := string(b)
 	// time.ParseDuration requires unit; bare number means seconds per ESI spec
 	if d, err := time.ParseDuration(s); err == nil {
+		if d <= 0 {
+			return 0
+		}
 		return uint32(d.Milliseconds())
 	}
 	if d, err := time.ParseDuration(s + "s"); err == nil {
+		if d <= 0 {
+			return 0
+		}
 		return uint32(d.Milliseconds())
 	}
 	return 0
 }
-
 
 func isWhitespace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'

@@ -174,9 +174,8 @@ type VariantInfo struct {
 	ResponseHeaders      map[string]*HeaderValues `protobuf:"bytes,4,rep,name=response_headers,json=responseHeaders,proto3" json:"response_headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Etag                 string                   `protobuf:"bytes,5,opt,name=etag,proto3" json:"etag,omitempty"`
 	LastModifiedUnixNano int64                    `protobuf:"varint,6,opt,name=last_modified_unix_nano,json=lastModifiedUnixNano,proto3" json:"last_modified_unix_nano,omitempty"`
-	RawBodySize          uint32                   `protobuf:"varint,7,opt,name=raw_body_size,json=rawBodySize,proto3" json:"raw_body_size,omitempty"`
-	CompressedBodySize   uint32                   `protobuf:"varint,8,opt,name=compressed_body_size,json=compressedBodySize,proto3" json:"compressed_body_size,omitempty"`
-	EsiFragments         []*EsiFragment           `protobuf:"bytes,10,rep,name=esi_fragments,json=esiFragments,proto3" json:"esi_fragments,omitempty"`
+	RawBodySize          int64                    `protobuf:"varint,7,opt,name=raw_body_size,json=rawBodySize,proto3" json:"raw_body_size,omitempty"`
+	EsiFragments         []*EsiFragment           `protobuf:"bytes,8,rep,name=esi_fragments,json=esiFragments,proto3" json:"esi_fragments,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -253,16 +252,9 @@ func (x *VariantInfo) GetLastModifiedUnixNano() int64 {
 	return 0
 }
 
-func (x *VariantInfo) GetRawBodySize() uint32 {
+func (x *VariantInfo) GetRawBodySize() int64 {
 	if x != nil {
 		return x.RawBodySize
-	}
-	return 0
-}
-
-func (x *VariantInfo) GetCompressedBodySize() uint32 {
-	if x != nil {
-		return x.CompressedBodySize
 	}
 	return 0
 }
@@ -391,7 +383,7 @@ const file_titip_proto_rawDesc = "" +
 	"\tmax_depth\x18\x06 \x01(\rR\bmaxDepth\x12\x1d\n" +
 	"\n" +
 	"timeout_ms\x18\a \x01(\rR\ttimeoutMs\x12#\n" +
-	"\rfallback_body\x18\b \x01(\fR\ffallbackBody\"\xde\x04\n" +
+	"\rfallback_body\x18\b \x01(\fR\ffallbackBody\"\xac\x04\n" +
 	"\vVariantInfo\x12\x1f\n" +
 	"\vvariant_key\x18\x01 \x01(\tR\n" +
 	"variantKey\x12F\n" +
@@ -401,10 +393,8 @@ const file_titip_proto_rawDesc = "" +
 	"\x10response_headers\x18\x04 \x03(\v2'.titip.VariantInfo.ResponseHeadersEntryR\x0fresponseHeaders\x12\x12\n" +
 	"\x04etag\x18\x05 \x01(\tR\x04etag\x125\n" +
 	"\x17last_modified_unix_nano\x18\x06 \x01(\x03R\x14lastModifiedUnixNano\x12\"\n" +
-	"\rraw_body_size\x18\a \x01(\rR\vrawBodySize\x120\n" +
-	"\x14compressed_body_size\x18\b \x01(\rR\x12compressedBodySize\x127\n" +
-	"\resi_fragments\x18\n" +
-	" \x03(\v2\x12.titip.EsiFragmentR\fesiFragments\x1a>\n" +
+	"\rraw_body_size\x18\a \x01(\x03R\vrawBodySize\x127\n" +
+	"\resi_fragments\x18\b \x03(\v2\x12.titip.EsiFragmentR\fesiFragments\x1a>\n" +
 	"\x10VaryHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aW\n" +

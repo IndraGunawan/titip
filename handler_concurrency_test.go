@@ -10,7 +10,6 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
-
 )
 
 // Singleflight stampede & initiator cancellation resilience on stale revalidations.
@@ -124,7 +123,6 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 	}
 }
 
-
 // Soft-purge synchronous freshness with fallback.
 func TestSoftPurge_SynchronousFreshnessAndFallback(t *testing.T) {
 	t.Parallel()
@@ -181,7 +179,6 @@ func TestSoftPurge_SynchronousFreshnessAndFallback(t *testing.T) {
 	wg.Wait()
 }
 
-
 // TestSWR_AsyncRevalidation_OnHead validates that SWR triggered by HEAD revalidates upstream with GET
 func TestSWR_AsyncRevalidation_OnHead(t *testing.T) {
 	t.Parallel()
@@ -231,7 +228,6 @@ func TestSWR_AsyncRevalidation_OnHead(t *testing.T) {
 		assertBody("swr updated payload v2")
 }
 
-
 // TestSWR_PreservesRequestContextValues verifies that custom context values (e.g. tracing IDs, replacers)
 // attached to the original HTTP request are preserved and accessible during async SWR revalidation.
 func TestSWR_PreservesRequestContextValues(t *testing.T) {
@@ -276,7 +272,6 @@ func TestSWR_PreservesRequestContextValues(t *testing.T) {
 		t.Fatalf("expected background SWR to receive trace value %q, got %v", "trace-id-swr-reval", got)
 	}
 }
-
 
 // Cold miss session leak protection (concurrent safety & zero session broadcast).
 func TestColdMiss_ConcurrentSafety_ZeroSessionLeak(t *testing.T) {
@@ -334,7 +329,6 @@ func TestColdMiss_ConcurrentSafety_ZeroSessionLeak(t *testing.T) {
 	}
 }
 
-
 // TestSynctest_ContextDetachmentAndVirtualTimers demonstrates Go 1.24+ synctest bubble
 // with zero-millisecond virtual time advancement and context detachment verification.
 func TestSynctest_ContextDetachmentAndVirtualTimers(t *testing.T) {
@@ -370,4 +364,3 @@ func TestSynctest_ContextDetachmentAndVirtualTimers(t *testing.T) {
 		}
 	})
 }
-

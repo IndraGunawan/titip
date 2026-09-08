@@ -75,7 +75,7 @@ func TestCalcAgeString(t *testing.T) {
 	now := time.Now()
 	createdAt := now.Add(-10 * time.Second)
 	meta := &pb.CacheMetadata{
-		CreatedAtUnixNano:           createdAt.UnixNano(),
+		CreatedAtUnixNano:          createdAt.UnixNano(),
 		CorrectedInitialAgeSeconds: 5,
 	}
 

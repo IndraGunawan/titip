@@ -159,7 +159,6 @@ func (r *testResponse) assertHeaderMissing(key string) *testResponse {
 	return r
 }
 
-
 func BenchmarkCacheHit(b *testing.B) {
 	_, _, mw := setupTestTitip(b)
 
@@ -183,7 +182,6 @@ func BenchmarkCacheHit(b *testing.B) {
 		putResponseRecorder(rec)
 	}
 }
-
 
 func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
 	_, _, mw := setupTestTitip(b)
@@ -212,7 +210,6 @@ func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
 		}
 	})
 }
-
 
 // Prometheus metrics & PromQL verification.
 func TestPrometheusMetrics(t *testing.T) {
@@ -292,11 +289,9 @@ func TestPrometheusMetrics(t *testing.T) {
 	}
 }
 
-
 func containsAny(s string, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
 }
-
 
 // TestCustomTagHeaderName verifies custom tag header extraction and purging
 func TestCustomTagHeaderName(t *testing.T) {
@@ -335,7 +330,6 @@ func TestCustomTagHeaderName(t *testing.T) {
 	}
 	_ = store
 }
-
 
 // TestOrigin_MalformedOriginTags validates tag extraction and purging when origin returns duplicate commas and spaces
 func TestOrigin_MalformedOriginTags(t *testing.T) {
@@ -395,7 +389,6 @@ func TestOrigin_MalformedOriginTags(t *testing.T) {
 	}
 }
 
-
 func TestNew_MissingStorage(t *testing.T) {
 	t.Parallel()
 	_, err := New()
@@ -407,7 +400,6 @@ func TestNew_MissingStorage(t *testing.T) {
 		t.Fatalf("expected error message %q, got %q", expectedMsg, err.Error())
 	}
 }
-
 
 func TestNew_MinimalOptions(t *testing.T) {
 	t.Parallel()
@@ -506,7 +498,6 @@ func TestNew_MinimalOptions(t *testing.T) {
 	}
 }
 
-
 func TestNew_NilOptionGuards(t *testing.T) {
 	t.Parallel()
 	store := teststore.New()
@@ -547,7 +538,6 @@ func TestNew_NilOptionGuards(t *testing.T) {
 		t.Errorf("expected 200 OK, got %d", rec.Code)
 	}
 }
-
 
 func TestPurge_PathOnly_PurgesCachedKeysWithHost(t *testing.T) {
 	t.Parallel()
@@ -596,7 +586,6 @@ func TestPurge_PathOnly_PurgesCachedKeysWithHost(t *testing.T) {
 	}
 }
 
-
 // TestSynchronousFetch_RequestContextPassThrough verifies that synchronous cache misses
 // pass the request context directly to the origin handler without injecting artificial timeouts,
 // allowing upstream server timeouts or client cancellations to propagate naturally.
@@ -634,7 +623,6 @@ func TestSynchronousFetch_RequestContextPassThrough(t *testing.T) {
 	}
 }
 
-
 // TestBackgroundFetchTimeout_Configuration verifies WithBackgroundFetchTimeout options.
 func TestBackgroundFetchTimeout_Configuration(t *testing.T) {
 	t.Parallel()
@@ -664,4 +652,3 @@ func TestBackgroundFetchTimeout_Configuration(t *testing.T) {
 		t.Errorf("expected 0, got %v", mwDisabled.config.backgroundFetchTimeout)
 	}
 }
-

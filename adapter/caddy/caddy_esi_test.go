@@ -28,8 +28,8 @@ func TestCaddyHandler_ESI_MaxResponseSize_Provision(t *testing.T) {
 		}`
 		h, cleanup := parseAndProvisionHandler(t, caddyfile)
 		defer cleanup()
-		if h == nil || h.engine == nil {
-			t.Fatal("expected engine to be provisioned with valid max_response_size")
+		if h == nil || h.instance == nil {
+			t.Fatal("expected instance to be provisioned with valid max_response_size")
 		}
 	})
 
@@ -62,8 +62,8 @@ func TestCaddyHandler_ESI_MaxResponseSize_Provision(t *testing.T) {
 		}`
 		h, cleanup := parseAndProvisionHandler(t, caddyfile)
 		defer cleanup()
-		if h == nil || h.engine == nil {
-			t.Fatal("expected engine to be provisioned with max_response_size 0")
+		if h == nil || h.instance == nil {
+			t.Fatal("expected instance to be provisioned with max_response_size 0")
 		}
 	})
 }

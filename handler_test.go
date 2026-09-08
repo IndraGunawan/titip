@@ -36,7 +36,6 @@ func TestFailOpen_OnStorageOutage(t *testing.T) {
 		assertCacheStatus("bypass")
 }
 
-
 // TestPanicRecovery_ColdMiss_NoCrash tests that an upstream panic on a cold request returns 500 without crashing
 func TestPanicRecovery_ColdMiss_NoCrash(t *testing.T) {
 	t.Parallel()
@@ -52,7 +51,6 @@ func TestPanicRecovery_ColdMiss_NoCrash(t *testing.T) {
 	doGet(t, handler, "http://example.com/api/cold-panic").
 		assertStatus(http.StatusInternalServerError)
 }
-
 
 // Panic recovery with stale fallback.
 func TestPanicRecovery_WithStaleFallback(t *testing.T) {
@@ -86,7 +84,6 @@ func TestPanicRecovery_WithStaleFallback(t *testing.T) {
 		assertBody("panic fallback data")
 }
 
-
 // Conditional 304 and HEAD requests
 func TestConditionalAndHeadRequests(t *testing.T) {
 	t.Parallel()
@@ -116,7 +113,6 @@ func TestConditionalAndHeadRequests(t *testing.T) {
 		assertStatus(http.StatusOK).
 		assertEmptyBody()
 }
-
 
 // TestColdHead_ThenGet_Success validates that cold HEAD primes the cache with the response body
 func TestColdHead_ThenGet_Success(t *testing.T) {
@@ -156,7 +152,6 @@ func TestColdHead_ThenGet_Success(t *testing.T) {
 	}
 }
 
-
 // TestColdHead_OptOut_ConvertHeadToGetFalse validates that disabling ConvertHeadToGet prevents 0-byte caching
 func TestColdHead_OptOut_ConvertHeadToGetFalse(t *testing.T) {
 	t.Parallel()
@@ -193,7 +188,6 @@ func TestColdHead_OptOut_ConvertHeadToGetFalse(t *testing.T) {
 		t.Fatalf("expected 2 origin calls (not cached on HEAD), got %d", calls)
 	}
 }
-
 
 // TestHeadRevalidation_ConvertHeadToGet validates that expired cache revalidations on HEAD refresh the body
 func TestHeadRevalidation_ConvertHeadToGet(t *testing.T) {
@@ -240,7 +234,6 @@ func TestHeadRevalidation_ConvertHeadToGet(t *testing.T) {
 		assertCacheStatus("hit")
 }
 
-
 // Unsafe HTTP method auto-invalidation
 func TestUnsafeMethodAutoInvalidation_DefaultDisabled(t *testing.T) {
 	t.Parallel()
@@ -273,7 +266,6 @@ func TestUnsafeMethodAutoInvalidation_DefaultDisabled(t *testing.T) {
 		assertBody("state=0")
 }
 
-
 func TestUnsafeMethodAutoInvalidation_OptInEnabled(t *testing.T) {
 	t.Parallel()
 	_, _, mw := setupTestTitip(t, WithAutoInvalidateMutatingMethods())
@@ -304,7 +296,6 @@ func TestUnsafeMethodAutoInvalidation_OptInEnabled(t *testing.T) {
 	doGet(t, handler, "http://example.com/api/state-enabled").
 		assertBody("state=42")
 }
-
 
 // Graceful shutdown awaiting SWR revalidation
 func TestGracefulShutdown(t *testing.T) {
@@ -349,7 +340,6 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 }
 
-
 func TestGracefulShutdown_Timeout(t *testing.T) {
 	t.Parallel()
 	_, _, mw := setupTestTitip(t)
@@ -389,7 +379,6 @@ func TestGracefulShutdown_Timeout(t *testing.T) {
 		t.Fatal("expected Close to fail on context deadline exceeded, got nil")
 	}
 }
-
 
 // Protocol & stream bypass guards (WebSocket, SSE, Range).
 func TestBypassGuards_WebSocket_SSE_Range(t *testing.T) {
@@ -441,7 +430,6 @@ func TestBypassGuards_WebSocket_SSE_Range(t *testing.T) {
 		assertCacheStatus("detail=range-request")
 }
 
-
 // Downstream 304 validation with zero Redis body I/O.
 func TestDownstream304_ZeroBodyIO(t *testing.T) {
 	t.Parallel()
@@ -476,7 +464,6 @@ func TestDownstream304_ZeroBodyIO(t *testing.T) {
 	doGet(t, handler, "http://example.com/api/item", "If-Modified-Since", "Wed, 21 Oct 2026 07:28:00 GMT").
 		assertStatus(http.StatusNotModified)
 }
-
 
 // Upstream 304 revalidation (TTL refresh & body retention).
 func TestUpstream304_TTLRefresh(t *testing.T) {
@@ -530,7 +517,6 @@ func TestUpstream304_TTLRefresh(t *testing.T) {
 		t.Fatalf("cache hit should not invoke origin: %d", originExecutions.Load())
 	}
 }
-
 
 // TestFailOpen_MetadataExists_BodyEvictedGlitch verifies that if metadata exists in storage
 // but the variant body key was expired/evicted in a microsecond race, Titip seamlessly fails open
@@ -589,7 +575,6 @@ func TestFailOpen_MetadataExists_BodyEvictedGlitch(t *testing.T) {
 		t.Fatalf("expected 0 additional origin executions (cache hit), got %d", originExecutions.Load())
 	}
 }
-
 
 // TestConditionalMiss_CacheWarming_AndServes304ToClient verifies that when a client sends conditional headers
 // on a cold cache miss, Titip strips conditional headers to fetch the full representation from origin,
@@ -651,7 +636,6 @@ func TestConditionalMiss_CacheWarming_AndServes304ToClient(t *testing.T) {
 	}
 }
 
-
 // TestConditionalMiss_MismatchingETag_Serves200WithBody verifies that when client sends an outdated ETag,
 // Titip fetches fresh from origin, warms the cache, and delivers 200 OK with the new body.
 func TestConditionalMiss_MismatchingETag_Serves200WithBody(t *testing.T) {
@@ -689,7 +673,6 @@ func TestConditionalMiss_MismatchingETag_Serves200WithBody(t *testing.T) {
 		t.Fatalf("expected 0 additional origin calls, got %d", originCalls.Load())
 	}
 }
-
 
 // TestConditionalMiss_IfModifiedSince_CacheWarming verifies conditional miss handling for If-Modified-Since.
 func TestConditionalMiss_IfModifiedSince_CacheWarming(t *testing.T) {
@@ -737,7 +720,6 @@ func TestConditionalMiss_IfModifiedSince_CacheWarming(t *testing.T) {
 	}
 }
 
-
 // TestConditionalMiss_UncacheableOrigin_Serves304WithoutStoring verifies that uncacheable origin responses
 // deliver 304 to client if validators match, but do not populate storage.
 func TestConditionalMiss_UncacheableOrigin_Serves304WithoutStoring(t *testing.T) {
@@ -773,5 +755,3 @@ func TestConditionalMiss_UncacheableOrigin_Serves304WithoutStoring(t *testing.T)
 		t.Fatalf("expected second request to hit origin (uncacheable), got %d origin calls", originCalls.Load())
 	}
 }
-
-

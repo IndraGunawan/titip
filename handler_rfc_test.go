@@ -46,7 +46,6 @@ func TestCacheStatusModes(t *testing.T) {
 		assertHeader("Cache-Status", "")
 }
 
-
 // TestMultiVariant_VaryHeaderLifecycle verifies how variants are detected, evaluated, and stored
 func TestMultiVariant_VaryHeaderLifecycle(t *testing.T) {
 	t.Parallel()
@@ -128,7 +127,6 @@ func TestMultiVariant_VaryHeaderLifecycle(t *testing.T) {
 	}
 }
 
-
 // TestRFC_MandatoryCachedResponseHeaders validates mandatory RFC 9111/7234 cached response headers and hop-by-hop stripping
 func TestRFC_MandatoryCachedResponseHeaders(t *testing.T) {
 	t.Parallel()
@@ -175,7 +173,6 @@ func TestRFC_MandatoryCachedResponseHeaders(t *testing.T) {
 	}
 }
 
-
 func TestRFC9211_ForwardReasonsAndParameters(t *testing.T) {
 	t.Parallel()
 	_, _, mw := setupTestTitip(t, WithRespectClientCacheControl())
@@ -216,7 +213,6 @@ func TestRFC9211_ForwardReasonsAndParameters(t *testing.T) {
 	doGet(t, handler, "http://example.com/api/rfc9211", "Accept-Language", "en").
 		assertCacheStatus("fwd=stale")
 }
-
 
 func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 	t.Parallel()
@@ -350,7 +346,6 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 	})
 }
 
-
 // TestRFC_Authorization_Guards verifies RFC 9111 §3.5:
 // Shared caches MUST NOT store responses to requests with Authorization headers
 // unless the response contains explicit public, s-maxage, or must-revalidate directives.
@@ -393,7 +388,6 @@ func TestRFC_Authorization_Guards(t *testing.T) {
 		assertCacheStatus("hit")
 }
 
-
 // TestRFC_MustRevalidate_DisallowsSWR verifies RFC 5861 §3 & §4 / RFC 9111 §5.2.2.1:
 // must-revalidate and proxy-revalidate forbid serving stale content under stale-while-revalidate.
 func TestRFC_MustRevalidate_DisallowsSWR(t *testing.T) {
@@ -421,7 +415,6 @@ func TestRFC_MustRevalidate_DisallowsSWR(t *testing.T) {
 	}
 }
 
-
 // TestRFC_VaryStar_NoSubsequentMatch verifies RFC 9111 §4.1 / RFC 7231 §7.1.4:
 // A response containing Vary: * MUST NOT be stored or served for subsequent requests.
 func TestRFC_VaryStar_NoSubsequentMatch(t *testing.T) {
@@ -445,7 +438,6 @@ func TestRFC_VaryStar_NoSubsequentMatch(t *testing.T) {
 		t.Fatalf("expected 2 origin calls for Vary: *, got %d", originCalls.Load())
 	}
 }
-
 
 // TestRFC_ServedAge_PreservesUpstreamAge verifies RFC 9111 §5.1 / §4.2.3:
 // Age header served from cache must equal corrected_initial_age + resident_time.
@@ -478,7 +470,6 @@ func TestRFC_ServedAge_PreservesUpstreamAge(t *testing.T) {
 		t.Fatalf("expected served Age >= 46 (45 initial + 1 resident), got %d", ageVal)
 	}
 }
-
 
 // TestRFC_ClientDirectives_PragmaAndOnlyIfCached verifies RFC 9111 §5.4 and §5.2.1.7:
 // 1. Pragma: no-cache acts as Cache-Control: no-cache when RespectClientCacheControl is enabled.
@@ -516,7 +507,6 @@ func TestRFC_ClientDirectives_PragmaAndOnlyIfCached(t *testing.T) {
 	doGet(t, handler, "http://example.com/missing-url", "Cache-Control", "only-if-cached").
 		assertStatus(http.StatusGatewayTimeout)
 }
-
 
 // TestRFC_MutatingMethod_InvalidatesLocation verifies RFC 9111 §4.4:
 // A successful non-safe request (POST, PUT, DELETE, PATCH) invalidates both the effective request URI
@@ -566,7 +556,6 @@ func TestRFC_MutatingMethod_InvalidatesLocation(t *testing.T) {
 	}
 }
 
-
 // TestRFC_IfModifiedSince_SecondsPrecision verifies RFC 7232 §3.3 / RFC 9110 §13.1.3:
 // If-Modified-Since evaluates equality with 1-second resolution (sub-second fractions ignored).
 func TestRFC_IfModifiedSince_SecondsPrecision(t *testing.T) {
@@ -588,7 +577,6 @@ func TestRFC_IfModifiedSince_SecondsPrecision(t *testing.T) {
 	doGet(t, handler, "http://example.com/ims-test", "If-Modified-Since", lmTime.Truncate(time.Second).Format(http.TimeFormat)).
 		assertStatus(http.StatusNotModified)
 }
-
 
 // TestRFC_Expires_Alone_Cacheable verifies RFC 9111 §4.2.1 / §5.3 / Cloudflare compatibility:
 // A response without Cache-Control is cacheable if Expires is set to a future date.
@@ -616,7 +604,6 @@ func TestRFC_Expires_Alone_Cacheable(t *testing.T) {
 		t.Fatalf("expected cached hit without calling origin, got %d calls", originCalls.Load())
 	}
 }
-
 
 func TestMultipleVaryHeaders_EndToEnd(t *testing.T) {
 	t.Parallel()
@@ -662,7 +649,6 @@ func TestMultipleVaryHeaders_EndToEnd(t *testing.T) {
 		t.Fatalf("expected 3 origin calls, got %d", originCalls.Load())
 	}
 }
-
 
 func TestMultipleCacheControlHeaders_EndToEnd(t *testing.T) {
 	t.Parallel()
@@ -726,7 +712,6 @@ func TestMultipleCacheControlHeaders_EndToEnd(t *testing.T) {
 // RFC Compliance & Security Hardening Verification Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-
 func TestRFC_DownstreamConditional_NeverServedFromExpiredCache(t *testing.T) {
 	t.Parallel()
 	_, _, mw := setupTestTitip(t)
@@ -786,7 +771,6 @@ func TestRFC_DownstreamConditional_NeverServedFromExpiredCache(t *testing.T) {
 	}
 }
 
-
 func TestRFC_Preconditions_IfMatch_And_IfUnmodifiedSince(t *testing.T) {
 	t.Parallel()
 	_, _, mw := setupTestTitip(t)
@@ -825,7 +809,6 @@ func TestRFC_Preconditions_IfMatch_And_IfUnmodifiedSince(t *testing.T) {
 	doGet(t, handler, "http://example.com/preconditions", "If-Unmodified-Since", lastMod.Add(-1*time.Hour).Format(http.TimeFormat)).
 		assertStatus(http.StatusPreconditionFailed)
 }
-
 
 func TestRFC_Upstream304_PreservesStoredCacheControl(t *testing.T) {
 	t.Parallel()
@@ -874,7 +857,6 @@ func TestRFC_Upstream304_PreservesStoredCacheControl(t *testing.T) {
 	}
 }
 
-
 func TestRFC_CrossHostPurge_Isolation(t *testing.T) {
 	t.Parallel()
 	_, _, mw := setupTestTitip(t, WithAutoInvalidateMutatingMethods())
@@ -915,7 +897,6 @@ func TestRFC_CrossHostPurge_Isolation(t *testing.T) {
 	}
 }
 
-
 func TestRFC_SetCookie_NeverStored_Or_Leaked(t *testing.T) {
 	t.Parallel()
 	_, _, mw := setupTestTitip(t)
@@ -943,7 +924,6 @@ func TestRFC_SetCookie_NeverStored_Or_Leaked(t *testing.T) {
 		t.Fatalf("expected Set-Cookie response to bypass cache (2 origin calls), got %d", originCalls.Load())
 	}
 }
-
 
 func TestRFC9211_MultiCacheChaining_AppendsHeader(t *testing.T) {
 	t.Parallel()
@@ -1000,7 +980,6 @@ func TestRFC9211_MultiCacheChaining_AppendsHeader(t *testing.T) {
 			assertHeader("Cache-Status", "HIT")
 	})
 }
-
 
 func TestRFC_NoCache_ConditionalRevalidation_And_StaleIfErrorFailover(t *testing.T) {
 	t.Parallel()
@@ -1073,7 +1052,6 @@ func TestRFC_NoCache_ConditionalRevalidation_And_StaleIfErrorFailover(t *testing
 	}
 }
 
-
 func TestRFC9213_TieredCacheControl_EndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -1134,4 +1112,3 @@ func TestRFC9213_TieredCacheControl_EndToEnd(t *testing.T) {
 		}
 	})
 }
-

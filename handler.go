@@ -260,15 +260,6 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	}
 	defer putBuffer(dstBuf)
 
-	if t.logger.Enabled(ctx.r.Context(), slog.LevelDebug) {
-		t.logger.DebugContext(ctx.r.Context(), "payload decompressed",
-			slog.String("key", ctx.primaryKey),
-			slog.String("variant", ctx.variantKey),
-			slog.Int("raw_bytes", int(varInfo.RawBodySize)),
-			slog.Int("compressed_bytes", int(varInfo.CompressedBodySize)),
-		)
-	}
-
 	// RFC 9111 §5.1 / §4.2.3: current_age = corrected_initial_age + resident_time
 	ttlStr := strconv.FormatInt(t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano), 10)
 
@@ -675,6 +666,9 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 		dstBuf := getBuffer()
 		defer putBuffer(dstBuf)
+		if res.fallback.varInfo != nil && res.fallback.varInfo.RawBodySize > 0 {
+			dstBuf.Grow(int(res.fallback.varInfo.RawBodySize))
+		}
 
 		if err := decompressLZ4(res.fallback.body, dstBuf); err == nil {
 			if t.config.esi.Enabled && len(res.fallback.varInfo.EsiFragments) > 0 {
@@ -804,22 +798,6 @@ func (t *Titip) saveVariantToStorage(
 		varKey = defaultVariantKey
 	}
 
-	if t.logger.Enabled(r.Context(), slog.LevelDebug) {
-		rawLen := len(bodyBytes)
-		compLen := len(compBytes)
-		ratio := 0.0
-		if rawLen > 0 {
-			ratio = (1.0 - float64(compLen)/float64(rawLen)) * 100.0
-		}
-		t.logger.DebugContext(r.Context(), "payload compressed",
-			slog.String("key", primaryKey),
-			slog.String("variant", varKey),
-			slog.Int("raw_bytes", rawLen),
-			slog.Int("compressed_bytes", compLen),
-			slog.String("savings_pct", fmt.Sprintf("%.2f%%", ratio)),
-		)
-	}
-
 	newMeta := &pb.CacheMetadata{
 		PrimaryKey:                 primaryKey,
 		VaryHeaderNames:            varNames,
@@ -833,13 +811,12 @@ func (t *Titip) saveVariantToStorage(
 	}
 
 	newVariant := &pb.VariantInfo{
-		VariantKey:         varKey,
-		StatusCode:         int32(statusCode),
-		ResponseHeaders:    protoHeadersFromHTTP(headers),
-		Etag:               headers.Get(headerETag),
-		RawBodySize:        uint32(len(bodyBytes)),
-		CompressedBodySize: uint32(len(compBytes)),
-		EsiFragments:       fragments,
+		VariantKey:      varKey,
+		StatusCode:      int32(statusCode),
+		ResponseHeaders: protoHeadersFromHTTP(headers),
+		Etag:            headers.Get(headerETag),
+		RawBodySize:     int64(len(bodyBytes)),
+		EsiFragments:    fragments,
 	}
 	if lm, err := parseDate(headers.Get(headerLastModified)); err == nil && !lm.IsZero() {
 		newVariant.LastModifiedUnixNano = lm.UnixNano()
@@ -1191,6 +1168,9 @@ func (t *Titip) loadDecompressed(ctx *requestContext) (*pb.VariantInfo, *bytes.B
 		return nil, nil, false
 	}
 	buf := getBuffer()
+	if varInfo.RawBodySize > 0 {
+		buf.Grow(int(varInfo.RawBodySize))
+	}
 	if err := decompressLZ4(compBody, buf); err != nil {
 		putBuffer(buf)
 		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
