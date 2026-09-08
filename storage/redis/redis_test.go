@@ -1,8 +1,10 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"sync"
@@ -77,6 +79,7 @@ func getFieldTTL(ctx context.Context, client rueidis.Client, key, field string) 
 }
 
 func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, store, _ := setupTestRedis(t)
 
@@ -156,6 +159,7 @@ func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 }
 
 func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -213,6 +217,7 @@ func TestDelete_CompletePurge_ZeroOrphanedKeys(t *testing.T) {
 }
 
 func TestSoftPurge(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -295,6 +300,7 @@ func TestSoftPurge(t *testing.T) {
 }
 
 func TestPurgeByTag_HardAndSoft(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -370,6 +376,7 @@ func TestPurgeByTag_HardAndSoft(t *testing.T) {
 }
 
 func TestPurgeByPattern_HardAndSoft(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -425,6 +432,7 @@ func TestPurgeByPattern_HardAndSoft(t *testing.T) {
 }
 
 func TestDynamicTTLExtension(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -459,6 +467,7 @@ func TestDynamicTTLExtension(t *testing.T) {
 // 2. After 1s: Store "es" variant with 4s TTL. Meta TTL extended to 4s.
 // 3. After 1.5s more (total 2.5s): "en" body has expired, but Meta key and "es" body are still alive!
 func TestDynamicTTLExtension_MultiVariantScenario(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -513,6 +522,7 @@ func TestDynamicTTLExtension_MultiVariantScenario(t *testing.T) {
 }
 
 func TestConcurrencyAndRaces(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, store, _ := setupTestRedis(t)
 
@@ -548,6 +558,7 @@ func TestConcurrencyAndRaces(t *testing.T) {
 }
 
 func TestTagHashDynamicTTLExtension(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -603,6 +614,7 @@ func TestTagHashDynamicTTLExtension(t *testing.T) {
 }
 
 func TestTagHashFieldAutoEviction(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	client, store, prefix := setupTestRedis(t)
 
@@ -673,6 +685,7 @@ func TestTagHashFieldAutoEviction(t *testing.T) {
 }
 
 func TestStorage_Variant_HEXPIRE_Eviction(t *testing.T) {
+	t.Parallel()
 	client, store, prefix := setupTestRedis(t)
 	ctx := context.Background()
 
@@ -723,6 +736,87 @@ func TestStorage_Variant_HEXPIRE_Eviction(t *testing.T) {
 	indexVal, err := client.Do(ctx, client.B().Hget().Key(metaKey).Field("_index").Build()).ToString()
 	if err != nil || indexVal == "" {
 		t.Fatalf("expected _index to still exist in metadata hash, got err=%v", err)
+	}
+}
+
+func TestPurgeAll(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	client, _, prefix := setupTestRedis(t)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	store, err := New(client, WithKeyPrefix(prefix), WithLogger(logger))
+	if err != nil {
+		t.Fatalf("failed to create store with logger: %v", err)
+	}
+
+	// Create 3 primary keys with variants and tags
+	for i := 1; i <= 3; i++ {
+		pk := fmt.Sprintf("https://example.com/all/%d", i)
+		meta := &pb.CacheMetadata{
+			PrimaryKey: pk,
+			Tags:       []string{"all-tag"},
+		}
+		v := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+		body := []byte(fmt.Sprintf("body_%d", i))
+		if err := store.SetVariant(ctx, pk, meta, v, body, 60*time.Second); err != nil {
+			t.Fatalf("set variant failed: %v", err)
+		}
+	}
+
+	// Purge all keys under configured namespace prefix
+	deleted, err := store.PurgeAll(ctx)
+	if err != nil {
+		t.Fatalf("PurgeAll failed: %v", err)
+	}
+	if deleted != 3 {
+		t.Fatalf("expected 3 primary entries purged, got %d", deleted)
+	}
+
+	// Verify zero keys remain under the test prefix
+	resp := client.Do(ctx, client.B().Keys().Pattern(prefix+"*").Build())
+	keys, err := resp.AsStrSlice()
+	if err != nil {
+		t.Fatalf("failed to check remaining keys: %v", err)
+	}
+	if len(keys) > 0 {
+		t.Fatalf("expected 0 keys remaining after PurgeAll, found: %v", keys)
+	}
+}
+
+func TestNew_OptionsAndValidation(t *testing.T) {
+	t.Parallel()
+
+	// 1. nil client validation
+	_, err := New(nil)
+	if err == nil || err.Error() != "titip: redis: client is required" {
+		t.Fatalf("expected client is required error, got: %v", err)
+	}
+
+	// 2. Custom options (WithKeyPrefix and WithLogger)
+	client, _, _ := setupTestRedis(t)
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	customStore, err := New(client, WithKeyPrefix("custom:prefix:"), WithLogger(logger))
+	if err != nil {
+		t.Fatalf("New with options failed: %v", err)
+	}
+	if customStore.prefix != "custom:prefix:" {
+		t.Errorf("expected prefix 'custom:prefix:', got %q", customStore.prefix)
+	}
+	if customStore.logger != logger {
+		t.Errorf("expected logger to match configured instance")
+	}
+
+	// 3. Default prefix when WithKeyPrefix not specified
+	defaultStore, err := New(client)
+	if err != nil {
+		t.Fatalf("New with default prefix failed: %v", err)
+	}
+	if defaultStore.prefix != defaultPrefix {
+		t.Errorf("expected default prefix %q, got %q", defaultPrefix, defaultStore.prefix)
 	}
 }
 

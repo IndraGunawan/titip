@@ -106,36 +106,36 @@ func handleAdminPurge(w http.ResponseWriter, r *http.Request) error {
 		purgeOpts = append(purgeOpts, titip.WithSoftPurge())
 	}
 
-	activeEngines := getEngines()
+	activeInstances := getInstances()
 	var count int64
 
 	switch targetType {
 	case "urls":
-		if len(activeEngines) == 0 {
+		if len(activeInstances) == 0 {
 			count = int64(len(req.URLs))
 		}
 		for _, u := range req.URLs {
-			for _, engine := range activeEngines {
-				n, _ := engine.Purge(r.Context(), u, purgeOpts...)
+			for _, inst := range activeInstances {
+				n, _ := inst.Purge(r.Context(), u, purgeOpts...)
 				count += n
 			}
 		}
 	case "tags":
-		if len(activeEngines) == 0 {
+		if len(activeInstances) == 0 {
 			count = int64(len(req.Tags))
 		}
 		for _, tag := range req.Tags {
-			for _, engine := range activeEngines {
-				n, _ := engine.PurgeTag(r.Context(), tag, purgeOpts...)
+			for _, inst := range activeInstances {
+				n, _ := inst.PurgeTag(r.Context(), tag, purgeOpts...)
 				count += n
 			}
 		}
 	case "purge_everything":
-		if len(activeEngines) == 0 {
+		if len(activeInstances) == 0 {
 			count = 1
 		}
-		for _, engine := range activeEngines {
-			n, _ := engine.PurgeAll(r.Context())
+		for _, inst := range activeInstances {
+			n, _ := inst.PurgeAll(r.Context())
 			count += n
 		}
 	}

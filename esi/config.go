@@ -127,10 +127,10 @@ func WithAllowPrivateIPsForAllowedHosts(allow bool) Option {
 	}
 }
 
-// WithMaxResponseSize caps the maximum allowed fragment body size in bytes (default: 10MB).
+// WithMaxResponseSize caps the maximum allowed fragment body size in bytes (default: 10MB, 0 = unlimited).
 func WithMaxResponseSize(size int64) Option {
 	return func(c *Config) {
-		if size > 0 {
+		if size >= 0 {
 			c.MaxResponseSize = size
 		}
 	}

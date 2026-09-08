@@ -2,6 +2,7 @@ package esi
 
 import (
 	"bytes"
+	"strconv"
 	"time"
 
 	proto "github.com/indragunawan/titip/proto"
@@ -187,7 +188,9 @@ func parseESIInclude(b []byte, tagStart int) (*proto.EsiFragment, int) {
 
 	var maxDepth uint32
 	if len(maxDepthBytes) > 0 {
-		maxDepth = uint32(parseUintBytes(maxDepthBytes))
+		if v, err := strconv.ParseUint(string(bytes.TrimSpace(maxDepthBytes)), 10, 32); err == nil {
+			maxDepth = uint32(v)
+		}
 	}
 
 	if isSelfClosing {
@@ -326,7 +329,10 @@ func extractAttributeBytes(tagHeader []byte, attrName []byte) []byte {
 
 		// Unquoted value
 		valStart := curr
-		for curr < headerLen && !isWhitespace(tagHeader[curr]) && tagHeader[curr] != '/' && tagHeader[curr] != '>' {
+		for curr < headerLen && !isWhitespace(tagHeader[curr]) && tagHeader[curr] != '>' {
+			if tagHeader[curr] == '/' && (curr+1 >= headerLen || tagHeader[curr+1] == '>') {
+				break
+			}
 			curr++
 		}
 		return tagHeader[valStart:curr]
@@ -354,26 +360,18 @@ func parseTimeoutBytes(b []byte) uint32 {
 	s := string(b)
 	// time.ParseDuration requires unit; bare number means seconds per ESI spec
 	if d, err := time.ParseDuration(s); err == nil {
+		if d <= 0 {
+			return 0
+		}
 		return uint32(d.Milliseconds())
 	}
 	if d, err := time.ParseDuration(s + "s"); err == nil {
+		if d <= 0 {
+			return 0
+		}
 		return uint32(d.Milliseconds())
 	}
 	return 0
-}
-
-// parseUintBytes parses a uint64 from []byte (used for max-depth).
-func parseUintBytes(b []byte) uint64 {
-	b = bytes.TrimSpace(b)
-	var val uint64
-	for _, c := range b {
-		if c >= '0' && c <= '9' {
-			val = val*10 + uint64(c-'0')
-		} else {
-			break
-		}
-	}
-	return val
 }
 
 func isWhitespace(c byte) bool {

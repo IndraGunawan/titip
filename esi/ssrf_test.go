@@ -2,6 +2,7 @@ package esi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -20,6 +21,20 @@ func TestSSRF_BlockedIPs(t *testing.T) {
 		"::1",
 		"fe80::1",
 		"fc00::1",
+		// IPv4-mapped IPv6
+		"::ffff:127.0.0.1",
+		"::ffff:10.0.1.50",
+		"::ffff:192.168.1.1",
+		// Carrier-Grade NAT (RFC 6598)
+		"100.64.0.1",
+		// IETF Protocol Assignments
+		"192.0.0.1",
+		// Network Benchmark
+		"198.18.0.1",
+		// Multicast
+		"224.0.0.1",
+		// Reserved
+		"240.0.0.1",
 	}
 
 	for _, ipStr := range blockedCases {
@@ -34,6 +49,7 @@ func TestSSRF_BlockedIPs(t *testing.T) {
 		"1.1.1.1",
 		"142.250.190.46",
 		"2606:4700:4700::1111",
+		"::ffff:8.8.8.8", // IPv4-mapped public IP
 	}
 
 	for _, ipStr := range allowedCases {
@@ -47,9 +63,11 @@ func TestSSRF_BlockedIPs(t *testing.T) {
 func TestSSRF_ValidateURLScheme(t *testing.T) {
 	valid := []string{
 		"/api/user",
-		"/cart?id=123",
+		"/cart?id=123#checkout",
 		"http://example.com/api",
 		"https://example.com/api",
+		"HTTP://EXAMPLE.COM/API",
+		"HTTPS://EXAMPLE.COM/API",
 	}
 
 	for _, u := range valid {
@@ -65,6 +83,7 @@ func TestSSRF_ValidateURLScheme(t *testing.T) {
 		"ftp://ftp.example.com",
 		"gopher://evil.com",
 		"",
+		"http://[::1]:namedport/frag",
 	}
 
 	for _, u := range invalid {
@@ -75,33 +94,36 @@ func TestSSRF_ValidateURLScheme(t *testing.T) {
 }
 
 func TestSSRF_MatchHost(t *testing.T) {
-	patterns := []string{"cdn.example.com", "*.partner.com", "api.service.io:8080"}
+	patterns := []string{"cdn.example.com", "*.partner.com", "api.service.io:8080", "*"}
 
 	tests := []struct {
-		host  string
-		match bool
+		host     string
+		patterns []string
+		match    bool
 	}{
-		{"cdn.example.com", true},
-		{"cdn.example.com:443", true},
-		{"sub.partner.com", true},
-		{"sub.partner.com:8443", true},
-		{"partner.com", true},
-		{"otherpartner.com", false},
-		{"attacker.com", false},
-		{"api.service.io:8080", true},
-		{"api.service.io", true},
+		{"cdn.example.com", patterns[:3], true},
+		{"cdn.example.com:443", patterns[:3], true},
+		{"sub.partner.com", patterns[:3], true},
+		{"sub.partner.com:8443", patterns[:3], true},
+		{"partner.com", patterns[:3], true},
+		{"otherpartner.com", patterns[:3], false},
+		{"attacker.com", patterns[:3], false},
+		{"api.service.io:8080", patterns[:3], true},
+		{"api.service.io", patterns[:3], true},
+		{"any.example.org", patterns, true}, // wildcard "*"
+		{"anything", []string{}, true},      // empty pattern list allows all
+		{"   ", []string{"cdn.example.com"}, false},
 	}
 
 	for _, tt := range tests {
-		got := MatchHost(tt.host, patterns)
+		got := MatchHost(tt.host, tt.patterns)
 		if got != tt.match {
-			t.Errorf("MatchHost(%q, %v) = %v; want %v", tt.host, patterns, got, tt.match)
+			t.Errorf("MatchHost(%q, %v) = %v; want %v", tt.host, tt.patterns, got, tt.match)
 		}
 	}
 }
 
 func TestSSRF_TransportDialBlocked(t *testing.T) {
-	// Start local test server on 127.0.0.1
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -122,4 +144,52 @@ func TestSSRF_TransportDialBlocked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected SSRF error when dialing 127.0.0.1 with BlockPrivateIPs=true, but succeeded")
 	}
+}
+
+func TestSSRF_Transport_AllowPrivateIPs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("allowed-private"))
+	}))
+	defer srv.Close()
+
+	// 1. BlockPrivateIPs = false allows dialing 127.0.0.1
+	cfgDisabled := SSRFConfig{
+		BlockPrivateIPs: false,
+	}
+	trDisabled := NewSSRFSafeTransport(cfgDisabled, 0) // verifies default timeout <= 0
+	client := &http.Client{Transport: trDisabled}
+
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("expected request to succeed when BlockPrivateIPs=false, got: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	// 2. AllowedHosts restriction rejection
+	cfgRestricted := SSRFConfig{
+		BlockPrivateIPs: false,
+		AllowedHosts:    []string{"authorized-domain.com"},
+	}
+	trRestricted := NewSSRFSafeTransport(cfgRestricted, 500*time.Millisecond)
+	clientRestricted := &http.Client{Transport: trRestricted}
+
+	_, err = clientRestricted.Get(srv.URL)
+	if err == nil || !errors.Is(err, ErrHostNotAllowed) {
+		t.Fatalf("expected ErrHostNotAllowed, got: %v", err)
+	}
+
+	// 3. AllowPrivateIPsForAllowedHosts permits private IP when explicitly in AllowedHosts
+	cfgAllowedPrivate := SSRFConfig{
+		BlockPrivateIPs:                true,
+		AllowedHosts:                   []string{"127.0.0.1"},
+		AllowPrivateIPsForAllowedHosts: true,
+	}
+	trAllowedPrivate := NewSSRFSafeTransport(cfgAllowedPrivate, 500*time.Millisecond)
+	clientAllowedPrivate := &http.Client{Transport: trAllowedPrivate}
+
+	resp, err = clientAllowedPrivate.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("expected request to succeed with AllowPrivateIPsForAllowedHosts=true, got: %v", err)
+	}
+	_ = resp.Body.Close()
 }

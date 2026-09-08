@@ -25,12 +25,6 @@ var defaultMarketingQueryParams = []string{
 	"utm_term",
 }
 
-// defaultPorts maps scheme to its default port string for stripping from host.
-var defaultPorts = map[string]string{
-	"http":  ":80",
-	"https": ":443",
-}
-
 // CacheKey defines the rules for assembling zero-hash canonical cache keys.
 //
 // Every cached request automatically receives a cache key. A zero-value CacheKey{}
@@ -139,17 +133,12 @@ func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 		if host == "" && r.URL != nil {
 			host = r.URL.Host
 		}
-		host = strings.ToLower(host)
-
-		// Strip default ports (:80 for http, :443 for https).
-		scheme := resolveScheme(r)
-		if port, ok := defaultPorts[scheme]; ok {
-			host = strings.TrimSuffix(host, port)
-		}
-
 		if host != "" {
-			buf.WriteString(":h=")
-			buf.WriteString(host)
+			host = normalizeHost(host, resolveScheme(r))
+			if host != "" {
+				buf.WriteString(":h=")
+				buf.WriteString(host)
+			}
 		}
 	}
 
@@ -431,4 +420,16 @@ func generateVariantKey(r *http.Request, varyHeaderNames []string) string {
 	}
 
 	return buf.String()
+}
+
+// normalizeHost lowercases the host and strips default ports (:80 for http, :443 for https).
+func normalizeHost(host, scheme string) string {
+	h := strings.ToLower(host)
+	switch scheme {
+	case "http":
+		h = strings.TrimSuffix(h, ":80")
+	case "https":
+		h = strings.TrimSuffix(h, ":443")
+	}
+	return h
 }

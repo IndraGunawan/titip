@@ -60,6 +60,30 @@ func TestScanner_PairedWithFallback(t *testing.T) {
 	}
 }
 
+func TestScanner_MaxDepth_EdgeCases(t *testing.T) {
+	tests := []struct {
+		tag       string
+		wantDepth uint32
+	}{
+		{`<esi:include src="/a" max-depth="5" />`, 5},
+		{`<esi:include src="/a" max-depth="0" />`, 0},
+		{`<esi:include src="/a" max-depth="invalid" />`, 0},
+		{`<esi:include src="/a" max-depth="-1" />`, 0},
+		{`<esi:include src="/a" max-depth="" />`, 0},
+		{`<esi:include src="/a" max-depth="99999999999999999999" />`, 0},
+	}
+
+	for _, tt := range tests {
+		_, frags := Scan([]byte(tt.tag))
+		if len(frags) != 1 {
+			t.Fatalf("expected 1 fragment for %s, got %d", tt.tag, len(frags))
+		}
+		if frags[0].MaxDepth != tt.wantDepth {
+			t.Errorf("Scan(%s).MaxDepth = %d, want %d", tt.tag, frags[0].MaxDepth, tt.wantDepth)
+		}
+	}
+}
+
 func TestScanner_QuoteAwareClosingBracket(t *testing.T) {
 	html := []byte(`<esi:include src="/api/search?q=foo>bar&sort=asc" />`)
 	hasESI, frags := Scan(html)
@@ -134,6 +158,177 @@ func TestScanner_NoESI(t *testing.T) {
 	if hasESI || frags != nil {
 		t.Errorf("expected no ESI, got hasESI=%v, len(frags)=%d", hasESI, len(frags))
 	}
+}
+
+func TestScanner_NilOrEmpty(t *testing.T) {
+	hasESI, frags := Scan(nil)
+	if hasESI || frags != nil {
+		t.Errorf("expected false, nil for nil input")
+	}
+
+	hasESI, frags = Scan([]byte{})
+	if hasESI || frags != nil {
+		t.Errorf("expected false, nil for empty input")
+	}
+}
+
+func TestScanner_AttributeVariations(t *testing.T) {
+	tests := []struct {
+		name        string
+		html        string
+		wantSrc     string
+		wantAlt     string
+		wantOnError string
+	}{
+		{
+			name:    "single quoted attributes",
+			html:    `<esi:include src='/api/user' alt='/api/guest' onerror='continue' />`,
+			wantSrc: "/api/user", wantAlt: "/api/guest", wantOnError: "continue",
+		},
+		{
+			name:    "unquoted attributes",
+			html:    `<esi:include src=/api/user alt=/api/guest onerror=continue />`,
+			wantSrc: "/api/user", wantAlt: "/api/guest", wantOnError: "continue",
+		},
+		{
+			name:    "spaces around equals sign",
+			html:    `<esi:include src = "/api/user" alt = "/api/guest" onerror = "continue" />`,
+			wantSrc: "/api/user", wantAlt: "/api/guest", wantOnError: "continue",
+		},
+		{
+			name:    "attribute prefix collision datasrc vs src",
+			html:    `<esi:include datasrc="/wrong" src="/correct" customalt="/wrong2" alt="/correct2" />`,
+			wantSrc: "/correct", wantAlt: "/correct2", wantOnError: "",
+		},
+		{
+			name:    "attribute name without value at end of header",
+			html:    `<esi:include src="/api/user" alt />`,
+			wantSrc: "/api/user", wantAlt: "", wantOnError: "",
+		},
+		{
+			name:    "attribute with trailing equals but no value",
+			html:    `<esi:include src="/api/user" alt= />`,
+			wantSrc: "/api/user", wantAlt: "", wantOnError: "",
+		},
+		{
+			name:    "mixed single and double quotes",
+			html:    `<esi:include src="/api/user" alt='/api/guest' onerror="continue" />`,
+			wantSrc: "/api/user", wantAlt: "/api/guest", wantOnError: "continue",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hasESI, frags := Scan([]byte(tt.html))
+			if !hasESI || len(frags) != 1 {
+				t.Fatalf("expected 1 fragment, got hasESI=%v, len(frags)=%d", hasESI, len(frags))
+			}
+			f := frags[0]
+			if f.Src != tt.wantSrc {
+				t.Errorf("Src mismatch: got %q, want %q", f.Src, tt.wantSrc)
+			}
+			if f.Alt != tt.wantAlt {
+				t.Errorf("Alt mismatch: got %q, want %q", f.Alt, tt.wantAlt)
+			}
+			if f.OnError != tt.wantOnError {
+				t.Errorf("OnError mismatch: got %q, want %q", f.OnError, tt.wantOnError)
+			}
+		})
+	}
+}
+
+func TestScanner_TimeoutFormats(t *testing.T) {
+	tests := []struct {
+		timeoutStr string
+		wantMs     uint32
+	}{
+		{"500ms", 500},
+		{"2s", 2000},
+		{"1.5s", 1500},
+		{"0.5", 500},
+		{"2", 2000},
+		{"   100ms   ", 100},
+		{"invalid", 0},
+		{"", 0},
+		{"-1s", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.timeoutStr, func(t *testing.T) {
+			html := `<esi:include src="/api" timeout="` + tt.timeoutStr + `" />`
+			hasESI, frags := Scan([]byte(html))
+			if !hasESI || len(frags) != 1 {
+				t.Fatalf("expected 1 fragment, got %d", len(frags))
+			}
+			if frags[0].TimeoutMs != tt.wantMs {
+				t.Errorf("TimeoutMs mismatch for %q: got %d, want %d", tt.timeoutStr, frags[0].TimeoutMs, tt.wantMs)
+			}
+		})
+	}
+}
+
+func TestScanner_MalformedAndUnclosed(t *testing.T) {
+	t.Run("unclosed paired tag falls back to self closing", func(t *testing.T) {
+		html := []byte(`<esi:include src="/stream">Content without close tag`)
+		hasESI, frags := Scan(html)
+		if !hasESI || len(frags) != 1 {
+			t.Fatalf("expected 1 fragment, got %d", len(frags))
+		}
+		if frags[0].Src != "/stream" {
+			t.Errorf("unexpected src: %s", frags[0].Src)
+		}
+		if frags[0].FallbackBody != nil {
+			t.Errorf("expected nil fallback body for unclosed paired tag")
+		}
+	})
+
+	t.Run("unclosed tag bracket at eof", func(t *testing.T) {
+		html := []byte(`<esi:include src="/incomplete`)
+		hasESI, frags := Scan(html)
+		if hasESI || len(frags) != 0 {
+			t.Errorf("expected no fragments for tag without closing bracket, got %d", len(frags))
+		}
+	})
+
+	t.Run("similar tag name prefix not matched", func(t *testing.T) {
+		html := []byte(`<esi:include_custom src="/ignore" /><esi:commentary>text</esi:commentary>`)
+		hasESI, frags := Scan(html)
+		if hasESI || len(frags) != 0 {
+			t.Errorf("expected non-standard tags to be ignored, got hasESI=%v, len(frags)=%d", hasESI, len(frags))
+		}
+	})
+
+	t.Run("unclosed remove block at eof", func(t *testing.T) {
+		html := []byte(`<esi:remove><p>No closing tag at eof`)
+		hasESI, frags := Scan(html)
+		if hasESI || len(frags) != 0 {
+			t.Errorf("expected unclosed remove block to be ignored, got %d", len(frags))
+		}
+	})
+
+	t.Run("unclosed comment block at eof", func(t *testing.T) {
+		html := []byte(`<esi:comment><p>No closing tag at eof`)
+		hasESI, frags := Scan(html)
+		if hasESI || len(frags) != 0 {
+			t.Errorf("expected unclosed comment block to be ignored, got %d", len(frags))
+		}
+	})
+
+	t.Run("inline comment without close", func(t *testing.T) {
+		html := []byte(`<!--esi <esi:include src="/frag" />`)
+		hasESI, frags := Scan(html)
+		if !hasESI || len(frags) < 1 {
+			t.Fatalf("expected unclosed inline comment to still process opening, got %d", len(frags))
+		}
+	})
+
+	t.Run("unclosed attribute quote at eof", func(t *testing.T) {
+		html := []byte(`<esi:include src="unterminated`)
+		hasESI, frags := Scan(html)
+		if hasESI || len(frags) != 0 {
+			t.Errorf("expected unclosed quote tag to be ignored, got %d", len(frags))
+		}
+	})
 }
 
 func BenchmarkESIScanner_MultiTag(b *testing.B) {

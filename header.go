@@ -2,7 +2,9 @@ package titip
 
 import (
 	"net/http"
+	"slices"
 	"strings"
+	"unicode"
 )
 
 // Standard and RFC HTTP Header constants used throughout Titip.
@@ -75,4 +77,60 @@ func getHeaderValues(h http.Header, key string) []string {
 		}
 	}
 	return nil
+}
+
+// strongETagMatches performs strong comparison per RFC 9110 §13.1.1 (neither may be weak).
+func strongETagMatches(clientETag, cachedETag string) bool {
+	c := strings.TrimSpace(clientETag)
+	s := strings.TrimSpace(cachedETag)
+	if c == "" || s == "" {
+		return false
+	}
+	if strings.HasPrefix(c, "W/") || strings.HasPrefix(c, "w/") ||
+		strings.HasPrefix(s, "W/") || strings.HasPrefix(s, "w/") {
+		return false
+	}
+	return c == s
+}
+
+// etagMatches performs weak ETag comparison per RFC-7232 Section 2.3.2.
+func etagMatches(clientETag, cachedETag string) bool {
+	c := strings.TrimSpace(clientETag)
+	s := strings.TrimSpace(cachedETag)
+	if c == "" || s == "" {
+		return false
+	}
+	c = strings.TrimPrefix(strings.TrimPrefix(c, "W/"), "w/")
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "W/"), "w/")
+	return c == s
+}
+
+func extractTags(headers http.Header, tagName string) []string {
+	if tagName == "" {
+		tagName = headerCacheTag
+	}
+	val := headers.Get(tagName)
+	if val == "" {
+		return nil
+	}
+	return splitAndTrimTags(val)
+}
+
+func splitAndTrimTags(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+}
+
+func extractVaryHeaderNames(headers http.Header) []string {
+	var names []string
+	for _, varyHeader := range headers.Values(headerVary) {
+		for p := range strings.SplitSeq(varyHeader, ",") {
+			name := strings.TrimSpace(p)
+			if name != "" && !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
 }

@@ -452,7 +452,7 @@ func TestNormalizeHost(t *testing.T) {
 		{"example.com:443", "https", "example.com"},
 		{"example.com:8080", "http", "example.com:8080"},
 		{"example.com:443", "http", "example.com:443"}, // :443 on http is NOT stripped
-		{"Example.COM:80", "https", "example.com:80"},   // :80 on https is NOT stripped
+		{"Example.COM:80", "https", "example.com:80"},  // :80 on https is NOT stripped
 	}
 	for _, tt := range tests {
 		got := normalizeHost(tt.host, tt.scheme)

@@ -38,26 +38,13 @@ func parseAge(ageHeader string) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// httpDateFormats contains standard RFC-7231 Section 7.1.1.1 date formats.
-var httpDateFormats = []string{
-	http.TimeFormat, // "Mon, 02 Jan 2006 15:04:05 GMT" (RFC 1123 / RFC 7231)
-	"Mon, 02 Jan 2006 15:04:05 -0700",
-	time.RFC850, // "Monday, 02-Jan-06 15:04:05 GMT"
-	time.ANSIC,  // "Mon Jan _2 15:04:05 2006"
-}
-
-// parseDate parses an HTTP date string into time.Time.
+// parseDate parses an HTTP date string into time.Time using standard http.ParseTime (RFC 1123, RFC 850, and ANSI C).
 func parseDate(dateHeader string) (time.Time, error) {
 	trimmed := strings.TrimSpace(dateHeader)
 	if trimmed == "" || trimmed == "0" || trimmed == "-1" {
 		return time.Time{}, nil
 	}
-	for _, format := range httpDateFormats {
-		if t, err := time.Parse(format, trimmed); err == nil {
-			return t.UTC(), nil
-		}
-	}
-	return time.Time{}, http.ErrServerClosed
+	return http.ParseTime(trimmed)
 }
 
 // extractTieredCacheControl resolves the effective Cache-Control header string using RFC 9213 tiered precedence:

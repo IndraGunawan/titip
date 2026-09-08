@@ -83,7 +83,7 @@ func assembleResults(fragments []*pb.EsiFragment, fetched map[string]*fragmentRe
 }
 
 func (t *Titip) fetchAllTargets(ctx *requestContext, targets map[string]fetchTarget, state esiExecutionState) (map[string]*fragmentResult, []string) {
-	maxWorkers := t.cfg.esi.MaxConcurrentRequests
+	maxWorkers := t.config.esi.MaxConcurrentRequests
 	if maxWorkers <= 0 {
 		maxWorkers = 8
 	}
@@ -98,28 +98,6 @@ func (t *Titip) fetchAllTargets(ctx *requestContext, targets map[string]fetchTar
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			res := t.executeInclude(ctx, s, tg, state)
-			mu.Lock()
-			fetched[s] = res
-			if len(res.setCookies) > 0 {
-				allCookies = append(allCookies, res.setCookies...)
-			}
-			mu.Unlock()
-		}(src, tgt)
-	}
-	wg.Wait()
-	return fetched, allCookies
-}
-
-func (t *Titip) fetchAllTargetsUnbounded(ctx *requestContext, targets map[string]fetchTarget, state esiExecutionState) (map[string]*fragmentResult, []string) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	fetched := make(map[string]*fragmentResult, len(targets))
-	var allCookies []string
-	for src, tgt := range targets {
-		wg.Add(1)
-		go func(s string, tg fetchTarget) {
-			defer wg.Done()
 			res := t.executeInclude(ctx, s, tg, state)
 			mu.Lock()
 			fetched[s] = res
@@ -164,7 +142,7 @@ func (t *Titip) processESI(
 	if !ok {
 		execState = esiExecutionState{
 			depth:       0,
-			maxDepth:    t.cfg.esi.MaxDepth,
+			maxDepth:    t.config.esi.MaxDepth,
 			visitedURLs: make([]string, 0, 8),
 		}
 	}
@@ -207,7 +185,7 @@ func (t *Titip) processESI(
 	// By default (PreserveETag == false), strip ETag and Last-Modified to prevent downstream clients
 	// from sending conditional requests that would skip live fragment assembly.
 	// When PreserveETag == true (opt-in for static ESI), weaken ETag to W/"..." per RFC 9110 §8.8.3.2.
-	if t.cfg.esi.PreserveETag {
+	if t.config.esi.PreserveETag {
 		if etag := reconciledHeaders.Get(headerETag); etag != "" {
 			if !strings.HasPrefix(etag, "W/") && !strings.HasPrefix(etag, "w/") {
 				reconciledHeaders.Set(headerETag, "W/"+etag)
@@ -233,7 +211,7 @@ func (t *Titip) processESI(
 	}
 
 	// Forward dynamic subrequest Set-Cookie headers to live client
-	if !t.cfg.esi.DisableForwardCookies && len(allCookies) > 0 {
+	if !t.config.esi.DisableForwardCookies && len(allCookies) > 0 {
 		for _, cookie := range allCookies {
 			ctx.w.Header().Add("Set-Cookie", cookie)
 		}
@@ -329,7 +307,7 @@ func (t *Titip) executeInclude(
 
 	// Determine timeout budget
 	tagTimeout := time.Duration(target.timeoutMs) * time.Millisecond
-	effectiveTimeout := t.cfg.esi.MaxTimeout
+	effectiveTimeout := t.config.esi.MaxTimeout
 	if tagTimeout > 0 && tagTimeout < effectiveTimeout {
 		effectiveTimeout = tagTimeout
 	}
@@ -428,7 +406,7 @@ func (t *Titip) processNestedESI(
 	state esiExecutionState,
 ) ([]byte, []string) {
 	uniqueTargets := collectTargets(fragments)
-	fetchedBodies, allCookies := t.fetchAllTargetsUnbounded(parentCtx, uniqueTargets, state)
+	fetchedBodies, allCookies := t.fetchAllTargets(parentCtx, uniqueTargets, state)
 	results := assembleResults(fragments, fetchedBodies)
 	outBuf := getBuffer()
 	defer putBuffer(outBuf)
@@ -463,7 +441,7 @@ func (t *Titip) fetchFragment(
 
 	// 1. If custom InternalFetcher is configured and target URL is relative or same host
 	isSameHost := parsed.Host == "" || strings.EqualFold(parsed.Host, parentCtx.r.Host)
-	if isSameHost && t.cfg.esi.InternalFetcher != nil {
+	if isSameHost && t.config.esi.InternalFetcher != nil {
 		targetPath := parsed.RequestURI()
 		if targetPath == "" {
 			targetPath = "/"
@@ -515,7 +493,7 @@ func (t *Titip) fetchViaCustomFetcher(
 				done <- customFetchResult{err: fmt.Errorf("panic: %v", r)}
 			}
 		}()
-		b, h, err := t.cfg.esi.InternalFetcher(ctx, targetPath, parentReq)
+		b, h, err := t.config.esi.InternalFetcher(ctx, targetPath, parentReq)
 		done <- customFetchResult{body: b, headers: h, err: err}
 	}()
 
@@ -535,12 +513,12 @@ func (t *Titip) fetchViaCustomFetcher(
 	body := res.body
 	headers := res.headers
 
-	if t.cfg.esi.MaxResponseSize > 0 && int64(len(body)) > t.cfg.esi.MaxResponseSize {
-		return nil, nil, "in_process", fmt.Errorf("fragment body size %d exceeds max %d", len(body), t.cfg.esi.MaxResponseSize)
+	if t.config.esi.MaxResponseSize > 0 && int64(len(body)) > t.config.esi.MaxResponseSize {
+		return nil, nil, "in_process", fmt.Errorf("fragment body size %d exceeds max %d", len(body), t.config.esi.MaxResponseSize)
 	}
 
 	var cookies []string
-	if !t.cfg.esi.DisableForwardCookies && headers != nil {
+	if !t.config.esi.DisableForwardCookies && headers != nil {
 		cookies = headers["Set-Cookie"]
 	}
 
@@ -608,21 +586,22 @@ func (t *Titip) fetchOutboundHTTP(
 		return nil, nil, "http", fmt.Errorf("http fragment returned status %d", resp.StatusCode)
 	}
 
-	maxSize := t.cfg.esi.MaxResponseSize
-	if maxSize <= 0 {
-		maxSize = 10 * 1024 * 1024
+	maxSize := t.config.esi.MaxResponseSize
+	var r io.Reader = resp.Body
+	if maxSize > 0 {
+		r = io.LimitReader(resp.Body, maxSize+1)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
+	body, err := io.ReadAll(r)
 	if err != nil {
 		return nil, nil, "http", err
 	}
-	if int64(len(body)) > maxSize {
+	if maxSize > 0 && int64(len(body)) > maxSize {
 		return nil, nil, "http", fmt.Errorf("fragment body size %d exceeds max %d", len(body), maxSize)
 	}
 
 	var cookies []string
-	if !t.cfg.esi.DisableForwardCookies {
+	if !t.config.esi.DisableForwardCookies {
 		cookies = resp.Header["Set-Cookie"]
 	}
 
@@ -678,8 +657,8 @@ func (t *Titip) resolveFallback(fallbackBody []byte, onError string) []byte {
 	if strings.EqualFold(onError, "continue") {
 		return nil
 	}
-	if t.cfg.esi.IncludeErrorMarker != "" {
-		return []byte(t.cfg.esi.IncludeErrorMarker)
+	if t.config.esi.IncludeErrorMarker != "" {
+		return []byte(t.config.esi.IncludeErrorMarker)
 	}
 	return nil
 }

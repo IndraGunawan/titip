@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	pb "github.com/indragunawan/titip/proto"
 )
 
 func TestParseAge(t *testing.T) {
@@ -59,6 +61,35 @@ func TestParseDate(t *testing.T) {
 	_, err = parseDate("invalid date string")
 	if err == nil {
 		t.Fatal("expected error for invalid date")
+	}
+}
+
+func TestCalcAgeString(t *testing.T) {
+	t.Parallel()
+
+	// nil metadata returns "0"
+	if got := calcAgeString(nil, time.Now().UnixNano()); got != "0" {
+		t.Errorf("expected 0 for nil meta, got %s", got)
+	}
+
+	now := time.Now()
+	createdAt := now.Add(-10 * time.Second)
+	meta := &pb.CacheMetadata{
+		CreatedAtUnixNano:          createdAt.UnixNano(),
+		CorrectedInitialAgeSeconds: 5,
+	}
+
+	// Age = corrected initial age (5) + resident time (10) = 15
+	got := calcAgeString(meta, now.UnixNano())
+	if got != "15" {
+		t.Errorf("calcAgeString() = %s, want 15", got)
+	}
+
+	// Clock skew: nowNano < CreatedAtUnixNano -> resident time clamped to 0
+	skewedNow := createdAt.Add(-5 * time.Second)
+	gotSkew := calcAgeString(meta, skewedNow.UnixNano())
+	if gotSkew != "5" {
+		t.Errorf("calcAgeString() with clock skew = %s, want 5", gotSkew)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -82,7 +81,7 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	// F. Client Cache-Control / Pragma (RFC 9111 §5.2.1 & §5.4)
-	if t.cfg.respectClientCacheControl {
+	if t.config.respectClientCacheControl {
 		ccValues := ctx.r.Header.Values(headerCacheControl)
 		cc := strings.Join(ccValues, ", ")
 		pragma := ctx.r.Header.Get(headerPragma)
@@ -116,9 +115,9 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 
 // 2. stateLookupMetadata: Generates Primary Key and looks up Stage 1 metadata in Redis
 func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
-	ctx.primaryKey = generatePrimaryKey(ctx.r, &t.cfg.cacheKey)
+	ctx.primaryKey = generatePrimaryKey(ctx.r, &t.config.cacheKey)
 
-	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.storageTimeout)
+	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
 	meta, isSoftPurged, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)
 	storeCancel()
 
@@ -188,8 +187,8 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	// Fresh Cache Hit & Downstream Precondition Evaluation (RFC 9110 §13.2.2 & RFC 9111 §4.3.2)
 	// Preconditions are ONLY evaluated if the cached representation is strictly fresh.
 	if isFresh {
-		hasESI := t.cfg.esi.Enabled && len(ctx.varInfo.EsiFragments) > 0
-		if !hasESI || t.cfg.esi.PreserveETag {
+		hasESI := t.config.esi.Enabled && len(ctx.varInfo.EsiFragments) > 0
+		if !hasESI || t.config.esi.PreserveETag {
 			status, proceed := t.evaluatePreconditions(ctx.r, ctx.varInfo)
 			if !proceed {
 				if status == http.StatusNotModified {
@@ -209,7 +208,7 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	// If client requested only-if-cached and entry is expired, return 504 per RFC 9111 §5.2.1.7
-	if t.cfg.respectClientCacheControl && strings.Contains(strings.Join(ctx.r.Header.Values(headerCacheControl), ", "), "only-if-cached") {
+	if t.config.respectClientCacheControl && strings.Contains(strings.Join(ctx.r.Header.Values(headerCacheControl), ", "), "only-if-cached") {
 		t.recordRequest(ctx, statusMiss)
 		t.emitCacheStatus(ctx.w, tokenMiss, "miss; detail=only-if-cached-expired")
 		http.Error(ctx.w, "Gateway Timeout", http.StatusGatewayTimeout)
@@ -226,9 +225,7 @@ func stateServe304(t *Titip, ctx *requestContext) stateFn {
 	t.emitCacheStatus(ctx.w, tokenHit, "hit")
 	t.copyProtoHeaders(ctx.w, ctx.varInfo.ResponseHeaders)
 	t.adjustESIHeaders(ctx.w, ctx.varInfo)
-	residentSec := max((ctx.nowNano-ctx.meta.CreatedAtUnixNano)/int64(time.Second), 0)
-	age := ctx.meta.CorrectedInitialAgeSeconds + residentSec
-	ctx.w.Header().Set(headerAge, strconv.FormatInt(age, 10))
+	ctx.w.Header().Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
 	ctx.w.WriteHeader(http.StatusNotModified)
 	return nil
 }
@@ -263,37 +260,20 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	}
 	defer putBuffer(dstBuf)
 
-	if t.logger.Enabled(ctx.r.Context(), slog.LevelDebug) {
-		t.logger.DebugContext(ctx.r.Context(), "payload decompressed",
-			slog.String("key", ctx.primaryKey),
-			slog.String("variant", ctx.variantKey),
-			slog.Int("raw_bytes", int(varInfo.RawBodySize)),
-			slog.Int("compressed_bytes", int(varInfo.CompressedBodySize)),
-		)
-	}
-
 	// RFC 9111 §5.1 / §4.2.3: current_age = corrected_initial_age + resident_time
-	residentSec := max((ctx.nowNano-ctx.meta.CreatedAtUnixNano)/int64(time.Second), 0)
-	age := ctx.meta.CorrectedInitialAgeSeconds + residentSec
-	ageStr := strconv.FormatInt(age, 10)
 	ttlStr := strconv.FormatInt(t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano), 10)
 
-	if t.cfg.esi.Enabled && len(varInfo.EsiFragments) > 0 {
+	if t.config.esi.Enabled && len(varInfo.EsiFragments) > 0 {
 		t.recordRequest(ctx, statusHit)
-		protoHeaders := make(http.Header, len(varInfo.ResponseHeaders))
-		for k, hv := range varInfo.ResponseHeaders {
-			for _, v := range hv.Values {
-				protoHeaders.Add(k, v)
-			}
-		}
-		protoHeaders.Set(headerAge, ageStr)
+		protoHeaders := protoHeadersToHTTP(varInfo.ResponseHeaders)
+		protoHeaders.Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
 		t.processESI(ctx, dstBuf.Bytes(), varInfo.EsiFragments, int(varInfo.StatusCode), protoHeaders, tokenHit, "hit; ttl="+ttlStr)
 		return nil
 	}
 
 	t.recordRequest(ctx, statusHit)
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
-	ctx.w.Header().Set(headerAge, ageStr)
+	ctx.w.Header().Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
 	t.emitCacheStatus(ctx.w, tokenHit, "hit; ttl="+ttlStr)
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
 	_, _ = ctx.w.Write(dstBuf.Bytes())
@@ -311,19 +291,10 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	}
 	defer putBuffer(dstBuf)
 
-	residentSec := max((ctx.nowNano-ctx.meta.CreatedAtUnixNano)/int64(time.Second), 0)
-	age := ctx.meta.CorrectedInitialAgeSeconds + residentSec
-	ageStr := strconv.FormatInt(age, 10)
-
-	if t.cfg.esi.Enabled && len(varInfo.EsiFragments) > 0 {
+	if t.config.esi.Enabled && len(varInfo.EsiFragments) > 0 {
 		t.recordRequest(ctx, statusStaleHit)
-		protoHeaders := make(http.Header, len(varInfo.ResponseHeaders))
-		for k, hv := range varInfo.ResponseHeaders {
-			for _, v := range hv.Values {
-				protoHeaders.Add(k, v)
-			}
-		}
-		protoHeaders.Set(headerAge, ageStr)
+		protoHeaders := protoHeadersToHTTP(varInfo.ResponseHeaders)
+		protoHeaders.Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
 		t.processESI(ctx, dstBuf.Bytes(), varInfo.EsiFragments, int(varInfo.StatusCode), protoHeaders, tokenUpdating, "hit; stale; detail=swr")
 		t.spawnSWR(ctx)
 		return nil
@@ -331,7 +302,7 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 
 	t.recordRequest(ctx, statusStaleHit)
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
-	ctx.w.Header().Set(headerAge, ageStr)
+	ctx.w.Header().Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
 	t.emitCacheStatus(ctx.w, tokenUpdating, "hit; stale; detail=swr")
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
 	if ctx.r.Method != http.MethodHead {
@@ -351,10 +322,10 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 
 	originReq := ctx.r
 	hasConditionalHeaders := ctx.r.Header.Get(headerIfNoneMatch) != "" || ctx.r.Header.Get(headerIfModifiedSince) != ""
-	needsClone := (ctx.r.Method == http.MethodHead && t.cfg.convertHeadToGet) || hasConditionalHeaders
+	needsClone := (ctx.r.Method == http.MethodHead && t.config.convertHeadToGet) || hasConditionalHeaders
 	if needsClone {
 		originReq = ctx.r.Clone(originCtx)
-		if ctx.r.Method == http.MethodHead && t.cfg.convertHeadToGet {
+		if ctx.r.Method == http.MethodHead && t.config.convertHeadToGet {
 			originReq.Method = http.MethodGet
 		}
 		// Strip conditional validator headers so origin returns full representation body to warm cache
@@ -427,7 +398,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 
 	// Cache if eligible and not closed (skip saving 0-byte variant if HEAD and ConvertHeadToGet is disabled)
 	shouldCache := freshness.IsCacheable && !t.closed.Load()
-	if ctx.r.Method == http.MethodHead && !t.cfg.convertHeadToGet {
+	if ctx.r.Method == http.MethodHead && !t.config.convertHeadToGet {
 		shouldCache = false
 	}
 	if shouldCache {
@@ -505,12 +476,12 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	var staleCompBody []byte
 	if ctx.varInfo != nil {
 		staleVar = ctx.varInfo
-		varCtx, varCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.storageTimeout)
+		varCtx, varCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
 		_, staleCompBody, _ = t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 		varCancel()
 	}
 
-	val, err, shared := t.sf.Do(sfKey, func() (any, error) {
+	val, err, shared := t.singleflight.Do(sfKey, func() (any, error) {
 		// Context Detachment: wrap client context so cancellations don't abort in-flight origin fetch
 		// for other concurrent singleflight callers waiting on this result.
 		originCtx := context.WithoutCancel(ctx.r.Context())
@@ -521,11 +492,11 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		// Double-checked freshness check:
 		// If another concurrent singleflight already refreshed this entry in storage while we were delayed,
 		// load the freshly saved entry from storage directly rather than querying the origin again.
-		metaCtx, metaCancel := context.WithTimeout(originCtx, t.cfg.storageTimeout)
+		metaCtx, metaCancel := context.WithTimeout(originCtx, t.config.storageTimeout)
 		latestMeta, latestSoftPurged, errMeta := t.storage.GetMeta(metaCtx, ctx.primaryKey)
 		metaCancel()
 		if errMeta == nil && latestMeta != nil && !latestSoftPurged && latestMeta.ExpiresAtUnixNano > time.Now().UnixNano() {
-			varCtx, varCancel := context.WithTimeout(originCtx, t.cfg.storageTimeout)
+			varCtx, varCancel := context.WithTimeout(originCtx, t.config.storageTimeout)
 			latestVar, compBody, errVar := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 			varCancel()
 			if errVar == nil && latestVar != nil && len(compBody) > 0 {
@@ -539,7 +510,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 		// Attach conditional headers for Upstream 304 Revalidation
 		revalReq := ctx.r.Clone(originCtx)
-		if ctx.r.Method == http.MethodHead && t.cfg.convertHeadToGet {
+		if ctx.r.Method == http.MethodHead && t.config.convertHeadToGet {
 			revalReq.Method = http.MethodGet
 		}
 		if staleVar != nil {
@@ -638,7 +609,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 		freshness := calculateFreshness(rec.Code, ctx.r.Header, headersClone, reqTime, respTime, respTime)
 		shouldCache := freshness.IsCacheable && !t.closed.Load()
-		if ctx.r.Method == http.MethodHead && !t.cfg.convertHeadToGet {
+		if ctx.r.Method == http.MethodHead && !t.config.convertHeadToGet {
 			shouldCache = false
 		}
 		if shouldCache {
@@ -676,8 +647,8 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	if (res.isFallback || res.is304Origin) && res.fallback != nil {
 		// If origin confirmed 304 and downstream client requested conditional revalidation matching refreshed entry
 		if res.is304Origin {
-			hasESI := t.cfg.esi.Enabled && len(res.fallback.varInfo.EsiFragments) > 0
-			if !hasESI || t.cfg.esi.PreserveETag {
+			hasESI := t.config.esi.Enabled && len(res.fallback.varInfo.EsiFragments) > 0
+			if !hasESI || t.config.esi.PreserveETag {
 				status, proceed := t.evaluatePreconditions(ctx.r, res.fallback.varInfo)
 				if !proceed && status == http.StatusNotModified {
 					t.recordRequest(ctx, statusRevalidated)
@@ -685,9 +656,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 					t.copyProtoHeaders(ctx.w, res.fallback.varInfo.ResponseHeaders)
 					t.adjustESIHeaders(ctx.w, res.fallback.varInfo)
 					if res.fallback.meta != nil {
-						residentSec := max((time.Now().UnixNano()-res.fallback.meta.CreatedAtUnixNano)/int64(time.Second), 0)
-						age := res.fallback.meta.CorrectedInitialAgeSeconds + residentSec
-						ctx.w.Header().Set(headerAge, strconv.FormatInt(age, 10))
+						ctx.w.Header().Set(headerAge, calcAgeString(res.fallback.meta, time.Now().UnixNano()))
 					}
 					ctx.w.WriteHeader(http.StatusNotModified)
 					return nil
@@ -697,19 +666,15 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 		dstBuf := getBuffer()
 		defer putBuffer(dstBuf)
+		if res.fallback.varInfo != nil && res.fallback.varInfo.RawBodySize > 0 {
+			dstBuf.Grow(int(res.fallback.varInfo.RawBodySize))
+		}
 
 		if err := decompressLZ4(res.fallback.body, dstBuf); err == nil {
-			if t.cfg.esi.Enabled && len(res.fallback.varInfo.EsiFragments) > 0 {
-				protoHeaders := make(http.Header, len(res.fallback.varInfo.ResponseHeaders))
-				for k, hv := range res.fallback.varInfo.ResponseHeaders {
-					for _, v := range hv.Values {
-						protoHeaders.Add(k, v)
-					}
-				}
+			if t.config.esi.Enabled && len(res.fallback.varInfo.EsiFragments) > 0 {
+				protoHeaders := protoHeadersToHTTP(res.fallback.varInfo.ResponseHeaders)
 				if res.fallback.meta != nil {
-					residentSec := max((time.Now().UnixNano()-res.fallback.meta.CreatedAtUnixNano)/int64(time.Second), 0)
-					age := res.fallback.meta.CorrectedInitialAgeSeconds + residentSec
-					protoHeaders.Set(headerAge, strconv.FormatInt(age, 10))
+					protoHeaders.Set(headerAge, calcAgeString(res.fallback.meta, time.Now().UnixNano()))
 				}
 				if res.is304Origin {
 					t.recordRequest(ctx, statusRevalidated)
@@ -723,9 +688,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 			t.copyProtoHeaders(ctx.w, res.fallback.varInfo.ResponseHeaders)
 			if res.fallback.meta != nil {
-				residentSec := max((time.Now().UnixNano()-res.fallback.meta.CreatedAtUnixNano)/int64(time.Second), 0)
-				age := res.fallback.meta.CorrectedInitialAgeSeconds + residentSec
-				ctx.w.Header().Set(headerAge, strconv.FormatInt(age, 10))
+				ctx.w.Header().Set(headerAge, calcAgeString(res.fallback.meta, time.Now().UnixNano()))
 			}
 			if res.is304Origin {
 				t.recordRequest(ctx, statusRevalidated)
@@ -811,7 +774,7 @@ func (t *Titip) saveVariantToStorage(
 	freshness freshnessInfo,
 	respTime time.Time,
 ) {
-	tags := t.extractTags(headers)
+	tags := extractTags(headers, t.config.tagHeaderName)
 
 	// Check for ESI directives in body
 	var fragments []*pb.EsiFragment
@@ -826,29 +789,13 @@ func (t *Titip) saveVariantToStorage(
 	putBuffer(compBuf)
 
 	// Build / update metadata
-	varNames := t.extractVaryHeaderNames(headers)
+	varNames := extractVaryHeaderNames(headers)
 	varKey := variantKey
 	if varKey == "" || varKey == defaultVariantKey {
 		varKey = generateVariantKey(r, varNames)
 	}
 	if varKey == "" {
 		varKey = defaultVariantKey
-	}
-
-	if t.logger.Enabled(r.Context(), slog.LevelDebug) {
-		rawLen := len(bodyBytes)
-		compLen := len(compBytes)
-		ratio := 0.0
-		if rawLen > 0 {
-			ratio = (1.0 - float64(compLen)/float64(rawLen)) * 100.0
-		}
-		t.logger.DebugContext(r.Context(), "payload compressed",
-			slog.String("key", primaryKey),
-			slog.String("variant", varKey),
-			slog.Int("raw_bytes", rawLen),
-			slog.Int("compressed_bytes", compLen),
-			slog.String("savings_pct", fmt.Sprintf("%.2f%%", ratio)),
-		)
 	}
 
 	newMeta := &pb.CacheMetadata{
@@ -864,13 +811,12 @@ func (t *Titip) saveVariantToStorage(
 	}
 
 	newVariant := &pb.VariantInfo{
-		VariantKey:         varKey,
-		StatusCode:         int32(statusCode),
-		ResponseHeaders:    protoHeadersFromHTTP(headers),
-		Etag:               headers.Get(headerETag),
-		RawBodySize:        uint32(len(bodyBytes)),
-		CompressedBodySize: uint32(len(compBytes)),
-		EsiFragments:       fragments,
+		VariantKey:      varKey,
+		StatusCode:      int32(statusCode),
+		ResponseHeaders: protoHeadersFromHTTP(headers),
+		Etag:            headers.Get(headerETag),
+		RawBodySize:     int64(len(bodyBytes)),
+		EsiFragments:    fragments,
 	}
 	if lm, err := parseDate(headers.Get(headerLastModified)); err == nil && !lm.IsZero() {
 		newVariant.LastModifiedUnixNano = lm.UnixNano()
@@ -899,9 +845,9 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	}()
 
 	bgCtx := context.WithoutCancel(r.Context())
-	if t.cfg.backgroundFetchTimeout > 0 {
+	if t.config.backgroundFetchTimeout > 0 {
 		var cancel context.CancelFunc
-		bgCtx, cancel = context.WithTimeout(bgCtx, t.cfg.backgroundFetchTimeout)
+		bgCtx, cancel = context.WithTimeout(bgCtx, t.config.backgroundFetchTimeout)
 		defer cancel()
 	}
 
@@ -912,7 +858,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	if originReq.Context() != bgCtx {
 		originReq = r.WithContext(bgCtx)
 	}
-	if r.Method == http.MethodHead && t.cfg.convertHeadToGet {
+	if r.Method == http.MethodHead && t.config.convertHeadToGet {
 		originReq = r.Clone(bgCtx)
 		originReq.Method = http.MethodGet
 	}
@@ -926,7 +872,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 
 	freshness := calculateFreshness(rec.Code, r.Header, headers, reqTime, respTime, respTime)
 	shouldCache := freshness.IsCacheable && !t.closed.Load()
-	if r.Method == http.MethodHead && !t.cfg.convertHeadToGet {
+	if r.Method == http.MethodHead && !t.config.convertHeadToGet {
 		shouldCache = false
 	}
 	if shouldCache {
@@ -935,7 +881,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 }
 
 func (t *Titip) handleMutatingRequest(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	if !t.cfg.autoInvalidateMutatingMethods {
+	if !t.config.autoInvalidateMutatingMethods {
 		next.ServeHTTP(w, r)
 		return
 	}
@@ -956,7 +902,7 @@ func (t *Titip) handleMutatingRequest(w http.ResponseWriter, r *http.Request, ne
 
 	// Invalidate on successful unsafe request (non-error) per RFC 9111 §4.4
 	if rec.Code >= 200 && rec.Code < 400 {
-		delCtx, delCancel := context.WithTimeout(context.Background(), t.cfg.storageTimeout)
+		delCtx, delCancel := context.WithTimeout(context.Background(), t.config.storageTimeout)
 		defer delCancel()
 
 		reqTarget := r.URL.String()
@@ -1085,20 +1031,6 @@ func (t *Titip) evaluatePreconditionsHeaders(r *http.Request, etag string, lastM
 	return 0, true
 }
 
-// strongETagMatches performs strong comparison per RFC 9110 §13.1.1 (neither may be weak).
-func strongETagMatches(clientETag, cachedETag string) bool {
-	c := strings.TrimSpace(clientETag)
-	s := strings.TrimSpace(cachedETag)
-	if c == "" || s == "" {
-		return false
-	}
-	if strings.HasPrefix(c, "W/") || strings.HasPrefix(c, "w/") ||
-		strings.HasPrefix(s, "W/") || strings.HasPrefix(s, "w/") {
-		return false
-	}
-	return c == s
-}
-
 func (t *Titip) calcTTL(expiresAtUnixNano, nowNano int64) int64 {
 	ttlSec := (expiresAtUnixNano - nowNano) / int64(time.Second)
 	if ttlSec < 0 {
@@ -1108,7 +1040,7 @@ func (t *Titip) calcTTL(expiresAtUnixNano, nowNano int64) int64 {
 }
 
 func (t *Titip) emitCacheStatus(w http.ResponseWriter, simpleToken, rfc9211Detail string) {
-	switch t.cfg.cacheStatusMode {
+	switch t.config.cacheStatusMode {
 	case CacheStatusRFC9211:
 		titipStatus := fmt.Sprintf("titip; %s", rfc9211Detail)
 		if len(w.Header().Values(headerCacheStatus)) > 0 {
@@ -1123,46 +1055,6 @@ func (t *Titip) emitCacheStatus(w http.ResponseWriter, simpleToken, rfc9211Detai
 	case CacheStatusNone:
 		// Do not emit Cache-Status header
 	}
-}
-
-func (t *Titip) extractTags(headers http.Header) []string {
-	name := t.cfg.tagHeaderName
-	if name == "" {
-		name = headerCacheTag
-	}
-	val := headers.Get(name)
-	if val == "" {
-		return nil
-	}
-	return splitAndTrimTags(val)
-}
-
-func splitAndTrimTags(s string) []string {
-	parts := strings.FieldsFunc(s, func(r rune) bool {
-		return r == ',' || r == ' '
-	})
-	var result []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
-		}
-	}
-	return result
-}
-
-func (t *Titip) extractVaryHeaderNames(headers http.Header) []string {
-	var names []string
-	for _, varyHeader := range headers.Values(headerVary) {
-		parts := strings.SplitSeq(varyHeader, ",")
-		for p := range parts {
-			name := strings.TrimSpace(p)
-			if name != "" && !slices.Contains(names, name) {
-				names = append(names, name)
-			}
-		}
-	}
-	return names
 }
 
 // isHopByHopHeader checks if a header is a standard hop-by-hop header per RFC 9110 §7.6.1 & RFC 7230 §6.1.
@@ -1221,11 +1113,31 @@ func (t *Titip) copyProtoHeaders(w http.ResponseWriter, protoHeaders map[string]
 	}
 }
 
+// calcAgeString computes RFC 9111 §5.1 current_age = corrected_initial_age + resident_time.
+func calcAgeString(meta *pb.CacheMetadata, nowNano int64) string {
+	if meta == nil {
+		return "0"
+	}
+	residentSec := max((nowNano-meta.CreatedAtUnixNano)/int64(time.Second), 0)
+	age := meta.CorrectedInitialAgeSeconds + residentSec
+	return strconv.FormatInt(age, 10)
+}
+
+func protoHeadersToHTTP(protoHeaders map[string]*pb.HeaderValues) http.Header {
+	h := make(http.Header, len(protoHeaders))
+	for k, hv := range protoHeaders {
+		for _, v := range hv.Values {
+			h.Add(k, v)
+		}
+	}
+	return h
+}
+
 func (t *Titip) adjustESIHeaders(w http.ResponseWriter, varInfo *pb.VariantInfo) {
-	if !t.cfg.esi.Enabled || varInfo == nil || len(varInfo.EsiFragments) == 0 {
+	if !t.config.esi.Enabled || varInfo == nil || len(varInfo.EsiFragments) == 0 {
 		return
 	}
-	if t.cfg.esi.PreserveETag {
+	if t.config.esi.PreserveETag {
 		if etag := w.Header().Get(headerETag); etag != "" && !strings.HasPrefix(etag, "W/") {
 			w.Header().Set(headerETag, "W/"+etag)
 		}
@@ -1249,13 +1161,16 @@ func (t *Titip) recordRequest(ctx *requestContext, status string) {
 // loadDecompressed fetches and decompresses the cached variant body.
 // Returns varInfo, pooled buffer (caller must putBuffer), ok.
 func (t *Titip) loadDecompressed(ctx *requestContext) (*pb.VariantInfo, *bytes.Buffer, bool) {
-	varCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.cfg.storageTimeout)
+	varCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
 	varInfo, compBody, err := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 	cancel()
 	if err != nil || varInfo == nil || len(compBody) == 0 {
 		return nil, nil, false
 	}
 	buf := getBuffer()
+	if varInfo.RawBodySize > 0 {
+		buf.Grow(int(varInfo.RawBodySize))
+	}
 	if err := decompressLZ4(compBody, buf); err != nil {
 		putBuffer(buf)
 		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
@@ -1281,10 +1196,10 @@ func (t *Titip) spawnSWR(ctx *requestContext) {
 }
 
 func (t *Titip) esiEligible(h http.Header) bool {
-	if !t.cfg.esi.Enabled {
+	if !t.config.esi.Enabled {
 		return false
 	}
-	if !t.cfg.esi.HeaderRequired {
+	if !t.config.esi.HeaderRequired {
 		return true
 	}
 	surr := h.Get(headerSurrogateControl)

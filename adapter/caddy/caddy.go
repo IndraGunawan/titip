@@ -21,6 +21,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/dustin/go-humanize"
 
 	"github.com/indragunawan/titip"
 	"github.com/indragunawan/titip/esi"
@@ -38,10 +39,10 @@ type StorageModule interface {
 	Storage() storage.Storage
 }
 
-// Multi-Engine Support & Admin Purge Routing:
+// Multi-Instance Support & Admin Purge Routing:
 //
 // In Caddy, multiple `titip` middleware directives can exist simultaneously across
-// different site blocks (virtual hosts) or route segments within the same Caddyfile.
+// different site blocks (virtual hosts), route segments, or handles within the same Caddyfile.
 // For example:
 //
 //	api.example.com {
@@ -59,40 +60,40 @@ type StorageModule interface {
 //	}
 //
 // Each `titip` directive block in the Caddyfile provisions its own `Handler`
-// and an independent `*titip.Titip` engine instance.
+// and an independent `*titip.Titip` instance.
 //
 // Furthermore, during zero-downtime dynamic reloads (`caddy reload`), Caddy provisions
 // new handler instances before calling `Cleanup()` on the superseded instances.
 //
 // Because the Caddy Admin Purge API (`POST /titip/purge`) is mounted once as a global
 // singleton endpoint on Caddy's private admin port (default `:2019`), it uses a
-// thread-safe global registry (`engines` map protected by `enginesMu`) to:
-//  1. Track all active Titip engine instances across all virtual hosts and routes.
+// thread-safe global registry (`instances` map protected by `instancesMu`) to:
+//  1. Track all active Titip instances across all virtual hosts and routes.
 //  2. Broadcast purge operations (URL, Tag, Purge All) across all active storage backends.
 //  3. Safely manage registrations during concurrent configuration reloads and admin requests.
 var (
-	enginesMu sync.RWMutex
-	engines   = make(map[string]*titip.Titip)
+	instancesMu sync.RWMutex
+	instances   = make(map[string]*titip.Titip)
 )
 
-func registerEngine(id string, t *titip.Titip) {
-	enginesMu.Lock()
-	defer enginesMu.Unlock()
-	engines[id] = t
+func registerInstance(id string, t *titip.Titip) {
+	instancesMu.Lock()
+	defer instancesMu.Unlock()
+	instances[id] = t
 }
 
-func unregisterEngine(id string) {
-	enginesMu.Lock()
-	defer enginesMu.Unlock()
-	delete(engines, id)
+func unregisterInstance(id string) {
+	instancesMu.Lock()
+	defer instancesMu.Unlock()
+	delete(instances, id)
 }
 
-func getEngines() []*titip.Titip {
-	enginesMu.RLock()
-	defer enginesMu.RUnlock()
-	list := make([]*titip.Titip, 0, len(engines))
-	for _, e := range engines {
-		list = append(list, e)
+func getInstances() []*titip.Titip {
+	instancesMu.RLock()
+	defer instancesMu.RUnlock()
+	list := make([]*titip.Titip, 0, len(instances))
+	for _, inst := range instances {
+		list = append(list, inst)
 	}
 	return list
 }
@@ -143,7 +144,7 @@ type Handler struct {
 	UseRewrittenURL               *bool           `json:"use_rewritten_url,omitempty"`
 
 	storageMod      StorageModule
-	engine          *titip.Titip
+	instance        *titip.Titip
 	id              string
 	useRewrittenURL bool
 	logger          *slog.Logger
@@ -157,7 +158,7 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-// Provision sets up the Titip caching engine and guest storage module.
+// Provision sets up the Titip caching instance and guest storage module.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	h.id = fmt.Sprintf("titip-%p", h)
 	if h.logger == nil {
@@ -311,10 +312,14 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if (app != nil && app.ESI != nil) || h.ESI != nil {
 		var esiOpts []esi.Option
 		if app != nil && app.ESI != nil {
-			_ = applyESIConfig(&esiOpts, app.ESI)
+			if err := applyESIConfig(&esiOpts, app.ESI); err != nil {
+				return err
+			}
 		}
 		if h.ESI != nil {
-			_ = applyESIConfig(&esiOpts, h.ESI)
+			if err := applyESIConfig(&esiOpts, h.ESI); err != nil {
+				return err
+			}
 		}
 
 		// In-process virtual subrequest fetcher adapted from Caddy funcHTTPInclude:
@@ -367,12 +372,12 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithESI(esiOpts...))
 	}
 
-	engine, err := titip.New(opts...)
+	instance, err := titip.New(opts...)
 	if err != nil {
-		return fmt.Errorf("titip: failed to create engine: %w", err)
+		return fmt.Errorf("titip: failed to create instance: %w", err)
 	}
-	h.engine = engine
-	registerEngine(h.id, engine)
+	h.instance = instance
+	registerInstance(h.id, instance)
 
 	storageName := "unknown"
 	if h.storageMod != nil {
@@ -411,24 +416,24 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 // Validate ensures the handler is configured properly.
 func (h *Handler) Validate() error {
-	if h.engine == nil {
-		return fmt.Errorf("titip: engine was not provisioned")
+	if h.instance == nil {
+		return fmt.Errorf("titip: instance was not provisioned")
 	}
 	return nil
 }
 
-// Cleanup gracefully shuts down the caching engine.
+// Cleanup gracefully shuts down the caching instance.
 func (h *Handler) Cleanup() error {
-	unregisterEngine(h.id)
+	unregisterInstance(h.id)
 	if h.logger != nil && h.logger.Enabled(context.Background(), slog.LevelDebug) {
 		h.logger.DebugContext(context.Background(), "module cleaned up",
 			slog.String("id", h.id),
 		)
 	}
-	if h.engine != nil {
+	if h.instance != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = h.engine.Close(ctx)
+		_ = h.instance.Close(ctx)
 	}
 	return nil
 }
@@ -443,13 +448,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// We extract the original request URL for Titip's cache key generation so that distinct
 	// client-facing paths (e.g. "/about", "/products") do not collapse into the same cache key,
 	// while preserving the current request's headers, context, and body.
-	engineReq := r
+	cacheReq := r
 	if !h.useRewrittenURL {
 		if origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request); ok && origReq.URL != nil {
 			rCopy := *r
 			rCopy.URL = origReq.URL
 			rCopy.RequestURI = origReq.RequestURI
-			engineReq = &rCopy
+			cacheReq = &rCopy
 		}
 	}
 
@@ -467,7 +472,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		_ = next.ServeHTTP(rw, nextReq)
 	})
 
-	h.engine.ServeHTTP(w, engineReq, nextHandler)
+	h.instance.ServeHTTP(w, cacheReq, nextHandler)
 	return nil
 }
 
@@ -765,31 +770,6 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 	return &handler, err
 }
 
-func parseByteSize(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, nil
-	}
-	multi := int64(1)
-	upper := strings.ToUpper(s)
-	if strings.HasSuffix(upper, "GB") || strings.HasSuffix(upper, "G") {
-		multi = 1024 * 1024 * 1024
-		s = strings.TrimRight(s, "gGbB ")
-	} else if strings.HasSuffix(upper, "MB") || strings.HasSuffix(upper, "M") {
-		multi = 1024 * 1024
-		s = strings.TrimRight(s, "mMbB ")
-	} else if strings.HasSuffix(upper, "KB") || strings.HasSuffix(upper, "K") {
-		multi = 1024
-		s = strings.TrimRight(s, "kKbB ")
-	} else if strings.HasSuffix(upper, "B") {
-		s = strings.TrimRight(s, "bB ")
-	}
-	val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return val * multi, nil
-}
 
 func applyCacheKey(target *titip.CacheKey, src *CacheKey) error {
 	if src == nil {
@@ -868,11 +848,11 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 		*opts = append(*opts, esi.WithAllowPrivateIPsForAllowedHosts(*src.AllowPrivateIPsForAllowedHosts))
 	}
 	if src.MaxResponseSize != "" {
-		size, err := parseByteSize(src.MaxResponseSize)
+		uSize, err := humanize.ParseBytes(src.MaxResponseSize)
 		if err != nil {
 			return fmt.Errorf("titip: invalid esi max_response_size %q: %w", src.MaxResponseSize, err)
 		}
-		*opts = append(*opts, esi.WithMaxResponseSize(size))
+		*opts = append(*opts, esi.WithMaxResponseSize(int64(uSize)))
 	}
 	if src.ForwardFragmentCookies != nil {
 		*opts = append(*opts, esi.WithDisableForwardCookies(!*src.ForwardFragmentCookies))

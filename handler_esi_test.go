@@ -1275,31 +1275,31 @@ func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
 		),
 	)
 
-	if !mw.cfg.esi.Enabled {
+	if !mw.config.esi.Enabled {
 		t.Errorf("expected ESI to be enabled")
 	}
-	if !mw.cfg.esi.HeaderRequired {
+	if !mw.config.esi.HeaderRequired {
 		t.Errorf("expected HeaderRequired to be true")
 	}
-	if mw.cfg.esi.MaxDepth != 3 {
-		t.Errorf("expected default MaxDepth=3, got %d", mw.cfg.esi.MaxDepth)
+	if mw.config.esi.MaxDepth != 3 {
+		t.Errorf("expected default MaxDepth=3, got %d", mw.config.esi.MaxDepth)
 	}
-	if mw.cfg.esi.MaxTimeout != 30*time.Second {
-		t.Errorf("expected default MaxTimeout=30s, got %v", mw.cfg.esi.MaxTimeout)
+	if mw.config.esi.MaxTimeout != 30*time.Second {
+		t.Errorf("expected default MaxTimeout=30s, got %v", mw.config.esi.MaxTimeout)
 	}
-	if mw.cfg.esi.MaxConcurrentRequests != 8 {
-		t.Errorf("expected default MaxConcurrentRequests=8, got %d", mw.cfg.esi.MaxConcurrentRequests)
+	if mw.config.esi.MaxConcurrentRequests != 8 {
+		t.Errorf("expected default MaxConcurrentRequests=8, got %d", mw.config.esi.MaxConcurrentRequests)
 	}
-	if mw.cfg.esi.MaxResponseSize != 10*1024*1024 {
-		t.Errorf("expected default MaxResponseSize=10MB, got %d", mw.cfg.esi.MaxResponseSize)
+	if mw.config.esi.MaxResponseSize != 10*1024*1024 {
+		t.Errorf("expected default MaxResponseSize=10MB, got %d", mw.config.esi.MaxResponseSize)
 	}
-	if mw.cfg.esi.AllowPrivateIPs != false {
+	if mw.config.esi.AllowPrivateIPs != false {
 		t.Errorf("expected default AllowPrivateIPs=false, got true")
 	}
-	if mw.cfg.esi.DisableForwardCookies != false {
+	if mw.config.esi.DisableForwardCookies != false {
 		t.Errorf("expected default DisableForwardCookies=false, got true")
 	}
-	if mw.cfg.esi.PreserveETag != false {
+	if mw.config.esi.PreserveETag != false {
 		t.Errorf("expected default PreserveETag=false, got true")
 	}
 }
@@ -1579,5 +1579,103 @@ func TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring(t *testing.T) {
 	}
 }
 
+func TestESI_MaxResponseSize_Option(t *testing.T) {
+	cfg := esi.Config{MaxResponseSize: 10 * 1024 * 1024}
+	esi.WithMaxResponseSize(0)(&cfg)
+	if cfg.MaxResponseSize != 0 {
+		t.Errorf("expected MaxResponseSize=0, got %d", cfg.MaxResponseSize)
+	}
 
+	esi.WithMaxResponseSize(500)(&cfg)
+	if cfg.MaxResponseSize != 500 {
+		t.Errorf("expected MaxResponseSize=500, got %d", cfg.MaxResponseSize)
+	}
 
+	esi.WithMaxResponseSize(-1)(&cfg)
+	if cfg.MaxResponseSize != 500 {
+		t.Errorf("expected MaxResponseSize to remain 500 when negative passed, got %d", cfg.MaxResponseSize)
+	}
+}
+
+func TestESI_MaxResponseSize_InProcessAndOutbound(t *testing.T) {
+	const body20 = "01234567890123456789" // 20 bytes
+
+	extServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(body20))
+	}))
+	defer extServer.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/in-process-frag", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(body20))
+	})
+
+	mux.HandleFunc("/test-inproc", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(`<main><esi:include src="/in-process-frag" onerror="continue" /></main>`))
+	})
+
+	mux.HandleFunc("/test-outbound", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = fmt.Fprintf(w, `<main><esi:include src="%s/frag" onerror="continue" /></main>`, extServer.URL)
+	})
+
+	t.Run("size limit 10 bytes rejects 20 byte fragments", func(t *testing.T) {
+		_, _, mw := setupTestTitip(t,
+			WithESI(
+				esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+				esi.WithAllowPrivateIPs(true),
+				esi.WithMaxResponseSize(10),
+			),
+		)
+		h := mw.testHandler(mux)
+
+		// in-process
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/test-inproc", nil)
+		rec1 := httptest.NewRecorder()
+		h.ServeHTTP(rec1, req1)
+		if rec1.Body.String() != "<main></main>" {
+			t.Errorf("expected fragment to be dropped due to size limit, got %q", rec1.Body.String())
+		}
+
+		// outbound HTTP
+		req2 := httptest.NewRequest(http.MethodGet, "http://example.com/test-outbound", nil)
+		rec2 := httptest.NewRecorder()
+		h.ServeHTTP(rec2, req2)
+		if rec2.Body.String() != "<main></main>" {
+			t.Errorf("expected outbound fragment to be dropped due to size limit, got %q", rec2.Body.String())
+		}
+	})
+
+	t.Run("size limit 0 disables limit and allows 20 byte fragments", func(t *testing.T) {
+		_, _, mw := setupTestTitip(t,
+			WithESI(
+				esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+				esi.WithAllowPrivateIPs(true),
+				esi.WithMaxResponseSize(0),
+			),
+		)
+		h := mw.testHandler(mux)
+
+		// in-process
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/test-inproc", nil)
+		rec1 := httptest.NewRecorder()
+		h.ServeHTTP(rec1, req1)
+		expected := fmt.Sprintf("<main>%s</main>", body20)
+		if rec1.Body.String() != expected {
+			t.Errorf("expected fragment to be included when limit is 0 (unlimited), got %q", rec1.Body.String())
+		}
+
+		// outbound HTTP
+		req2 := httptest.NewRequest(http.MethodGet, "http://example.com/test-outbound", nil)
+		rec2 := httptest.NewRecorder()
+		h.ServeHTTP(rec2, req2)
+		if rec2.Body.String() != expected {
+			t.Errorf("expected outbound fragment to be included when limit is 0 (unlimited), got %q", rec2.Body.String())
+		}
+	})
+}

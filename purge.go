@@ -37,6 +37,7 @@ type purgeTarget struct {
 //   - "/api/products?id=42"        → exact match (specific query variant only)
 //   - "/assets/*"                  → wildcard directory purge
 //   - "https://example.com/api"    → host-scoped path sweep
+//
 // parsePurgeTarget parses a raw purge target string into a structured purgeTarget,
 // respecting the active CacheKey rules (query filters, sorting, trailing slashes, host exclusion).
 func parsePurgeTarget(target string, cfg *CacheKey) (*purgeTarget, error) {
@@ -248,16 +249,4 @@ func buildPathHostBase(pt *purgeTarget, cfg *CacheKey) string {
 		}
 	}
 	return sb.String()
-}
-
-// normalizeHost lowercases the host and strips default ports.
-func normalizeHost(host, scheme string) string {
-	h := strings.ToLower(host)
-	switch scheme {
-	case "http":
-		h = strings.TrimSuffix(h, ":80")
-	case "https":
-		h = strings.TrimSuffix(h, ":443")
-	}
-	return h
 }
