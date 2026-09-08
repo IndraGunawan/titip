@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func getCounterValue(t *testing.T, cv *prometheus.CounterVec, labelValues ...string) float64 {
@@ -18,11 +18,7 @@ func getCounterValue(t *testing.T, cv *prometheus.CounterVec, labelValues ...str
 	if err != nil {
 		t.Fatalf("failed to get metric with labels %v: %v", labelValues, err)
 	}
-	var m dto.Metric
-	if err := c.Write(&m); err != nil {
-		t.Fatalf("failed to write metric: %v", err)
-	}
-	return m.GetCounter().GetValue()
+	return testutil.ToFloat64(c)
 }
 
 func TestMetrics_NilSafety(t *testing.T) {

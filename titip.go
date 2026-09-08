@@ -18,9 +18,9 @@ import (
 
 // Titip represents the HTTP caching middleware instance.
 type Titip struct {
-	cfg           config
+	config        config
 	storage       storage.Storage
-	sf            singleflight.Group
+	singleflight  singleflight.Group
 	logger        *slog.Logger
 	metrics       *metrics
 	swrWG         sync.WaitGroup
@@ -70,10 +70,10 @@ func New(opts ...Option) (*Titip, error) {
 	esiTransport := esi.NewSSRFSafeTransport(ssrfCfg, 10*time.Second)
 
 	return &Titip{
-		cfg:           cfg,
-		storage:       cfg.storage,
-		logger:        cfg.logger,
-		metrics:       newMetrics(cfg.metrics, cfg.esi.Enabled),
+		config:  cfg,
+		storage: cfg.storage,
+		logger:  cfg.logger,
+		metrics: newMetrics(cfg.metrics, cfg.esi.Enabled),
 		esiHTTPClient: &http.Client{
 			Transport: esiTransport,
 		},
@@ -100,7 +100,7 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 
 	mode := purgeModeString(cfg.soft)
 
-	pt, err := parsePurgeTarget(target, &t.cfg.cacheKey)
+	pt, err := parsePurgeTarget(target, &t.config.cacheKey)
 	if err != nil {
 		t.metrics.recordPurge("url", mode, "error", 0)
 		return 0, fmt.Errorf("titip: purge parse error: %w", err)
@@ -109,7 +109,7 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 		return 0, nil
 	}
 
-	patterns := buildPurgePatterns(pt, &t.cfg.cacheKey)
+	patterns := buildPurgePatterns(pt, &t.config.cacheKey)
 
 	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
 		t.logger.DebugContext(ctx, "purge path",
@@ -135,7 +135,7 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 
 // executePurge dispatches a single pattern to the appropriate storage operation.
 func (t *Titip) executePurge(ctx context.Context, pt *purgeTarget, pattern string, soft bool) (int64, error) {
-	if pt.mode == purgeModeExact && (t.cfg.cacheKey.ExcludeHost || pt.host != "") {
+	if pt.mode == purgeModeExact && (t.config.cacheKey.ExcludeHost || pt.host != "") {
 		// pattern is a full exact primary key — use direct Purge.
 		n, err := t.storage.Purge(ctx, pattern, soft)
 		if err != nil {

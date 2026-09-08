@@ -60,6 +60,30 @@ func TestScanner_PairedWithFallback(t *testing.T) {
 	}
 }
 
+func TestScanner_MaxDepth_EdgeCases(t *testing.T) {
+	tests := []struct {
+		tag       string
+		wantDepth uint32
+	}{
+		{`<esi:include src="/a" max-depth="5" />`, 5},
+		{`<esi:include src="/a" max-depth="0" />`, 0},
+		{`<esi:include src="/a" max-depth="invalid" />`, 0},
+		{`<esi:include src="/a" max-depth="-1" />`, 0},
+		{`<esi:include src="/a" max-depth="" />`, 0},
+		{`<esi:include src="/a" max-depth="99999999999999999999" />`, 0},
+	}
+
+	for _, tt := range tests {
+		_, frags := Scan([]byte(tt.tag))
+		if len(frags) != 1 {
+			t.Fatalf("expected 1 fragment for %s, got %d", tt.tag, len(frags))
+		}
+		if frags[0].MaxDepth != tt.wantDepth {
+			t.Errorf("Scan(%s).MaxDepth = %d, want %d", tt.tag, frags[0].MaxDepth, tt.wantDepth)
+		}
+	}
+}
+
 func TestScanner_QuoteAwareClosingBracket(t *testing.T) {
 	html := []byte(`<esi:include src="/api/search?q=foo>bar&sort=asc" />`)
 	hasESI, frags := Scan(html)

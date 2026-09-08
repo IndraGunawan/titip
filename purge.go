@@ -249,15 +249,3 @@ func buildPathHostBase(pt *purgeTarget, cfg *CacheKey) string {
 	}
 	return sb.String()
 }
-
-// normalizeHost lowercases the host and strips default ports.
-func normalizeHost(host, scheme string) string {
-	h := strings.ToLower(host)
-	switch scheme {
-	case "http":
-		h = strings.TrimSuffix(h, ":80")
-	case "https":
-		h = strings.TrimSuffix(h, ":443")
-	}
-	return h
-}

@@ -9,10 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	googleproto "google.golang.org/protobuf/proto"
-
 	"github.com/indragunawan/titip/esi"
-	pb "github.com/indragunawan/titip/proto"
 )
 
 func TestBufferPool(t *testing.T) {
@@ -138,53 +135,6 @@ func TestResponseRecorderImplicitStatus200(t *testing.T) {
 	}
 }
 
-func TestProtobufPools(t *testing.T) {
-	t.Parallel()
-	meta := getCacheMetadata()
-	meta.PrimaryKey = "https://example.com/api/users"
-	meta.VaryHeaderNames = []string{"Accept-Encoding", "Accept-Language"}
-	meta.CreatedAtUnixNano = 1700000000000
-	meta.ExpiresAtUnixNano = 1700000060000
-	meta.Tags = []string{"users", "api"}
-	meta.Variants = make(map[string]*pb.VariantInfo)
-
-	v := getVariantInfo()
-	v.VariantKey = "gzip_en"
-	v.StatusCode = 200
-	v.Etag = `"etag-123"`
-	v.RawBodySize = 1024
-	v.CompressedBodySize = 256
-	meta.Variants["gzip_en"] = v
-
-	// Marshal and test roundtrip
-	data, err := googleproto.Marshal(meta)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-
-	decodedMeta := getCacheMetadata()
-	defer putCacheMetadata(decodedMeta)
-	if err := googleproto.Unmarshal(data, decodedMeta); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-
-	if decodedMeta.PrimaryKey != meta.PrimaryKey {
-		t.Fatalf("expected primary key %s, got %s", meta.PrimaryKey, decodedMeta.PrimaryKey)
-	}
-	if len(decodedMeta.Variants) != 1 || decodedMeta.Variants["gzip_en"].Etag != `"etag-123"` {
-		t.Fatalf("variants mismatch: %v", decodedMeta.Variants)
-	}
-
-	// Return to pool and verify reset
-	putVariantInfo(v)
-	putCacheMetadata(meta)
-
-	metaFresh := getCacheMetadata()
-	defer putCacheMetadata(metaFresh)
-	if metaFresh.PrimaryKey != "" || len(metaFresh.VaryHeaderNames) != 0 || len(metaFresh.Tags) != 0 {
-		t.Fatalf("expected reset metadata, got %+v", metaFresh)
-	}
-}
 
 func TestLZ4CompressionRoundtrip(t *testing.T) {
 	t.Parallel()
@@ -291,15 +241,6 @@ func TestPoolConcurrencyAndRaces(t *testing.T) {
 				_, _ = rec.Write([]byte("response body test"))
 				putResponseRecorder(rec)
 
-				// Protobuf pool test
-				meta := getCacheMetadata()
-				meta.PrimaryKey = "https://test.local"
-				putCacheMetadata(meta)
-
-				v := getVariantInfo()
-				v.VariantKey = "v1"
-				putVariantInfo(v)
-
 				// LZ4 compress/decompress test
 				payload := []byte(strings.Repeat("concurrent lz4 test payload ", 10))
 				cBuf := getBuffer()
@@ -343,17 +284,6 @@ func BenchmarkResponseRecorderPool(b *testing.B) {
 	}
 }
 
-func BenchmarkProtobufPool(b *testing.B) {
-	for b.Loop() {
-		m := getCacheMetadata()
-		m.PrimaryKey = "https://example.com/api/v1"
-		putCacheMetadata(m)
-
-		v := getVariantInfo()
-		v.VariantKey = "gzip"
-		putVariantInfo(v)
-	}
-}
 
 func BenchmarkLZ4CompressDecompress(b *testing.B) {
 	payload := make([]byte, 4096)

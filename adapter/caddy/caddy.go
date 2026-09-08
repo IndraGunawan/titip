@@ -21,6 +21,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/dustin/go-humanize"
 
 	"github.com/indragunawan/titip"
 	"github.com/indragunawan/titip/esi"
@@ -311,10 +312,14 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if (app != nil && app.ESI != nil) || h.ESI != nil {
 		var esiOpts []esi.Option
 		if app != nil && app.ESI != nil {
-			_ = applyESIConfig(&esiOpts, app.ESI)
+			if err := applyESIConfig(&esiOpts, app.ESI); err != nil {
+				return err
+			}
 		}
 		if h.ESI != nil {
-			_ = applyESIConfig(&esiOpts, h.ESI)
+			if err := applyESIConfig(&esiOpts, h.ESI); err != nil {
+				return err
+			}
 		}
 
 		// In-process virtual subrequest fetcher adapted from Caddy funcHTTPInclude:
@@ -765,31 +770,6 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 	return &handler, err
 }
 
-func parseByteSize(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, nil
-	}
-	multi := int64(1)
-	upper := strings.ToUpper(s)
-	if strings.HasSuffix(upper, "GB") || strings.HasSuffix(upper, "G") {
-		multi = 1024 * 1024 * 1024
-		s = strings.TrimRight(s, "gGbB ")
-	} else if strings.HasSuffix(upper, "MB") || strings.HasSuffix(upper, "M") {
-		multi = 1024 * 1024
-		s = strings.TrimRight(s, "mMbB ")
-	} else if strings.HasSuffix(upper, "KB") || strings.HasSuffix(upper, "K") {
-		multi = 1024
-		s = strings.TrimRight(s, "kKbB ")
-	} else if strings.HasSuffix(upper, "B") {
-		s = strings.TrimRight(s, "bB ")
-	}
-	val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return val * multi, nil
-}
 
 func applyCacheKey(target *titip.CacheKey, src *CacheKey) error {
 	if src == nil {
@@ -868,11 +848,11 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 		*opts = append(*opts, esi.WithAllowPrivateIPsForAllowedHosts(*src.AllowPrivateIPsForAllowedHosts))
 	}
 	if src.MaxResponseSize != "" {
-		size, err := parseByteSize(src.MaxResponseSize)
+		uSize, err := humanize.ParseBytes(src.MaxResponseSize)
 		if err != nil {
 			return fmt.Errorf("titip: invalid esi max_response_size %q: %w", src.MaxResponseSize, err)
 		}
-		*opts = append(*opts, esi.WithMaxResponseSize(size))
+		*opts = append(*opts, esi.WithMaxResponseSize(int64(uSize)))
 	}
 	if src.ForwardFragmentCookies != nil {
 		*opts = append(*opts, esi.WithDisableForwardCookies(!*src.ForwardFragmentCookies))

@@ -9,7 +9,6 @@ import (
 
 	"github.com/pierrec/lz4/v4"
 	"github.com/pquerna/cachecontrol/cacheobject"
-	googleproto "google.golang.org/protobuf/proto"
 
 	pb "github.com/indragunawan/titip/proto"
 )
@@ -138,47 +137,6 @@ func (rec *responseRecorder) Reset() {
 	}
 }
 
-// --- Protobuf Struct Pools ---
-
-var cacheMetadataPool = sync.Pool{
-	New: func() any {
-		return new(pb.CacheMetadata)
-	},
-}
-
-var variantInfoPool = sync.Pool{
-	New: func() any {
-		return new(pb.VariantInfo)
-	},
-}
-
-// getCacheMetadata retrieves a pooled proto.CacheMetadata instance.
-func getCacheMetadata() *pb.CacheMetadata {
-	return cacheMetadataPool.Get().(*pb.CacheMetadata)
-}
-
-// putCacheMetadata resets and returns a proto.CacheMetadata instance to the pool.
-func putCacheMetadata(m *pb.CacheMetadata) {
-	if m == nil {
-		return
-	}
-	googleproto.Reset(m)
-	cacheMetadataPool.Put(m)
-}
-
-// getVariantInfo retrieves a pooled proto.VariantInfo instance.
-func getVariantInfo() *pb.VariantInfo {
-	return variantInfoPool.Get().(*pb.VariantInfo)
-}
-
-// putVariantInfo resets and returns a proto.VariantInfo instance to the pool.
-func putVariantInfo(v *pb.VariantInfo) {
-	if v == nil {
-		return
-	}
-	googleproto.Reset(v)
-	variantInfoPool.Put(v)
-}
 
 // --- LZ4 Compression Pipeline & Pools ---
 
@@ -296,22 +254,6 @@ func releaseRequestContext(ctx *requestContext) {
 	}
 	ctx.Reset()
 	requestContextPool.Put(ctx)
-}
-
-// etagMatches performs weak ETag comparison per RFC-7232 Section 2.3.2.
-func etagMatches(clientETag, cachedETag string) bool {
-	if clientETag == "" || cachedETag == "" {
-		return false
-	}
-	cETag := clientETag
-	if len(cETag) >= 2 && (cETag[:2] == "W/" || cETag[:2] == "w/") {
-		cETag = cETag[2:]
-	}
-	sETag := cachedETag
-	if len(sETag) >= 2 && (sETag[:2] == "W/" || sETag[:2] == "w/") {
-		sETag = sETag[2:]
-	}
-	return cETag == sETag
 }
 
 

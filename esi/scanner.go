@@ -2,6 +2,7 @@ package esi
 
 import (
 	"bytes"
+	"strconv"
 	"time"
 
 	proto "github.com/indragunawan/titip/proto"
@@ -187,7 +188,9 @@ func parseESIInclude(b []byte, tagStart int) (*proto.EsiFragment, int) {
 
 	var maxDepth uint32
 	if len(maxDepthBytes) > 0 {
-		maxDepth = uint32(parseUintBytes(maxDepthBytes))
+		if v, err := strconv.ParseUint(string(bytes.TrimSpace(maxDepthBytes)), 10, 32); err == nil {
+			maxDepth = uint32(v)
+		}
 	}
 
 	if isSelfClosing {
@@ -362,19 +365,6 @@ func parseTimeoutBytes(b []byte) uint32 {
 	return 0
 }
 
-// parseUintBytes parses a uint64 from []byte (used for max-depth).
-func parseUintBytes(b []byte) uint64 {
-	b = bytes.TrimSpace(b)
-	var val uint64
-	for _, c := range b {
-		if c >= '0' && c <= '9' {
-			val = val*10 + uint64(c-'0')
-		} else {
-			break
-		}
-	}
-	return val
-}
 
 func isWhitespace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
