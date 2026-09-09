@@ -20,14 +20,12 @@ const (
 type metrics struct {
 	requestsTotal      *prometheus.CounterVec
 	requestDuration    *prometheus.HistogramVec
-	esiFragments       *prometheus.CounterVec
-	esiDuration        *prometheus.HistogramVec
 	purgesTotal        *prometheus.CounterVec
 	purgedEntriesTotal *prometheus.CounterVec
 }
 
 // newMetrics initializes and registers Prometheus collectors with the provided Registerer.
-func newMetrics(reg prometheus.Registerer, enableESI bool) *metrics {
+func newMetrics(reg prometheus.Registerer) *metrics {
 	if reg == nil {
 		return nil
 	}
@@ -69,27 +67,6 @@ func newMetrics(reg prometheus.Registerer, enableESI bool) *metrics {
 	_ = reg.Register(m.purgesTotal)
 	_ = reg.Register(m.purgedEntriesTotal)
 
-	if enableESI {
-		m.esiFragments = prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "titip_esi_fragments_total",
-				Help: "Total number of ESI fragments processed partitioned by status.",
-			},
-			[]string{"status"},
-		)
-		m.esiDuration = prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "titip_esi_duration_seconds",
-				Help:    "Latency distribution of ESI fragment fetching and splicing in seconds.",
-				Buckets: prometheus.DefBuckets,
-			},
-			[]string{"mode"},
-		)
-
-		_ = reg.Register(m.esiFragments)
-		_ = reg.Register(m.esiDuration)
-	}
-
 	return m
 }
 
@@ -104,22 +81,6 @@ func (m *metrics) recordRequest(status string, dur time.Duration) {
 	if m.requestDuration != nil {
 		m.requestDuration.WithLabelValues(status).Observe(dur.Seconds())
 	}
-}
-
-// recordESIFragment safely increments the ESI fragment counter for the given status.
-func (m *metrics) recordESIFragment(status string) {
-	if m == nil || m.esiFragments == nil {
-		return
-	}
-	m.esiFragments.WithLabelValues(status).Inc()
-}
-
-// recordESIDuration safely observes the latency of an ESI operation.
-func (m *metrics) recordESIDuration(mode string, dur time.Duration) {
-	if m == nil || m.esiDuration == nil {
-		return
-	}
-	m.esiDuration.WithLabelValues(mode).Observe(dur.Seconds())
 }
 
 // recordPurge safely increments the purge invocation counter and adds to the purged entries counter.

@@ -15,7 +15,8 @@ Designed for high-concurrency services, Titip reduces backend load by serving ca
 * **RFC-7234, RFC-9111 & RFC-9213 Compliant**: Implements the official Age & Freshness calculation standard (apparent age, corrected initial age, resident time, clock-skew correction, and multi-variant `Vary` header negotiation).
 * **Tiered Cache-Control (RFC 9213)**: Supports targeted header resolution (`Titip-Cache-Control` → `CDN-Cache-Control` → `Cache-Control`), allowing backends to configure edge caching independently from browser caching.
 * **RFC-9211 `Cache-Status` Observability**: Structured diagnostics (`Cache-Status: titip; hit; ttl=295`, `fwd=stale`, `fwd=bypass`) with multi-tier cache chaining.
-* **Granular Cache Purge API**: Invalidation via programmatic Go API (exact URL, wildcard prefixes, surrogate `Cache-Tag`, soft-purge, or namespace purge).
+* **Edge Side Includes (ESI 1.0)**: Concurrent fragment assembly, in-process routing, recursive loop protection, and SSRF prevention.
+* **Granular Cache Purge API**: Invalidation via programmatic Go API (exact URL, wildcard prefixes, surrogate `Cache-Tag`, soft-purge, or total cache wipeout).
 * **Pluggable Architecture**: Standard `net/http` middleware with modular framework adapters and decoupled storage engines.
 
 ## Architecture
@@ -239,7 +240,11 @@ Cache-Control: private, no-store
 
 ## Edge Side Includes (ESI)
 
-Titip includes a streaming **Edge Side Includes (ESI 1.0)** engine with parallel fragment fetching, circular loop protection, and SSRF prevention.
+Titip includes an **Edge Side Includes (ESI 1.0)** engine with parallel fragment fetching, circular loop protection, and SSRF prevention.
+
+When ESI is active, Titip advertises capability to upstream origins by sending `Surrogate-Capability: titip="ESI/1.0"` per the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/). Origins can respond with `Surrogate-Control: content="ESI/1.0"` to direct ESI processing.
+
+For standalone package documentation and options reference, see [**ESI Package Guide**](esi/README.md).
 
 ```go
 cache, err := titip.New(

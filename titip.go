@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/indragunawan/titip/esi"
 	"github.com/indragunawan/titip/storage"
@@ -18,14 +19,14 @@ import (
 
 // Titip represents the HTTP caching middleware instance.
 type Titip struct {
-	config        config
-	storage       storage.Storage
-	singleflight  singleflight.Group
-	logger        *slog.Logger
-	metrics       *metrics
-	swrWG         sync.WaitGroup
-	closed        atomic.Bool
-	esiHTTPClient *http.Client
+	config       config
+	storage      storage.Storage
+	singleflight singleflight.Group
+	logger       *slog.Logger
+	metrics      *metrics
+	swrWG        sync.WaitGroup
+	closed       atomic.Bool
+	esiProcessor *esi.Processor
 }
 
 // New creates a new Titip caching middleware instance.
@@ -39,14 +40,6 @@ func New(opts ...Option) (*Titip, error) {
 		backgroundFetchTimeout:    125 * time.Second,
 		storageTimeout:            1 * time.Second,
 		logger:                    slog.Default(),
-		esi: esi.Config{
-			Enabled:               false,
-			HeaderRequired:        false,
-			MaxDepth:              3,
-			MaxTimeout:            30 * time.Second,
-			MaxConcurrentRequests: 8,
-			MaxResponseSize:       10 * 1024 * 1024,
-		},
 	}
 
 	for _, opt := range opts {
@@ -61,23 +54,28 @@ func New(opts ...Option) (*Titip, error) {
 		cfg.logger = slog.Default()
 	}
 
-	ssrfCfg := esi.SSRFConfig{
-		BlockPrivateIPs:                !cfg.esi.AllowPrivateIPs,
-		AllowedHosts:                   cfg.esi.AllowedHosts,
-		AllowPrivateIPsForAllowedHosts: cfg.esi.AllowPrivateIPsForAllowedHosts,
-	}
-
-	esiTransport := esi.NewSSRFSafeTransport(ssrfCfg, 10*time.Second)
-
-	return &Titip{
+	t := &Titip{
 		config:  cfg,
 		storage: cfg.storage,
 		logger:  cfg.logger,
-		metrics: newMetrics(cfg.metrics, cfg.esi.Enabled),
-		esiHTTPClient: &http.Client{
-			Transport: esiTransport,
-		},
-	}, nil
+		metrics: newMetrics(cfg.metrics),
+	}
+
+	if cfg.esiOptions != nil {
+		processorOpts := make([]esi.Option, 0, len(cfg.esiOptions)+2)
+		processorOpts = append(processorOpts,
+			esi.WithLogger(cfg.logger),
+		)
+		if cfg.metrics != nil {
+			processorOpts = append(processorOpts,
+				esi.WithMetrics(prometheus.WrapRegistererWithPrefix("titip_", cfg.metrics)),
+			)
+		}
+		processorOpts = append(processorOpts, cfg.esiOptions...)
+		t.esiProcessor = esi.NewProcessor(processorOpts...)
+	}
+
+	return t, nil
 }
 
 // Purge invalidates cache entries matching the specified path, URL, exact query variant, or wildcard.

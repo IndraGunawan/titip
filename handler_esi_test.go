@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/indragunawan/titip/esi"
-	pb "github.com/indragunawan/titip/proto"
 )
 
 func TestESI_InProcessVirtualSubrequests(t *testing.T) {
@@ -1277,31 +1275,13 @@ func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
 		),
 	)
 
-	if !mw.config.esi.Enabled {
-		t.Errorf("expected ESI to be enabled")
+	if mw.esiProcessor == nil {
+		t.Fatalf("expected ESI processor to be initialized")
 	}
-	if !mw.config.esi.HeaderRequired {
+	if !mw.esiProcessor.HeaderRequired() {
 		t.Errorf("expected HeaderRequired to be true")
 	}
-	if mw.config.esi.MaxDepth != 3 {
-		t.Errorf("expected default MaxDepth=3, got %d", mw.config.esi.MaxDepth)
-	}
-	if mw.config.esi.MaxTimeout != 30*time.Second {
-		t.Errorf("expected default MaxTimeout=30s, got %v", mw.config.esi.MaxTimeout)
-	}
-	if mw.config.esi.MaxConcurrentRequests != 8 {
-		t.Errorf("expected default MaxConcurrentRequests=8, got %d", mw.config.esi.MaxConcurrentRequests)
-	}
-	if mw.config.esi.MaxResponseSize != 10*1024*1024 {
-		t.Errorf("expected default MaxResponseSize=10MB, got %d", mw.config.esi.MaxResponseSize)
-	}
-	if mw.config.esi.AllowPrivateIPs != false {
-		t.Errorf("expected default AllowPrivateIPs=false, got true")
-	}
-	if mw.config.esi.DisableForwardCookies != false {
-		t.Errorf("expected default DisableForwardCookies=false, got true")
-	}
-	if mw.config.esi.PreserveETag != false {
+	if mw.esiProcessor.PreserveETag() != false {
 		t.Errorf("expected default PreserveETag=false, got true")
 	}
 }
@@ -1581,24 +1561,6 @@ func TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring(t *testing.T) {
 	}
 }
 
-func TestESI_MaxResponseSize_Option(t *testing.T) {
-	cfg := esi.Config{MaxResponseSize: 10 * 1024 * 1024}
-	esi.WithMaxResponseSize(0)(&cfg)
-	if cfg.MaxResponseSize != 0 {
-		t.Errorf("expected MaxResponseSize=0, got %d", cfg.MaxResponseSize)
-	}
-
-	esi.WithMaxResponseSize(500)(&cfg)
-	if cfg.MaxResponseSize != 500 {
-		t.Errorf("expected MaxResponseSize=500, got %d", cfg.MaxResponseSize)
-	}
-
-	esi.WithMaxResponseSize(-1)(&cfg)
-	if cfg.MaxResponseSize != 500 {
-		t.Errorf("expected MaxResponseSize to remain 500 when negative passed, got %d", cfg.MaxResponseSize)
-	}
-}
-
 func TestESI_MaxResponseSize_InProcessAndOutbound(t *testing.T) {
 	const body20 = "01234567890123456789" // 20 bytes
 
@@ -1682,38 +1644,6 @@ func TestESI_MaxResponseSize_InProcessAndOutbound(t *testing.T) {
 	})
 }
 
-func TestSafeSlice_BoundsAndSafety(t *testing.T) {
-	b := []byte("<div><esi:include src=\"/api\">Fallback Text</esi:include></div>")
-
-	tests := []struct {
-		name     string
-		body     []byte
-		start    int64
-		end      int64
-		expected string
-	}{
-		{"valid_inner_content", b, 29, 42, "Fallback Text"},
-		{"zero_start_pos", b, 0, 42, ""},
-		{"negative_start_pos", b, -5, 42, ""},
-		{"negative_end_pos", b, 29, -1, ""},
-		{"end_equals_start", b, 29, 29, ""},
-		{"end_less_than_start", b, 42, 29, ""},
-		{"end_exceeds_body_len", b, 29, int64(len(b) + 100), ""},
-		{"math_max_int64", b, 0, math.MaxInt64, ""},
-		{"nil_body", nil, 10, 20, ""},
-		{"empty_body", []byte{}, 10, 20, ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := safeSlice(tt.body, tt.start, tt.end)
-			if string(got) != tt.expected {
-				t.Errorf("safeSlice() = %q, want %q", string(got), tt.expected)
-			}
-		})
-	}
-}
-
 func TestESI_InnerContentFallback_ZeroDuplication(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/page-with-fallback", func(w http.ResponseWriter, r *http.Request) {
@@ -1756,16 +1686,6 @@ func TestESI_InnerContentFallback_ZeroDuplication(t *testing.T) {
 	}
 	if rec2.Body.String() != expected {
 		t.Fatalf("expected %q on cache hit, got %q", expected, rec2.Body.String())
-	}
-
-	// 3. Corrupted inner offsets: verify safeSlice prevents panic and fails open
-	corruptFrag := &pb.EsiFragment{
-		InnerStartPos: -99,
-		InnerEndPos:   9999999,
-	}
-	rawParent := []byte(`<div><esi:include src="/failing-api">fallback</esi:include></div>`)
-	if safeSlice(rawParent, corruptFrag.InnerStartPos, corruptFrag.InnerEndPos) != nil {
-		t.Fatalf("expected corrupt bounds to result in nil slice")
 	}
 }
 
@@ -1824,5 +1744,62 @@ func TestESI_SharedSrc_DifferentFallbacks(t *testing.T) {
 	}
 	if apiCallCount != 2 { // 1 additional fetch for cache hit's dynamic include execution
 		t.Fatalf("expected 2 total calls to /api/failing, got %d", apiCallCount)
+	}
+}
+
+func TestESI_UpstreamSurrogateCapabilityAdvertisement(t *testing.T) {
+	var receivedCapability atomic.Pointer[string]
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/advertised", func(w http.ResponseWriter, r *http.Request) {
+		cap := r.Header.Get("Surrogate-Capability")
+		receivedCapability.Store(&cap)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<p>Hello</p>"))
+	})
+
+	// 1. With ESI enabled: origin should receive Surrogate-Capability: titip="ESI/1.0"
+	_, _, mwEnabled := setupTestTitip(t, WithESI())
+	hEnabled := mwEnabled.testHandler(mux)
+
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/advertised?step=1", nil)
+	rec1 := httptest.NewRecorder()
+	hEnabled.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec1.Code)
+	}
+	capVal := receivedCapability.Load()
+	if capVal == nil || *capVal != `titip="ESI/1.0"` {
+		t.Errorf("expected origin to receive Surrogate-Capability: titip=\"ESI/1.0\", got %v", capVal)
+	}
+
+	// 2. When client request already has Surrogate-Capability from downstream: it should append titip="ESI/1.0"
+	receivedCapability.Store(nil)
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/advertised?step=2", nil)
+	req2.Header.Set("Surrogate-Capability", `cdn="ESI/1.0"`)
+	rec2 := httptest.NewRecorder()
+	hEnabled.ServeHTTP(rec2, req2)
+
+	capVal2 := receivedCapability.Load()
+	expectedAppended := `cdn="ESI/1.0", titip="ESI/1.0"`
+	if capVal2 == nil || *capVal2 != expectedAppended {
+		t.Errorf("expected origin to receive %q, got %v", expectedAppended, capVal2)
+	}
+
+	// 3. With ESI disabled: origin should NOT receive Surrogate-Capability
+	receivedCapability.Store(nil)
+	_, _, mwDisabled := setupTestTitip(t) // ESI disabled by default
+	hDisabled := mwDisabled.testHandler(mux)
+
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/advertised?step=3", nil)
+	rec3 := httptest.NewRecorder()
+	hDisabled.ServeHTTP(rec3, req3)
+
+	capVal3 := receivedCapability.Load()
+	if capVal3 == nil || *capVal3 != "" {
+		t.Errorf("expected origin to receive no Surrogate-Capability when ESI disabled, got %v", capVal3)
 	}
 }

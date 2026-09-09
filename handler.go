@@ -187,8 +187,8 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	// Fresh Cache Hit & Downstream Precondition Evaluation (RFC 9110 §13.2.2 & RFC 9111 §4.3.2)
 	// Preconditions are ONLY evaluated if the cached representation is strictly fresh.
 	if isFresh {
-		hasESI := t.config.esi.Enabled && len(ctx.varInfo.EsiFragments) > 0
-		if !hasESI || t.config.esi.PreserveETag {
+		hasESI := t.esiProcessor != nil && len(ctx.varInfo.EsiFragments) > 0
+		if !hasESI || t.esiProcessor.PreserveETag() {
 			status, proceed := t.evaluatePreconditions(ctx.r, ctx.varInfo)
 			if !proceed {
 				if status == http.StatusNotModified {
@@ -263,7 +263,7 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	// RFC 9111 §5.1 / §4.2.3: current_age = corrected_initial_age + resident_time
 	ttlStr := strconv.FormatInt(t.calcTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano), 10)
 
-	if t.config.esi.Enabled && len(varInfo.EsiFragments) > 0 {
+	if t.esiProcessor != nil && len(varInfo.EsiFragments) > 0 {
 		t.recordRequest(ctx, statusHit)
 		protoHeaders := protoHeadersToHTTP(varInfo.ResponseHeaders)
 		protoHeaders.Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
@@ -291,7 +291,7 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	}
 	defer putBuffer(dstBuf)
 
-	if t.config.esi.Enabled && len(varInfo.EsiFragments) > 0 {
+	if t.esiProcessor != nil && len(varInfo.EsiFragments) > 0 {
 		t.recordRequest(ctx, statusStaleHit)
 		protoHeaders := protoHeadersToHTTP(varInfo.ResponseHeaders)
 		protoHeaders.Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
@@ -322,7 +322,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 
 	originReq := ctx.r
 	hasConditionalHeaders := ctx.r.Header.Get(headerIfNoneMatch) != "" || ctx.r.Header.Get(headerIfModifiedSince) != ""
-	needsClone := (ctx.r.Method == http.MethodHead && t.config.convertHeadToGet) || hasConditionalHeaders
+	needsClone := (ctx.r.Method == http.MethodHead && t.config.convertHeadToGet) || hasConditionalHeaders || t.esiProcessor != nil
 	if needsClone {
 		originReq = ctx.r.Clone(originCtx)
 		if ctx.r.Method == http.MethodHead && t.config.convertHeadToGet {
@@ -332,6 +332,9 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		if hasConditionalHeaders {
 			originReq.Header.Del(headerIfNoneMatch)
 			originReq.Header.Del(headerIfModifiedSince)
+		}
+		if t.esiProcessor != nil {
+			t.esiProcessor.AddSurrogateCapability(originReq.Header, "titip")
 		}
 	}
 
@@ -521,6 +524,9 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 				revalReq.Header.Set(headerIfModifiedSince, time.Unix(0, staleVar.LastModifiedUnixNano).UTC().Format(http.TimeFormat))
 			}
 		}
+		if t.esiProcessor != nil {
+			t.esiProcessor.AddSurrogateCapability(revalReq.Header, "titip")
+		}
 
 		reqTime := time.Now()
 		var panicked bool
@@ -647,8 +653,8 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	if (res.isFallback || res.is304Origin) && res.fallback != nil {
 		// If origin confirmed 304 and downstream client requested conditional revalidation matching refreshed entry
 		if res.is304Origin {
-			hasESI := t.config.esi.Enabled && len(res.fallback.varInfo.EsiFragments) > 0
-			if !hasESI || t.config.esi.PreserveETag {
+			hasESI := t.esiProcessor != nil && len(res.fallback.varInfo.EsiFragments) > 0
+			if !hasESI || t.esiProcessor.PreserveETag() {
 				status, proceed := t.evaluatePreconditions(ctx.r, res.fallback.varInfo)
 				if !proceed && status == http.StatusNotModified {
 					t.recordRequest(ctx, statusRevalidated)
@@ -671,7 +677,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		}
 
 		if err := decompressLZ4(res.fallback.body, dstBuf); err == nil {
-			if t.config.esi.Enabled && len(res.fallback.varInfo.EsiFragments) > 0 {
+			if t.esiProcessor != nil && len(res.fallback.varInfo.EsiFragments) > 0 {
 				protoHeaders := protoHeadersToHTTP(res.fallback.varInfo.ResponseHeaders)
 				if res.fallback.meta != nil {
 					protoHeaders.Set(headerAge, calcAgeString(res.fallback.meta, time.Now().UnixNano()))
@@ -855,12 +861,17 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	defer putResponseRecorder(rec)
 
 	originReq := r
-	if originReq.Context() != bgCtx {
-		originReq = r.WithContext(bgCtx)
-	}
-	if r.Method == http.MethodHead && t.config.convertHeadToGet {
+	needsClone := (r.Method == http.MethodHead && t.config.convertHeadToGet) || t.esiProcessor != nil
+	if needsClone {
 		originReq = r.Clone(bgCtx)
-		originReq.Method = http.MethodGet
+		if r.Method == http.MethodHead && t.config.convertHeadToGet {
+			originReq.Method = http.MethodGet
+		}
+		if t.esiProcessor != nil {
+			t.esiProcessor.AddSurrogateCapability(originReq.Header, "titip")
+		}
+	} else if originReq.Context() != bgCtx {
+		originReq = r.WithContext(bgCtx)
 	}
 
 	reqTime := time.Now()
@@ -1134,10 +1145,10 @@ func protoHeadersToHTTP(protoHeaders map[string]*pb.HeaderValues) http.Header {
 }
 
 func (t *Titip) adjustESIHeaders(w http.ResponseWriter, varInfo *pb.VariantInfo) {
-	if !t.config.esi.Enabled || varInfo == nil || len(varInfo.EsiFragments) == 0 {
+	if t.esiProcessor == nil || varInfo == nil || len(varInfo.EsiFragments) == 0 {
 		return
 	}
-	if t.config.esi.PreserveETag {
+	if t.esiProcessor.PreserveETag() {
 		if etag := w.Header().Get(headerETag); etag != "" && !strings.HasPrefix(etag, "W/") {
 			w.Header().Set(headerETag, "W/"+etag)
 		}
@@ -1196,12 +1207,8 @@ func (t *Titip) spawnSWR(ctx *requestContext) {
 }
 
 func (t *Titip) esiEligible(h http.Header) bool {
-	if !t.config.esi.Enabled {
+	if t.esiProcessor == nil {
 		return false
 	}
-	if !t.config.esi.HeaderRequired {
-		return true
-	}
-	surr := h.Get(headerSurrogateControl)
-	return strings.Contains(surr, "ESI/1.0")
+	return t.esiProcessor.IsEligible(h)
 }

@@ -112,6 +112,9 @@ Configure cache key assembly inside the `cache_key { ... }` block:
 | `forward_fragment_cookies <bool>` | `true` | Forward `Set-Cookie` headers from fragments to downstream client. |
 | `preserve_etag <bool>` | `false` | When true, weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. When false (default), strips `ETag`/`Last-Modified` downstream to force dynamic fragment re-evaluation. |
 
+> [!NOTE]
+> When ESI is enabled, Caddy advertises capability to upstream origins via `Surrogate-Capability: titip="ESI/1.0"` per the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/).
+
 ## 3. Caddy Admin Purge API (`POST /titip/purge`)
 
 Titip exposes an Admin API endpoint on Caddy's private admin port (default `:2019`) to invalidate cache entries across all active instances.

@@ -15,13 +15,13 @@ import (
 
 var (
 	// ErrSSRFBlocked is returned when an include URL resolves to a forbidden or private IP.
-	ErrSSRFBlocked = errors.New("titip: esi: request blocked by ssrf protection")
+	ErrSSRFBlocked = errors.New("esi: request blocked by ssrf protection")
 	// ErrInvalidScheme is returned when an include URL has an unapproved scheme.
-	ErrInvalidScheme = errors.New("titip: esi: invalid or dangerous url scheme")
+	ErrInvalidScheme = errors.New("esi: invalid or dangerous url scheme")
 	// ErrHostNotAllowed is returned when an include host is not in the allowed hosts list.
-	ErrHostNotAllowed = errors.New("titip: esi: host is not allowed")
+	ErrHostNotAllowed = errors.New("esi: host is not allowed")
 	// ErrInvalidMethod is returned when a non-GET/HEAD method is attempted.
-	ErrInvalidMethod = errors.New("titip: esi: only GET and HEAD methods are permitted")
+	ErrInvalidMethod = errors.New("esi: only GET and HEAD methods are permitted")
 )
 
 // blockedCIDRs contains prefixes not covered by netip.IsPrivate/IsLoopback/etc.

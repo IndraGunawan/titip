@@ -44,8 +44,9 @@ const (
 	headerContentLocation = "Content-Location"
 
 	// Surrogate & Tag Invalidation / ESI
-	headerCacheTag         = "Cache-Tag"
-	headerSurrogateControl = "Surrogate-Control"
+	headerCacheTag            = "Cache-Tag"
+	headerSurrogateControl    = "Surrogate-Control"
+	headerSurrogateCapability = "Surrogate-Capability"
 
 	// Common Header Values
 	contentTypeEventStream = "text/event-stream"

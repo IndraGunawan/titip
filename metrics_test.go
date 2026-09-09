@@ -26,8 +26,6 @@ func TestMetrics_NilSafety(t *testing.T) {
 	var m *metrics
 	// None of these should panic when m is nil
 	m.recordRequest("hit", time.Millisecond)
-	m.recordESIFragment("success")
-	m.recordESIDuration("parallel", time.Millisecond)
 	m.recordPurge("url", "hard", "success", 5)
 }
 
