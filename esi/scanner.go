@@ -187,7 +187,7 @@ func parseESIInclude(b []byte, tagStart int) (*proto.EsiFragment, int) {
 
 	var timeoutMs int64
 	if len(timeoutBytes) > 0 {
-		timeoutMs = parseTimeoutBytes(timeoutBytes)
+		timeoutMs = parseTimeout(timeoutBytes)
 	}
 
 	var maxDepth uint32
@@ -354,9 +354,9 @@ func extractAttribute(tagHeader []byte, attrName []byte) string {
 	return string(b)
 }
 
-// parseTimeoutBytes parses timeout strings like "0.5", "2.5s", "500ms" into milliseconds.
+// parseTimeout parses timeout strings like "0.5", "2.5s", "500ms" into milliseconds.
 // stdlib time.ParseDuration covers this; fallback bare seconds → ms.
-func parseTimeoutBytes(b []byte) int64 {
+func parseTimeout(b []byte) int64 {
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 {
 		return 0

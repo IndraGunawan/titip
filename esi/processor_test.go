@@ -6,13 +6,58 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+func processResult(t *testing.T, proc *Processor, html string, reqPath ...string) (*Result, time.Duration) {
+	t.Helper()
+	path := "http://localhost/test"
+	if len(reqPath) > 0 && reqPath[0] != "" {
+		path = reqPath[0]
+	}
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	start := time.Now()
+	res, err := proc.Process(context.Background(), req, []byte(html))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected process error: %v", err)
+	}
+	return res, elapsed
+}
+
+func processHTML(t *testing.T, proc *Processor, html string, reqPath ...string) (string, time.Duration) {
+	t.Helper()
+	res, elapsed := processResult(t, proc, html, reqPath...)
+	defer res.Release()
+	return string(res.Body()), elapsed
+}
+
+func runDualFetcher(t *testing.T, mux *http.ServeMux, fn func(t *testing.T, proc *Processor, base string)) {
+	t.Helper()
+	t.Run("internal", func(t *testing.T) {
+		proc := NewProcessor(
+			WithMaxTimeout(5*time.Second),
+			WithInternalFetcher(HandlerFetcher(mux)),
+		)
+		fn(t, proc, "")
+	})
+	t.Run("outbound_http", func(t *testing.T) {
+		ts := httptest.NewServer(mux)
+		defer ts.Close()
+		proc := NewProcessor(
+			WithMaxTimeout(5*time.Second),
+			WithAllowPrivateIPs(true),
+		)
+		fn(t, proc, ts.URL)
+	})
+}
 
 func TestProcessor_InProcessFetcher(t *testing.T) {
 	mux := http.NewServeMux()
@@ -34,14 +79,9 @@ func TestProcessor_InProcessFetcher(t *testing.T) {
 		WithMetrics(reg),
 	)
 
-	parentBody := []byte(`<html><body><div id="cart"><esi:include src="/api/cart" /></div><div id="user"><esi:include src="/api/user" /></div></body></html>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI || len(frags) != 2 {
-		t.Fatalf("expected 2 fragments, got %d", len(frags))
-	}
-
+	html := []byte(`<html><body><div id="cart"><esi:include src="/api/cart" /></div><div id="user"><esi:include src="/api/user" /></div></body></html>`)
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/dashboard", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
+	res, err := proc.Process(context.Background(), req, html)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -86,14 +126,8 @@ func TestProcessor_OutboundHTTP(t *testing.T) {
 		WithAllowPrivateIPs(true), // test server runs on loopback
 	)
 
-	parentBody := []byte(`<div><esi:include src="` + ts.URL + `/fragment" /></div>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI || len(frags) != 1 {
-		t.Fatalf("expected 1 fragment, got %d", len(frags))
-	}
-
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
+	res, err := proc.Process(context.Background(), req, []byte(`<div><esi:include src="`+ts.URL+`/fragment" /></div>`))
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -105,26 +139,107 @@ func TestProcessor_OutboundHTTP(t *testing.T) {
 	}
 }
 
+func TestProcessor_OutboundHTTP_RelativePath(t *testing.T) {
+	t.Run("HTTP relative path", func(t *testing.T) {
+		var receivedCookie, receivedUA, receivedCapability string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/relative-fragment" {
+				receivedCookie = r.Header.Get("Cookie")
+				receivedUA = r.Header.Get("User-Agent")
+				receivedCapability = r.Header.Get("Surrogate-Capability")
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = w.Write([]byte("relative fragment resolved via outbound HTTP"))
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer ts.Close()
+
+		u, err := url.Parse(ts.URL)
+		if err != nil {
+			t.Fatalf("failed to parse test server URL: %v", err)
+		}
+
+		proc := NewProcessor(
+			WithAllowPrivateIPs(true), // test server runs on loopback
+			WithMaxTimeout(5*time.Second),
+		)
+
+		req := httptest.NewRequest(http.MethodGet, "http://"+u.Host+"/page", nil)
+		req.Host = u.Host
+		req.Header.Set("User-Agent", "TestClient/1.0")
+		req.Header.Set("Cookie", "session=secret123")
+
+		res, err := proc.Process(context.Background(), req, []byte(`<div><esi:include src="/relative-fragment" /></div>`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer res.Release()
+
+		expected := `<div>relative fragment resolved via outbound HTTP</div>`
+		if string(res.Body()) != expected {
+			t.Errorf("got %q, want %q", string(res.Body()), expected)
+		}
+		if receivedCookie != "session=secret123" {
+			t.Errorf("expected Cookie to be forwarded to same-host outbound subrequest, got %q", receivedCookie)
+		}
+		if receivedUA != "TestClient/1.0" {
+			t.Errorf("expected User-Agent to be forwarded, got %q", receivedUA)
+		}
+		if !strings.Contains(receivedCapability, "ESI/1.0") {
+			t.Errorf("expected Surrogate-Capability to be sent, got %q", receivedCapability)
+		}
+	})
+
+	t.Run("HTTPS relative path via X-Forwarded-Proto", func(t *testing.T) {
+		var receivedHost string
+		tsTLS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/secure-frag" {
+				receivedHost = r.Host
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = w.Write([]byte("secure content"))
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer tsTLS.Close()
+
+		uTLS, err := url.Parse(tsTLS.URL)
+		if err != nil {
+			t.Fatalf("failed to parse test server URL: %v", err)
+		}
+
+		procTLS := NewProcessor(
+			WithHTTPClient(tsTLS.Client()),
+			WithAllowPrivateIPs(true),
+			WithMaxTimeout(5*time.Second),
+		)
+
+		req := httptest.NewRequest(http.MethodGet, "http://"+uTLS.Host+"/page", nil)
+		req.Host = uTLS.Host
+		req.Header.Set("X-Forwarded-Proto", "https")
+
+		res, err := procTLS.Process(context.Background(), req, []byte(`<div><esi:include src="/secure-frag" /></div>`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer res.Release()
+
+		expected := `<div>secure content</div>`
+		if string(res.Body()) != expected {
+			t.Errorf("got %q, want %q", string(res.Body()), expected)
+		}
+		if receivedHost != uTLS.Host {
+			t.Errorf("expected host %q, got %q", uTLS.Host, receivedHost)
+		}
+	})
+}
+
 func TestProcessor_FallbackOnErrorContinue(t *testing.T) {
 	proc := NewProcessor(WithMaxTimeout(1 * time.Second))
-
-	// An invalid/non-routable URL with onerror="continue" should be deleted silently
-	parentBody := []byte(`<div>Before <esi:include src="http://192.0.2.1/fail" onerror="continue" timeout="50" /> After</div>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI || len(frags) != 1 {
-		t.Fatalf("expected 1 fragment, got %d", len(frags))
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
-	if err != nil {
-		t.Fatalf("process error: %v", err)
-	}
-	defer res.Release()
-
-	expected := `<div>Before  After</div>`
-	if string(res.Body()) != expected {
-		t.Errorf("got %q, want %q", string(res.Body()), expected)
+	got, _ := processHTML(t, proc, `<div>Before <esi:include src="http://192.0.2.1/fail" onerror="continue" timeout="50" /> After</div>`, "http://example.com/")
+	if got != `<div>Before  After</div>` {
+		t.Errorf("got %q, want %q", got, `<div>Before  After</div>`)
 	}
 }
 
@@ -133,59 +248,28 @@ func TestProcessor_FallbackErrorMarker(t *testing.T) {
 		WithMaxTimeout(1*time.Second),
 		WithIncludeErrorMarker("<!-- ESI ERROR -->"),
 	)
-
-	parentBody := []byte(`<div>Before <esi:include src="http://192.0.2.1/fail" timeout="50" /> After</div>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI || len(frags) != 1 {
-		t.Fatalf("expected 1 fragment, got %d", len(frags))
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
-	if err != nil {
-		t.Fatalf("process error: %v", err)
-	}
-	defer res.Release()
-
-	expected := `<div>Before <!-- ESI ERROR --> After</div>`
-	if string(res.Body()) != expected {
-		t.Errorf("got %q, want %q", string(res.Body()), expected)
+	got, _ := processHTML(t, proc, `<div>Before <esi:include src="http://192.0.2.1/fail" timeout="50" /> After</div>`, "http://example.com/")
+	if got != `<div>Before <!-- ESI ERROR --> After</div>` {
+		t.Errorf("got %q, want %q", got, `<div>Before <!-- ESI ERROR --> After</div>`)
 	}
 }
 
 func TestProcessor_CircularInclude(t *testing.T) {
 	proc := NewProcessor(WithMaxTimeout(2 * time.Second))
-
-	// URL matches parent path /circular
-	parentBody := []byte(`<div><esi:include src="/circular" onerror="continue" /></div>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI || len(frags) != 1 {
-		t.Fatalf("expected 1 fragment")
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/circular", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
-	if err != nil {
-		t.Fatalf("process error: %v", err)
-	}
-	defer res.Release()
-
-	expected := `<div></div>`
-	if string(res.Body()) != expected {
-		t.Errorf("got %q, want %q", string(res.Body()), expected)
+	got, _ := processHTML(t, proc, `<div><esi:include src="/circular" onerror="continue" /></div>`, "http://example.com/circular")
+	if got != `<div></div>` {
+		t.Errorf("got %q, want %q", got, `<div></div>`)
 	}
 }
 
 func TestProcessor_MaxRecursionDepth(t *testing.T) {
 	var callCount atomic.Int32
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/nested", func(w http.ResponseWriter, r *http.Request) {
 		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div>nested <esi:include src="/nested" onerror="continue" /></div>`))
 	})
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/nested", handler)
 
 	proc := NewProcessor(
 		WithMaxDepth(2),
@@ -193,20 +277,7 @@ func TestProcessor_MaxRecursionDepth(t *testing.T) {
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
 
-	parentBody := []byte(`<div><esi:include src="/nested" onerror="continue" /></div>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI {
-		t.Fatalf("expected fragments")
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "http://localhost/page", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
-	if err != nil {
-		t.Fatalf("process error: %v", err)
-	}
-	defer res.Release()
-
-	// Recursion depth is capped at 2
+	_, _ = processHTML(t, proc, `<div><esi:include src="/nested" onerror="continue" /></div>`, "http://localhost/page")
 	if callCount.Load() > 3 {
 		t.Errorf("expected recursion depth <= 2, got callCount=%d", callCount.Load())
 	}
@@ -218,24 +289,9 @@ func TestProcessor_SSRFBlocked(t *testing.T) {
 		WithMaxTimeout(1*time.Second),
 	)
 
-	// Dialing private IP (127.0.0.1) should be blocked by SSRF
-	parentBody := []byte(`<div><esi:include src="http://127.0.0.1:9999/secret" onerror="continue" /></div>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI {
-		t.Fatalf("expected fragments")
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
-	if err != nil {
-		t.Fatalf("process error: %v", err)
-	}
-	defer res.Release()
-
-	// Since onerror="continue", tag is removed cleanly
-	expected := `<div></div>`
-	if string(res.Body()) != expected {
-		t.Errorf("got %q, want %q", string(res.Body()), expected)
+	got, _ := processHTML(t, proc, `<div><esi:include src="http://127.0.0.1:9999/secret" onerror="continue" /></div>`, "http://example.com/")
+	if got != `<div></div>` {
+		t.Errorf("got %q, want %q", got, `<div></div>`)
 	}
 }
 
@@ -249,22 +305,9 @@ func TestProcessor_WorkerPanicRecovery(t *testing.T) {
 		WithIncludeErrorMarker("PANIC_RECOVERED"),
 	)
 
-	parentBody := []byte(`<div><esi:include src="/panic-test" /></div>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI {
-		t.Fatalf("expected fragments")
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
-	if err != nil {
-		t.Fatalf("process error: %v", err)
-	}
-	defer res.Release()
-
-	expected := `<div>PANIC_RECOVERED</div>`
-	if string(res.Body()) != expected {
-		t.Errorf("got %q, want %q", string(res.Body()), expected)
+	got, _ := processHTML(t, proc, `<div><esi:include src="/panic-test" /></div>`, "http://localhost/")
+	if got != `<div>PANIC_RECOVERED</div>` {
+		t.Errorf("got %q, want %q", got, `<div>PANIC_RECOVERED</div>`)
 	}
 }
 
@@ -285,13 +328,8 @@ func TestProcessor_FallbackToOutboundHTTPOn404(t *testing.T) {
 	// Since emptyMux returns 404 for this path, HandlerFetcher returns ErrFallbackToHTTP,
 	// causing Processor to fall back to outbound HTTP
 	parentBody := []byte(`<div><esi:include src="` + ts.URL + `/fallback-path" /></div>`)
-	hasESI, frags := Scan(parentBody)
-	if !hasESI {
-		t.Fatalf("expected fragments")
-	}
-
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
-	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
+	res, err := proc.Process(context.Background(), req, parentBody)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -424,46 +462,31 @@ func TestProcessor_Process(t *testing.T) {
 }
 
 func TestProcessor_IsEligible_And_HasSurrogateControl(t *testing.T) {
-	// Test HasSurrogateControl
-	if HasSurrogateControl(nil) {
-		t.Errorf("expected false for nil header")
+	tests := []struct {
+		header   http.Header
+		hasSC    bool
+		required bool
+	}{
+		{nil, false, false},
+		{http.Header{}, false, false},
+		{http.Header{"Surrogate-Control": []string{"max-age=3600"}}, false, false},
+		{http.Header{"Surrogate-Control": []string{"content=\"ESI/1.0\""}}, true, true},
+		{http.Header{"Surrogate-Control": []string{"abc, content=\"ESI/1.0\", max-age=60"}}, true, true},
 	}
 
-	h := make(http.Header)
-	if HasSurrogateControl(h) {
-		t.Errorf("expected false for empty header")
-	}
-
-	h.Set("Surrogate-Control", "content=\"ESI/1.0\"")
-	if !HasSurrogateControl(h) {
-		t.Errorf("expected true for Surrogate-Control with ESI/1.0")
-	}
-
-	h.Set("Surrogate-Control", "max-age=3600")
-	if HasSurrogateControl(h) {
-		t.Errorf("expected false for Surrogate-Control without ESI/1.0")
-	}
-
-	// Test p.IsEligible with HeaderRequired(false) - default
 	procDefault := NewProcessor()
-	if !procDefault.IsEligible(nil) {
-		t.Errorf("expected true for default processor with nil header")
-	}
-	if !procDefault.IsEligible(h) {
-		t.Errorf("expected true for default processor when header_required=false")
-	}
-
-	// Test p.IsEligible with HeaderRequired(true)
 	procRequired := NewProcessor(WithHeaderRequired(true))
-	if procRequired.IsEligible(nil) {
-		t.Errorf("expected false for header_required=true with nil header")
-	}
-	if procRequired.IsEligible(h) {
-		t.Errorf("expected false for header_required=true without ESI/1.0 in Surrogate-Control")
-	}
-	h.Set("Surrogate-Control", "abc, content=\"ESI/1.0\", max-age=60")
-	if !procRequired.IsEligible(h) {
-		t.Errorf("expected true for header_required=true with ESI/1.0 in Surrogate-Control")
+
+	for _, tt := range tests {
+		if got := HasSurrogateControl(tt.header); got != tt.hasSC {
+			t.Errorf("HasSurrogateControl(%v) = %v, want %v", tt.header, got, tt.hasSC)
+		}
+		if !procDefault.IsEligible(tt.header) {
+			t.Errorf("procDefault.IsEligible(%v) = false, want true", tt.header)
+		}
+		if got := procRequired.IsEligible(tt.header); got != tt.required {
+			t.Errorf("procRequired.IsEligible(%v) = %v, want %v", tt.header, got, tt.required)
+		}
 	}
 }
 
@@ -517,12 +540,23 @@ func TestProcessor_SurrogateCapability(t *testing.T) {
 }
 
 func TestProcessor_ReconcileHeaders(t *testing.T) {
+	newHeader := func(sc, etag, lm string) http.Header {
+		h := make(http.Header)
+		if sc != "" {
+			h.Set("Surrogate-Control", sc)
+		}
+		if etag != "" {
+			h.Set("ETag", etag)
+		}
+		if lm != "" {
+			h.Set("Last-Modified", lm)
+		}
+		return h
+	}
+
 	t.Run("default PreserveETag false strips ETag and LastModified", func(t *testing.T) {
 		p := NewProcessor()
-		h := make(http.Header)
-		h.Set("Surrogate-Control", "ESI/1.0")
-		h.Set("ETag", `"strong-123"`)
-		h.Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+		h := newHeader("ESI/1.0", `"strong-123"`, "Wed, 21 Oct 2015 07:28:00 GMT")
 		h.Set("Content-Length", "100")
 		h.Set("Content-Type", "text/html")
 
@@ -533,14 +567,8 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 
 		p.ReconcileHeaders(h, res)
 
-		if h.Get("Surrogate-Control") != "" {
-			t.Errorf("expected Surrogate-Control to be deleted, got %q", h.Get("Surrogate-Control"))
-		}
-		if h.Get("ETag") != "" {
-			t.Errorf("expected ETag to be deleted, got %q", h.Get("ETag"))
-		}
-		if h.Get("Last-Modified") != "" {
-			t.Errorf("expected Last-Modified to be deleted, got %q", h.Get("Last-Modified"))
+		if h.Get("Surrogate-Control") != "" || h.Get("ETag") != "" || h.Get("Last-Modified") != "" {
+			t.Errorf("expected Surrogate-Control, ETag, Last-Modified to be deleted, got: %v", h)
 		}
 		if got := h.Get("Content-Length"); got != "15" {
 			t.Errorf("expected Content-Length to be 15, got %q", got)
@@ -556,12 +584,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 	t.Run("PreserveETag true weakens strong ETag and keeps weak and LastModified", func(t *testing.T) {
 		p := NewProcessor(WithPreserveETag(true))
 
-		// Strong ETag
-		h1 := make(http.Header)
-		h1.Set("Surrogate-Control", "ESI/1.0")
-		h1.Set("ETag", `"strong-456"`)
-		h1.Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
-
+		h1 := newHeader("ESI/1.0", `"strong-456"`, "Wed, 21 Oct 2015 07:28:00 GMT")
 		p.ReconcileHeaders(h1, nil)
 		if got := h1.Get("ETag"); got != `W/"strong-456"` {
 			t.Errorf("expected weakened ETag W/\"strong-456\", got %q", got)
@@ -573,9 +596,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 			t.Errorf("expected Surrogate-Control to be deleted")
 		}
 
-		// Already weak ETag
-		h2 := make(http.Header)
-		h2.Set("ETag", `W/"weak-789"`)
+		h2 := newHeader("", `W/"weak-789"`, "")
 		p.ReconcileHeaders(h2, nil)
 		if got := h2.Get("ETag"); got != `W/"weak-789"` {
 			t.Errorf("expected already-weak ETag unchanged, got %q", got)
@@ -587,9 +608,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 		h := make(http.Header)
 		h.Set("Content-Type", "text/html")
 
-		res := &Result{
-			raw: []byte("spliced content"),
-		}
+		res := &Result{raw: []byte("spliced content")}
 		p.ReconcileHeaders(h, res)
 		if h.Get("Content-Length") != "" {
 			t.Errorf("expected no Content-Length added when originally omitted")
@@ -598,10 +617,8 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 
 	t.Run("nil resilience", func(t *testing.T) {
 		p := NewProcessor()
-		// Should not panic on nil header
 		p.ReconcileHeaders(nil, nil)
 
-		// Should not panic on nil result
 		h := make(http.Header)
 		h.Set("ETag", `"test"`)
 		h.Set("Content-Length", "50")
@@ -625,26 +642,24 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 			"\r\n" +
 			"raw body"
 
-		// 1. Default PreserveETag = false
-		resp1, err := http.ReadResponse(bufio.NewReader(strings.NewReader(rawWire)), nil)
-		if err != nil {
-			t.Fatalf("failed to parse raw wire response: %v", err)
+		parseWire := func() *http.Response {
+			resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(rawWire)), nil)
+			if err != nil {
+				t.Fatalf("failed to parse raw wire response: %v", err)
+			}
+			return resp
 		}
-		pDefault := NewProcessor()
+
 		res := &Result{
 			raw:        []byte("spliced content"),
 			SetCookies: []string{"session=wire123; Path=/"},
 		}
-		pDefault.ReconcileHeaders(resp1.Header, res)
 
-		if resp1.Header.Get("Surrogate-Control") != "" {
-			t.Errorf("expected Surrogate-Control stripped, got %q", resp1.Header.Get("Surrogate-Control"))
-		}
-		if resp1.Header.Get("ETag") != "" {
-			t.Errorf("expected ETag stripped, got %q", resp1.Header.Get("ETag"))
-		}
-		if resp1.Header.Get("Last-Modified") != "" {
-			t.Errorf("expected Last-Modified stripped, got %q", resp1.Header.Get("Last-Modified"))
+		// 1. Default PreserveETag = false
+		resp1 := parseWire()
+		NewProcessor().ReconcileHeaders(resp1.Header, res)
+		if resp1.Header.Get("Surrogate-Control") != "" || resp1.Header.Get("ETag") != "" || resp1.Header.Get("Last-Modified") != "" {
+			t.Errorf("expected headers stripped, got %v", resp1.Header)
 		}
 		if got := resp1.Header.Get("Content-Length"); got != "15" {
 			t.Errorf("expected Content-Length updated to 15, got %q", got)
@@ -654,13 +669,8 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 		}
 
 		// 2. PreserveETag = true
-		resp2, err := http.ReadResponse(bufio.NewReader(strings.NewReader(rawWire)), nil)
-		if err != nil {
-			t.Fatalf("failed to parse raw wire response: %v", err)
-		}
-		pPreserve := NewProcessor(WithPreserveETag(true))
-		pPreserve.ReconcileHeaders(resp2.Header, res)
-
+		resp2 := parseWire()
+		NewProcessor(WithPreserveETag(true)).ReconcileHeaders(resp2.Header, res)
 		if got := resp2.Header.Get("ETag"); got != `W/"origin-wire-etag"` {
 			t.Errorf("expected weakened ETag, got %q", got)
 		}
@@ -673,5 +683,294 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 	})
 }
 
+// --- Category 1: Shared Timeout (src + alt) Tests ---
 
+func TestProcessor_SharedTimeout_FastFail_AltSuccess(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fast-fail", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/alt-success", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(20 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Alt Success Content</span>`))
+	})
 
+	runDualFetcher(t, mux, func(t *testing.T, proc *Processor, base string) {
+		html := `<div><esi:include src="` + base + `/fast-fail" alt="` + base + `/alt-success" timeout="150ms"><p>Fallback</p></esi:include></div>`
+		got, elapsed := processHTML(t, proc, html)
+		expected := `<div><span>Alt Success Content</span></div>`
+		if got != expected {
+			t.Errorf("got %q, want %q", got, expected)
+		}
+		if elapsed > 150*time.Millisecond {
+			t.Errorf("elapsed %v exceeded 150ms budget", elapsed)
+		}
+	})
+}
+
+func TestProcessor_SharedTimeout_SrcTimeout_AltSkipped(t *testing.T) {
+	var altCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slow-src", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(200 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<span>Slow Live</span>`))
+		case <-r.Context().Done():
+		}
+	})
+	mux.HandleFunc("/alt-should-not-run", func(w http.ResponseWriter, r *http.Request) {
+		altCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Alt Run</span>`))
+	})
+
+	runDualFetcher(t, mux, func(t *testing.T, proc *Processor, base string) {
+		altCalls.Store(0)
+		html := `<div><esi:include src="` + base + `/slow-src" alt="` + base + `/alt-should-not-run" timeout="80ms"><p>Inline Fallback</p></esi:include></div>`
+		got, elapsed := processHTML(t, proc, html)
+		expected := `<div><p>Inline Fallback</p></div>`
+		if got != expected {
+			t.Errorf("got %q, want %q", got, expected)
+		}
+		if altCalls.Load() != 0 {
+			t.Errorf("expected alt to be skipped, but was called %d times", altCalls.Load())
+		}
+		if elapsed > 130*time.Millisecond {
+			t.Errorf("elapsed %v exceeded reasonable margin over 80ms timeout", elapsed)
+		}
+	})
+}
+
+func TestProcessor_SharedTimeout_AltTimeoutOnRemainingBudget(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/partial-fail", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(40 * time.Millisecond)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/slow-alt", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(150 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<span>Slow Alt Live</span>`))
+		case <-r.Context().Done():
+		}
+	})
+
+	runDualFetcher(t, mux, func(t *testing.T, proc *Processor, base string) {
+		html := `<div><esi:include src="` + base + `/partial-fail" alt="` + base + `/slow-alt" timeout="100ms"><p>Inline Fallback</p></esi:include></div>`
+		got, elapsed := processHTML(t, proc, html)
+		expected := `<div><p>Inline Fallback</p></div>`
+		if got != expected {
+			t.Errorf("got %q, want %q", got, expected)
+		}
+		if elapsed > 150*time.Millisecond {
+			t.Errorf("elapsed %v exceeded 100ms budget significantly", elapsed)
+		}
+	})
+}
+
+// --- Category 2: Tree Budget (Nested ESI) Tests ---
+
+func TestProcessor_NestedESI_TimeoutInheritsParentRemainingBudget(t *testing.T) {
+	mux := http.NewServeMux()
+	var basePrefix string
+	var mu sync.Mutex
+
+	mux.HandleFunc("/parent", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		mu.Lock()
+		prefix := basePrefix
+		mu.Unlock()
+		_, _ = w.Write([]byte(`<div>Parent Header <esi:include src="` + prefix + `/child" timeout="1s"><p>Child Fallback</p></esi:include></div>`))
+	})
+
+	mux.HandleFunc("/child", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(70 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<span>Child Live Content</span>`))
+		case <-r.Context().Done():
+		}
+	})
+
+	runDualFetcher(t, mux, func(t *testing.T, proc *Processor, base string) {
+		mu.Lock()
+		basePrefix = base
+		mu.Unlock()
+
+		html := `<div><esi:include src="` + base + `/parent" timeout="100ms"><p>Parent Fallback</p></esi:include></div>`
+		got, _ := processHTML(t, proc, html, base+"/index")
+		expected := `<div><div>Parent Header <p>Child Fallback</p></div></div>`
+		if got != expected {
+			t.Errorf("nested timeout not enforced:\ngot:  %s\nwant: %s", got, expected)
+		}
+	})
+}
+
+func TestProcessor_NestedESI_ChildWithAlt_ClampedToParentBudget(t *testing.T) {
+	mux := http.NewServeMux()
+	var basePrefix string
+	var mu sync.Mutex
+
+	mux.HandleFunc("/parent", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(40 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		mu.Lock()
+		prefix := basePrefix
+		mu.Unlock()
+		_, _ = w.Write([]byte(`<div>Parent Header <esi:include src="` + prefix + `/child-fail" alt="` + prefix + `/child-slow-alt" timeout="1s"><p>Child Nested Fallback</p></esi:include></div>`))
+	})
+
+	mux.HandleFunc("/child-fail", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	mux.HandleFunc("/child-slow-alt", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(80 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<span>Child Alt Live</span>`))
+		case <-r.Context().Done():
+		}
+	})
+
+	runDualFetcher(t, mux, func(t *testing.T, proc *Processor, base string) {
+		mu.Lock()
+		basePrefix = base
+		mu.Unlock()
+
+		html := `<div><esi:include src="` + base + `/parent" timeout="100ms"><p>Parent Fallback</p></esi:include></div>`
+		got, _ := processHTML(t, proc, html, base+"/index")
+		expected := `<div><div>Parent Header <p>Child Nested Fallback</p></div></div>`
+		if got != expected {
+			t.Errorf("nested alt timeout not clamped:\ngot:  %s\nwant: %s", got, expected)
+		}
+	})
+}
+
+// --- Category 3: Singleflight & Cancellation Tests ---
+
+func TestProcessor_SharedSrc_DifferentTimeouts(t *testing.T) {
+	var apiCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slow-api", func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Live API Response</span>`))
+	})
+
+	proc := NewProcessor(
+		WithMaxTimeout(5*time.Second),
+		WithInternalFetcher(HandlerFetcher(mux)),
+	)
+
+	html := `<div><esi:include src="/slow-api" timeout="50ms"><p>Fallback 1</p></esi:include>|<esi:include src="/slow-api" timeout="250ms"><p>Fallback 2</p></esi:include></div>`
+	got, _ := processHTML(t, proc, html)
+
+	expected := `<div><p>Fallback 1</p>|<span>Live API Response</span></div>`
+	if got != expected {
+		t.Errorf("got %q, want %q", got, expected)
+	}
+	if calls := apiCalls.Load(); calls != 1 {
+		t.Errorf("expected exactly 1 upstream fetch to /slow-api, got %d", calls)
+	}
+}
+
+func TestProcessor_Singleflight_AbortsWhenAllListenersTimeout(t *testing.T) {
+	var handlerCanceled atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hang", func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		handlerCanceled.Store(true)
+	})
+
+	proc := NewProcessor(
+		WithMaxTimeout(5*time.Second),
+		WithInternalFetcher(HandlerFetcher(mux)),
+	)
+
+	html := `<div><esi:include src="/hang" timeout="50ms"><p>F1</p></esi:include>|<esi:include src="/hang" timeout="100ms"><p>F2</p></esi:include></div>`
+	got, elapsed := processHTML(t, proc, html)
+
+	expected := `<div><p>F1</p>|<p>F2</p></div>`
+	if got != expected {
+		t.Errorf("got %q, want %q", got, expected)
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("elapsed %v exceeded 300ms, flight did not abort early", elapsed)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if !handlerCanceled.Load() {
+		t.Errorf("expected upstream handler context to be canceled on listener drop")
+	}
+}
+
+func TestProcessor_SharedSrc_DifferentAltURLs(t *testing.T) {
+	var failCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fail", func(w http.ResponseWriter, r *http.Request) {
+		failCalls.Add(1)
+		time.Sleep(5 * time.Millisecond)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/alt-alpha", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Alpha Alt</span>`))
+	})
+	mux.HandleFunc("/alt-beta", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Beta Alt</span>`))
+	})
+
+	proc := NewProcessor(
+		WithMaxTimeout(5*time.Second),
+		WithInternalFetcher(HandlerFetcher(mux)),
+	)
+
+	html := `<div><esi:include src="/fail" alt="/alt-alpha"><p>F1</p></esi:include>|<esi:include src="/fail" alt="/alt-beta"><p>F2</p></esi:include></div>`
+	got, _ := processHTML(t, proc, html)
+
+	expected := `<div><span>Alpha Alt</span>|<span>Beta Alt</span></div>`
+	if got != expected {
+		t.Errorf("got %q, want %q", got, expected)
+	}
+	if calls := failCalls.Load(); calls != 1 {
+		t.Errorf("expected exactly 1 upstream fetch to /fail, got %d", calls)
+	}
+}
+
+func TestProcessor_SharedSrc_DifferentMaxDepths(t *testing.T) {
+	var nestedCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/nested-root", func(w http.ResponseWriter, r *http.Request) {
+		nestedCalls.Add(1)
+		time.Sleep(10 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div>Level 1 <esi:include src="/level-2" /></div>`))
+	})
+	mux.HandleFunc("/level-2", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Level 2 Content</span>`))
+	})
+
+	proc := NewProcessor(
+		WithMaxDepth(5),
+		WithInternalFetcher(HandlerFetcher(mux)),
+	)
+
+	html := `<div><esi:include src="/nested-root" max-depth="1" />|<esi:include src="/nested-root" max-depth="3" /></div>`
+	got, _ := processHTML(t, proc, html)
+
+	if !strings.Contains(got, "Level 2 Content") {
+		t.Errorf("expected body to contain Level 2 Content for Tag 2, got %q", got)
+	}
+	if calls := nestedCalls.Load(); calls != 1 {
+		t.Errorf("expected exactly 1 fetch to /nested-root via singleflight, got %d", calls)
+	}
+}

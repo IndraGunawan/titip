@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	proto "github.com/indragunawan/titip/proto"
 )
 
@@ -52,11 +54,76 @@ type fragmentResult struct {
 	mode       string
 }
 
-type fetchTarget struct {
-	src       string
-	alt       string
-	timeoutMs int64
-	maxDepth  uint32
+type rawFetchResult struct {
+	body    []byte
+	cookies []string
+	mode    string
+}
+
+type flightTracker struct {
+	cancel    context.CancelFunc
+	listeners int
+}
+
+type flightGroup struct {
+	mu       sync.Mutex
+	trackers map[string]*flightTracker
+	sf       singleflight.Group
+}
+
+func newFlightGroup() *flightGroup {
+	return &flightGroup{
+		trackers: make(map[string]*flightTracker),
+	}
+}
+
+func (fg *flightGroup) do(
+	parentCtx context.Context,
+	key string,
+	fn func(ctx context.Context) (*rawFetchResult, error),
+) (*flightTracker, <-chan singleflight.Result) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+
+	tracker, ok := fg.trackers[key]
+	if !ok {
+		flightCtx, cancel := context.WithCancel(parentCtx)
+		tracker = &flightTracker{
+			cancel:    cancel,
+			listeners: 1,
+		}
+		fg.trackers[key] = tracker
+
+		ch := fg.sf.DoChan(key, func() (any, error) {
+			defer func() {
+				fg.mu.Lock()
+				delete(fg.trackers, key)
+				fg.mu.Unlock()
+			}()
+			return fn(flightCtx)
+		})
+		return tracker, ch
+	}
+
+	tracker.listeners++
+	ch := fg.sf.DoChan(key, func() (any, error) {
+		return nil, nil
+	})
+	return tracker, ch
+}
+
+func (fg *flightGroup) release(key string, tracker *flightTracker) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+
+	tracker.listeners--
+	if tracker.listeners <= 0 {
+		tracker.cancel()
+		fg.sf.Forget(key)
+		if fg.trackers[key] == tracker {
+			delete(fg.trackers, key)
+		}
+	}
 }
 
 
@@ -279,8 +346,6 @@ func (p *Processor) ProcessFragments(
 		execState.visitedURLs = append(execState.visitedURLs, parentReq.URL.Path)
 	}
 
-	uniqueTargets := collectTargets(fragments)
-
 	if p.logger.Enabled(ctx, slog.LevelDebug) {
 		path := ""
 		if parentReq != nil && parentReq.URL != nil {
@@ -289,13 +354,11 @@ func (p *Processor) ProcessFragments(
 		p.logger.DebugContext(ctx, "esi: processing document",
 			slog.String("path", path),
 			slog.Int("total_fragments", len(fragments)),
-			slog.Int("unique_targets", len(uniqueTargets)),
 			slog.Int("parent_bytes", len(parentBody)),
 		)
 	}
 
-	fetchedBodies, allCookies := p.fetchAllTargets(ctx, parentReq, uniqueTargets, execState)
-	results := p.assembleResults(parentBody, fragments, fetchedBodies)
+	results, allCookies := p.executeFragments(ctx, parentReq, parentBody, fragments, execState)
 
 	outBuf := getBuffer()
 	p.spliceFragments(parentBody, results, outBuf)
@@ -331,25 +394,26 @@ func safeSlice(body []byte, start, end int64) []byte {
 	return body[start:end]
 }
 
-func collectTargets(fragments []*proto.EsiFragment) map[string]fetchTarget {
-	m := make(map[string]fetchTarget, len(fragments))
-	for _, frag := range fragments {
-		if frag.Src != "" {
-			if _, exists := m[frag.Src]; !exists {
-				m[frag.Src] = fetchTarget{
-					src:       frag.Src,
-					alt:       frag.Alt,
-					timeoutMs: frag.TimeoutMs,
-					maxDepth:  frag.MaxDepth,
-				}
-			}
-		}
-	}
-	return m
-}
-
-func (p *Processor) assembleResults(parentBody []byte, fragments []*proto.EsiFragment, fetched map[string]*fragmentResult) []*fragmentResult {
+func (p *Processor) executeFragments(
+	ctx context.Context,
+	parentReq *http.Request,
+	parentBody []byte,
+	fragments []*proto.EsiFragment,
+	state esiExecutionState,
+) ([]*fragmentResult, []string) {
 	results := make([]*fragmentResult, len(fragments))
+	fg := newFlightGroup()
+
+	maxWorkers := p.config.maxConcurrentRequests
+	if maxWorkers <= 0 {
+		maxWorkers = 8
+	}
+	sem := make(chan struct{}, maxWorkers)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var allCookies []string
+
 	for i, frag := range fragments {
 		if frag.Src == "" {
 			inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
@@ -357,73 +421,26 @@ func (p *Processor) assembleResults(parentBody []byte, fragments []*proto.EsiFra
 			results[i] = &fragmentResult{spec: frag, body: body}
 			continue
 		}
-		res, ok := fetched[frag.Src]
-		if ok && res.err == nil {
-			results[i] = &fragmentResult{
-				spec:       frag,
-				body:       res.body,
-				setCookies: res.setCookies,
-				duration:   res.duration,
-				mode:       res.mode,
-			}
-		} else {
-			var resErr error
-			var cookies []string
-			var dur time.Duration
-			var mode string
-			if ok {
-				resErr = res.err
-				cookies = res.setCookies
-				dur = res.duration
-				mode = res.mode
-			}
-			inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
-			body := p.resolveFallback(inner, frag.OnError)
-			results[i] = &fragmentResult{
-				spec:       frag,
-				body:       body,
-				err:        resErr,
-				setCookies: cookies,
-				duration:   dur,
-				mode:       mode,
-			}
-		}
-	}
-	return results
-}
 
-func (p *Processor) fetchAllTargets(
-	ctx context.Context,
-	parentReq *http.Request,
-	targets map[string]fetchTarget,
-	state esiExecutionState,
-) (map[string]*fragmentResult, []string) {
-	maxWorkers := p.config.maxConcurrentRequests
-	if maxWorkers <= 0 {
-		maxWorkers = 8
-	}
-	sem := make(chan struct{}, maxWorkers)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	fetched := make(map[string]*fragmentResult, len(targets))
-	var allCookies []string
-	for src, tgt := range targets {
 		wg.Add(1)
-		go func(s string, tg fetchTarget) {
+		go func(idx int, f *proto.EsiFragment) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			res := p.executeInclude(ctx, parentReq, s, tg, state)
-			mu.Lock()
-			fetched[s] = res
+
+			res := p.executeFragment(ctx, parentReq, parentBody, f, state, fg)
+			results[idx] = res
+
 			if len(res.setCookies) > 0 {
+				mu.Lock()
 				allCookies = append(allCookies, res.setCookies...)
+				mu.Unlock()
 			}
-			mu.Unlock()
-		}(src, tgt)
+		}(i, frag)
 	}
+
 	wg.Wait()
-	return fetched, allCookies
+	return results, allCookies
 }
 
 func (p *Processor) expandNestedESI(
@@ -451,95 +468,134 @@ func (p *Processor) processNestedESI(
 	fragments []*proto.EsiFragment,
 	state esiExecutionState,
 ) ([]byte, []string) {
-	uniqueTargets := collectTargets(fragments)
-	fetchedBodies, allCookies := p.fetchAllTargets(ctx, parentReq, uniqueTargets, state)
-	results := p.assembleResults(body, fragments, fetchedBodies)
+	results, allCookies := p.executeFragments(ctx, parentReq, body, fragments, state)
 	outBuf := getBuffer()
 	defer putBuffer(outBuf)
 	p.spliceFragments(body, results, outBuf)
 	return bytes.Clone(outBuf.Bytes()), allCookies
 }
 
-func (p *Processor) executeInclude(
+func (p *Processor) executeFragment(
 	parentCtx context.Context,
 	parentReq *http.Request,
-	src string,
-	target fetchTarget,
+	parentBody []byte,
+	frag *proto.EsiFragment,
 	state esiExecutionState,
-) (res *fragmentResult) {
-	res = &fragmentResult{}
+	fg *flightGroup,
+) *fragmentResult {
+	res := &fragmentResult{spec: frag}
 
 	defer func() {
 		if r := recover(); r != nil {
 			if p.logger.Enabled(parentCtx, slog.LevelError) {
 				p.logger.ErrorContext(parentCtx, "esi: worker panic recovered",
 					slog.Any("panic", r),
-					slog.String("src", src),
+					slog.String("src", frag.Src),
 					slog.String("stack", string(debug.Stack())),
 				)
 			}
 			p.metrics.recordFragment("error")
 			res.err = fmt.Errorf("esi: panic: %v", r)
+			inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
+			res.body = p.resolveFallback(inner, frag.OnError)
 		}
 	}()
 
 	// Check recursion depth limit
 	effectiveMaxDepth := state.maxDepth
-	if target.maxDepth > 0 && target.maxDepth < effectiveMaxDepth {
-		effectiveMaxDepth = target.maxDepth
+	if frag.MaxDepth > 0 && frag.MaxDepth < effectiveMaxDepth {
+		effectiveMaxDepth = frag.MaxDepth
 	}
 
 	if state.depth >= effectiveMaxDepth {
 		p.metrics.recordFragment("fallback")
 		res.err = errMaxDepthExceeded
+		inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
+		res.body = p.resolveFallback(inner, frag.OnError)
 		return res
 	}
 
 	// Check circular include
-	if slices.Contains(state.visitedURLs, src) {
+	if slices.Contains(state.visitedURLs, frag.Src) {
 		p.metrics.recordFragment("fallback")
 		if p.logger.Enabled(parentCtx, slog.LevelWarn) {
 			p.logger.WarnContext(parentCtx, "esi: circular include loop detected",
-				slog.String("src", src),
+				slog.String("src", frag.Src),
 				slog.Any("visited", state.visitedURLs),
 			)
 		}
 		res.err = errCircularInclude
+		inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
+		res.body = p.resolveFallback(inner, frag.OnError)
 		return res
 	}
 
 	// Determine timeout budget
-	tagTimeout := time.Duration(target.timeoutMs) * time.Millisecond
+	tagTimeout := time.Duration(frag.TimeoutMs) * time.Millisecond
 	effectiveTimeout := p.config.maxTimeout
 	if tagTimeout > 0 && tagTimeout < effectiveTimeout {
 		effectiveTimeout = tagTimeout
 	}
 
+	// fragCtx enforces the tree budget: min(parentCtx deadline, now + effectiveTimeout)
+	fragCtx, cancel := context.WithTimeout(parentCtx, effectiveTimeout)
+	defer cancel()
+
 	fetchStart := time.Now()
 	childState := esiExecutionState{
 		depth:       state.depth + 1,
 		maxDepth:    effectiveMaxDepth,
-		visitedURLs: append(slices.Clone(state.visitedURLs), src),
+		visitedURLs: append(slices.Clone(state.visitedURLs), frag.Src),
 	}
 
-	// 1. Attempt primary src fetch
-	body, cookies, mode, err := p.fetchFragment(parentCtx, parentReq, src, effectiveTimeout, childState)
-	if err == nil {
-		body, cookies = p.expandNestedESI(parentCtx, parentReq, body, cookies, childState)
+	// 1. Attempt primary src fetch via singleflight
+	tracker, ch := fg.do(parentCtx, frag.Src, func(fCtx context.Context) (*rawFetchResult, error) {
+		body, cookies, mode, err := p.fetchFragment(fCtx, parentReq, frag.Src, p.config.maxTimeout, childState)
+		if err != nil {
+			return nil, err
+		}
+		return &rawFetchResult{body: body, cookies: cookies, mode: mode}, nil
+	})
+
+	var (
+		rawRes *rawFetchResult
+		err    error
+	)
+
+	select {
+	case sfRes, ok := <-ch:
+		fg.release(frag.Src, tracker)
+		if !ok {
+			err = errors.New("esi: flight channel closed")
+		} else if sfRes.Err != nil {
+			err = sfRes.Err
+		} else if r, ok := sfRes.Val.(*rawFetchResult); ok {
+			rawRes = r
+		} else {
+			err = errors.New("esi: invalid flight result type")
+		}
+	case <-fragCtx.Done():
+		fg.release(frag.Src, tracker)
+		err = fragCtx.Err()
+	}
+
+	if err == nil && rawRes != nil {
+		body, cookies := p.expandNestedESI(fragCtx, parentReq, rawRes.body, rawRes.cookies, childState)
+		dur := time.Since(fetchStart)
 		p.metrics.recordFragment("success")
-		p.metrics.recordDuration(mode, time.Since(fetchStart))
+		p.metrics.recordDuration(rawRes.mode, dur)
 		if p.logger.Enabled(parentCtx, slog.LevelDebug) {
 			p.logger.DebugContext(parentCtx, "esi: fragment resolved",
-				slog.String("src", src),
-				slog.String("mode", mode),
-				slog.Duration("duration", time.Since(fetchStart)),
+				slog.String("src", frag.Src),
+				slog.String("mode", rawRes.mode),
+				slog.Duration("duration", dur),
 				slog.Int("bytes", len(body)),
 			)
 		}
 		res.body = body
 		res.setCookies = cookies
-		res.mode = mode
-		res.duration = time.Since(fetchStart)
+		res.mode = rawRes.mode
+		res.duration = dur
 		return res
 	}
 
@@ -547,51 +603,84 @@ func (p *Processor) executeInclude(
 	elapsed := time.Since(fetchStart)
 	remainingBudget := effectiveTimeout - elapsed
 
-	if target.alt != "" && remainingBudget > 0 {
+	if frag.Alt != "" && fragCtx.Err() == nil && remainingBudget > 0 {
 		altStart := time.Now()
 		altChildState := esiExecutionState{
 			depth:       state.depth + 1,
 			maxDepth:    effectiveMaxDepth,
-			visitedURLs: append(slices.Clone(state.visitedURLs), target.alt),
+			visitedURLs: append(slices.Clone(state.visitedURLs), frag.Alt),
 		}
 
-		altBody, altCookies, altMode, altErr := p.fetchFragment(parentCtx, parentReq, target.alt, remainingBudget, altChildState)
-		if altErr == nil {
-			altBody, altCookies = p.expandNestedESI(parentCtx, parentReq, altBody, altCookies, altChildState)
+		altTracker, altCh := fg.do(parentCtx, frag.Alt, func(fCtx context.Context) (*rawFetchResult, error) {
+			body, cookies, mode, err := p.fetchFragment(fCtx, parentReq, frag.Alt, p.config.maxTimeout, altChildState)
+			if err != nil {
+				return nil, err
+			}
+			return &rawFetchResult{body: body, cookies: cookies, mode: mode}, nil
+		})
+
+		var (
+			altRaw *rawFetchResult
+			altErr error
+		)
+
+		select {
+		case sfRes, ok := <-altCh:
+			fg.release(frag.Alt, altTracker)
+			if !ok {
+				altErr = errors.New("esi: alt flight channel closed")
+			} else if sfRes.Err != nil {
+				altErr = sfRes.Err
+			} else if r, ok := sfRes.Val.(*rawFetchResult); ok {
+				altRaw = r
+			} else {
+				altErr = errors.New("esi: invalid alt flight result type")
+			}
+		case <-fragCtx.Done():
+			fg.release(frag.Alt, altTracker)
+			altErr = fragCtx.Err()
+		}
+
+		if altErr == nil && altRaw != nil {
+			altBody, altCookies := p.expandNestedESI(fragCtx, parentReq, altRaw.body, altRaw.cookies, altChildState)
+			altDur := time.Since(altStart)
 			p.metrics.recordFragment("fallback")
-			p.metrics.recordDuration(altMode, time.Since(altStart))
+			p.metrics.recordDuration(altRaw.mode, altDur)
 			if p.logger.Enabled(parentCtx, slog.LevelDebug) {
 				p.logger.DebugContext(parentCtx, "esi: alt fragment resolved",
-					slog.String("src", src),
-					slog.String("alt", target.alt),
-					slog.String("mode", altMode),
-					slog.Duration("duration", time.Since(altStart)),
+					slog.String("src", frag.Src),
+					slog.String("alt", frag.Alt),
+					slog.String("mode", altRaw.mode),
+					slog.Duration("duration", altDur),
 					slog.Int("bytes", len(altBody)),
 				)
 			}
 			res.body = altBody
 			res.setCookies = altCookies
-			res.mode = altMode
-			res.duration = time.Since(altStart)
+			res.mode = altRaw.mode
+			res.duration = altDur
 			return res
 		}
+
 		if p.logger.Enabled(parentCtx, slog.LevelWarn) {
 			p.logger.WarnContext(parentCtx, "esi: alt fragment fetch failed",
-				slog.String("src", src),
-				slog.String("alt", target.alt),
+				slog.String("src", frag.Src),
+				slog.String("alt", frag.Alt),
 				slog.Any("error", altErr),
 			)
 		}
 	}
 
-	// 3. Both primary and alt failed
+	// 3. Both primary and alt failed or timed out
 	p.metrics.recordFragment("fallback")
 	res.err = err
 	res.duration = time.Since(fetchStart)
+	inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
+	res.body = p.resolveFallback(inner, frag.OnError)
 
 	if p.logger.Enabled(parentCtx, slog.LevelDebug) {
 		p.logger.DebugContext(parentCtx, "esi: fragment fetch failed",
-			slog.String("src", src),
+			slog.String("src", frag.Src),
 			slog.Any("error", err),
 			slog.Duration("duration", res.duration),
 		)

@@ -44,9 +44,9 @@
    - Do **NOT** coalesce concurrent requests on cold/unverified URLs with `singleflight`. Singleflight across concurrent cold requests can broadcast private headers (`Set-Cookie`) to unauthenticated callers.
    - Restrict `singleflight` exclusively to revalidating known cacheable entries (stale-while-revalidate and expired refresh).
 6. **NEVER Bleed Dependencies Across Subpackages**:
-   - Do **NOT** import third-party framework routers into core `titip` or `storage/`.
-   - Do **NOT** import `github.com/redis/rueidis` into core `titip` or `adapter/`.
-   - Keep core `titip` dependency-free (except Protobuf and LZ4).
+   - Do **NOT** import third-party framework routers into core `titip` or `storage/` (keep framework adapters strictly isolated under `adapter/*`).
+   - Do **NOT** import concrete storage clients (e.g. `github.com/redis/rueidis`) into core `titip` or `adapter/` (keep storage implementations strictly isolated under `storage/*`).
+   - **Core Dependency Policy**: Prefer Go standard library and official `golang.org/x/*` packages. Proven, lightweight, low-transitive-dependency libraries (e.g. Protobuf, LZ4, Prometheus) are permitted when they prevent reinventing complex or error-prone wheels, but avoid heavy transitive dependency trees or importing libraries for trivial functions.
 7. **NEVER Leave Goroutine Leaks on Revalidation or Shutdown**:
    - All asynchronous `stale-while-revalidate` goroutines must be tracked via `sync.WaitGroup` and awaited cleanly during `titip.Close(ctx)`.
 
