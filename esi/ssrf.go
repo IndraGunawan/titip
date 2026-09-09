@@ -14,14 +14,9 @@ import (
 )
 
 var (
-	// ErrSSRFBlocked is returned when an include URL resolves to a forbidden or private IP.
-	ErrSSRFBlocked = errors.New("esi: request blocked by ssrf protection")
-	// ErrInvalidScheme is returned when an include URL has an unapproved scheme.
-	ErrInvalidScheme = errors.New("esi: invalid or dangerous url scheme")
-	// ErrHostNotAllowed is returned when an include host is not in the allowed hosts list.
-	ErrHostNotAllowed = errors.New("esi: host is not allowed")
-	// ErrInvalidMethod is returned when a non-GET/HEAD method is attempted.
-	ErrInvalidMethod = errors.New("esi: only GET and HEAD methods are permitted")
+	errSSRFBlocked    = errors.New("esi: request blocked by ssrf protection")
+	errInvalidScheme  = errors.New("esi: invalid or dangerous url scheme")
+	errHostNotAllowed = errors.New("esi: host is not allowed")
 )
 
 // blockedCIDRs contains prefixes not covered by netip.IsPrivate/IsLoopback/etc.
@@ -37,43 +32,40 @@ var blockedCIDRs = []netip.Prefix{
 	netip.MustParsePrefix("fc00::/7"),      // IPv6 Unique Local Address
 }
 
-// SSRFConfig configures outbound ESI fetch security.
-type SSRFConfig struct {
+type ssrfConfig struct {
 	BlockPrivateIPs                bool
 	AllowedHosts                   []string
 	AllowPrivateIPsForAllowedHosts bool
 }
 
-// ValidateURLScheme checks if the target URL has a safe scheme (relative, http, https).
-func ValidateURLScheme(rawURL string) (*url.URL, error) {
+func validateURLScheme(rawURL string) (*url.URL, error) {
 	if rawURL == "" {
-		return nil, fmt.Errorf("%w: empty url", ErrInvalidScheme)
+		return nil, fmt.Errorf("%w: empty url", errInvalidScheme)
 	}
 
 	// Relative path
 	if strings.HasPrefix(rawURL, "/") {
 		parsed, err := url.Parse(rawURL)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidScheme, err)
+			return nil, fmt.Errorf("%w: %v", errInvalidScheme, err)
 		}
 		return parsed, nil
 	}
 
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidScheme, err)
+		return nil, fmt.Errorf("%w: %v", errInvalidScheme, err)
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
-		return nil, fmt.Errorf("%w: scheme %q is not permitted", ErrInvalidScheme, parsed.Scheme)
+		return nil, fmt.Errorf("%w: scheme %q is not permitted", errInvalidScheme, parsed.Scheme)
 	}
 
 	return parsed, nil
 }
 
-// IsIPBlocked returns true if the IP is unroutable, loopback, private, link-local, or cloud metadata.
-func IsIPBlocked(ip netip.Addr) bool {
+func isIPBlocked(ip netip.Addr) bool {
 	// Unmap IPv4-in-IPv6 addresses (e.g. ::ffff:127.0.0.1)
 	ip = ip.Unmap()
 
@@ -90,8 +82,7 @@ func IsIPBlocked(ip netip.Addr) bool {
 	return false
 }
 
-// MatchHost checks if the target host matches any allowed host patterns (e.g. "cdn.example.com" or "*.partner.com").
-func MatchHost(host string, patterns []string) bool {
+func matchHost(host string, patterns []string) bool {
 	if len(patterns) == 0 {
 		return true
 	}
@@ -130,8 +121,7 @@ func MatchHost(host string, patterns []string) bool {
 	return false
 }
 
-// NewSSRFSafeTransport constructs an http.RoundTripper that validates IPs at dial time via Control.
-func NewSSRFSafeTransport(cfg SSRFConfig, dialTimeout time.Duration) http.RoundTripper {
+func newSSRFSafeTransport(cfg ssrfConfig, dialTimeout time.Duration) http.RoundTripper {
 	if dialTimeout <= 0 {
 		dialTimeout = 10 * time.Second
 	}
@@ -155,8 +145,8 @@ func NewSSRFSafeTransport(cfg SSRFConfig, dialTimeout time.Duration) http.RoundT
 				return nil
 			}
 
-			if IsIPBlocked(ip) {
-				return fmt.Errorf("%w: connection to blocked IP %s forbidden", ErrSSRFBlocked, ip.String())
+			if isIPBlocked(ip) {
+				return fmt.Errorf("%w: connection to blocked IP %s forbidden", errSSRFBlocked, ip.String())
 			}
 
 			return nil
@@ -172,8 +162,8 @@ func NewSSRFSafeTransport(cfg SSRFConfig, dialTimeout time.Duration) http.RoundT
 
 			// Validate allowed hosts if configured
 			if len(cfg.AllowedHosts) > 0 {
-				if !MatchHost(host, cfg.AllowedHosts) {
-					return nil, fmt.Errorf("%w: %q", ErrHostNotAllowed, host)
+				if !matchHost(host, cfg.AllowedHosts) {
+					return nil, fmt.Errorf("%w: %q", errHostNotAllowed, host)
 				}
 				if cfg.AllowPrivateIPsForAllowedHosts {
 					// Direct dial without IP blocking for specifically allowed hosts

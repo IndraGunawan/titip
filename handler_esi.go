@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 
 	pb "github.com/indragunawan/titip/proto"
 )
@@ -22,54 +20,34 @@ func (t *Titip) processESI(
 	statusToken string,
 	rfc9211Detail string,
 ) {
-	if t.esiProcessor == nil {
-		t.writeFallback(ctx, parentBody, statusCode, headers, statusToken, rfc9211Detail)
-		return
+	var (
+		body   = parentBody
+		detail = rfc9211Detail
+	)
+
+	reconciled := headers.Clone()
+	if reconciled == nil {
+		reconciled = make(http.Header)
 	}
 
-	res, err := t.esiProcessor.Process(ctx.r.Context(), ctx.r, parentBody, fragments)
-	if err != nil {
-		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
-			t.logger.ErrorContext(ctx.r.Context(), "esi: processing failed, falling back to unspliced body", "error", err)
-		}
-		t.writeFallback(ctx, parentBody, statusCode, headers, statusToken, rfc9211Detail)
-		return
-	}
-	defer res.Release()
-
-	splicedBytes := res.Body()
-
-	// Header reconciliation
-	reconciledHeaders := headers.Clone()
-	if reconciledHeaders == nil {
-		reconciledHeaders = make(http.Header)
-	}
-
-	// Strip ESI/edge internal headers
-	reconciledHeaders.Del(headerSurrogateControl)
-
-	// ETag & Last-Modified handling for composite ESI documents:
-	// By default (PreserveETag == false), strip ETag and Last-Modified to prevent downstream clients
-	// from sending conditional requests that would skip live fragment assembly.
-	// When PreserveETag == true (opt-in for static ESI), weaken ETag to W/"..." per RFC 9110 §8.8.3.2.
-	if t.esiProcessor.PreserveETag() {
-		if etag := reconciledHeaders.Get(headerETag); etag != "" {
-			if !strings.HasPrefix(etag, "W/") && !strings.HasPrefix(etag, "w/") {
-				reconciledHeaders.Set(headerETag, "W/"+etag)
+	if t.esiProcessor != nil {
+		res, err := t.esiProcessor.ProcessFragments(ctx.r.Context(), ctx.r, parentBody, fragments)
+		if err != nil {
+			if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
+				t.logger.ErrorContext(ctx.r.Context(), "esi: processing failed, serving unspliced body", "error", err)
 			}
+			t.esiProcessor.ReconcileHeaders(reconciled, nil)
+		} else {
+			defer res.Release()
+			body = res.Body()
+			t.esiProcessor.ReconcileHeaders(reconciled, res)
+			detail = fmt.Sprintf("%s; detail=\"esi-includes=%d;time=%s\"", rfc9211Detail, len(fragments), res.Duration.String())
 		}
 	} else {
-		reconciledHeaders.Del(headerETag)
-		reconciledHeaders.Del(headerLastModified)
+		reconciled.Del(headerSurrogateControl)
 	}
 
-	// Update Content-Length only if the origin explicitly provided one
-	if reconciledHeaders.Get(headerContentLength) != "" {
-		reconciledHeaders.Set(headerContentLength, strconv.Itoa(len(splicedBytes)))
-	}
-
-	// Copy reconciled headers to client writer
-	for k, vv := range reconciledHeaders {
+	for k, vv := range reconciled {
 		if !isHopByHopHeader(k) {
 			for _, v := range vv {
 				ctx.w.Header().Add(k, v)
@@ -77,41 +55,17 @@ func (t *Titip) processESI(
 		}
 	}
 
-	// Forward dynamic subrequest Set-Cookie headers to live client
-	for _, cookie := range res.SetCookies {
-		ctx.w.Header().Add("Set-Cookie", cookie)
-	}
-
-	// Emit Cache-Status
-	detailWithESI := fmt.Sprintf("%s; detail=\"esi-includes=%d;time=%s\"", rfc9211Detail, len(fragments), res.Duration.String())
-	t.emitCacheStatus(ctx.w, statusToken, detailWithESI)
-
-	// Write status and response body
+	t.emitCacheStatus(ctx.w, statusToken, detail)
 	ctx.w.WriteHeader(statusCode)
 	if ctx.r.Method != http.MethodHead {
-		_, _ = ctx.w.Write(splicedBytes)
+		_, _ = ctx.w.Write(body)
 	}
 }
 
-// writeFallback writes the unspliced parent body and original headers when ESI is unavailable or fails.
-func (t *Titip) writeFallback(
-	ctx *requestContext,
-	parentBody []byte,
-	statusCode int,
-	headers http.Header,
-	statusToken string,
-	rfc9211Detail string,
-) {
-	for k, vv := range headers {
-		if !isHopByHopHeader(k) && !strings.EqualFold(k, headerSurrogateControl) {
-			for _, v := range vv {
-				ctx.w.Header().Add(k, v)
-			}
-		}
+// adjustESIHeaders adjusts downstream headers for 304 Not Modified and HEAD cached responses containing ESI fragments.
+func (t *Titip) adjustESIHeaders(w http.ResponseWriter, varInfo *pb.VariantInfo) {
+	if t.esiProcessor == nil || varInfo == nil || len(varInfo.EsiFragments) == 0 {
+		return
 	}
-	t.emitCacheStatus(ctx.w, statusToken, rfc9211Detail)
-	ctx.w.WriteHeader(statusCode)
-	if ctx.r.Method != http.MethodHead {
-		_, _ = ctx.w.Write(parentBody)
-	}
+	t.esiProcessor.ReconcileHeaders(w.Header(), nil)
 }

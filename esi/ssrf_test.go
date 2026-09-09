@@ -39,7 +39,7 @@ func TestSSRF_BlockedIPs(t *testing.T) {
 
 	for _, ipStr := range blockedCases {
 		ip := netip.MustParseAddr(ipStr)
-		if !IsIPBlocked(ip) {
+		if !isIPBlocked(ip) {
 			t.Errorf("expected IP %s to be blocked", ipStr)
 		}
 	}
@@ -54,7 +54,7 @@ func TestSSRF_BlockedIPs(t *testing.T) {
 
 	for _, ipStr := range allowedCases {
 		ip := netip.MustParseAddr(ipStr)
-		if IsIPBlocked(ip) {
+		if isIPBlocked(ip) {
 			t.Errorf("expected public IP %s to NOT be blocked", ipStr)
 		}
 	}
@@ -71,7 +71,7 @@ func TestSSRF_ValidateURLScheme(t *testing.T) {
 	}
 
 	for _, u := range valid {
-		if _, err := ValidateURLScheme(u); err != nil {
+		if _, err := validateURLScheme(u); err != nil {
 			t.Errorf("expected URL %q to be valid, got: %v", u, err)
 		}
 	}
@@ -87,7 +87,7 @@ func TestSSRF_ValidateURLScheme(t *testing.T) {
 	}
 
 	for _, u := range invalid {
-		if _, err := ValidateURLScheme(u); err == nil {
+		if _, err := validateURLScheme(u); err == nil {
 			t.Errorf("expected URL %q to be rejected, but got valid", u)
 		}
 	}
@@ -116,9 +116,9 @@ func TestSSRF_MatchHost(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := MatchHost(tt.host, tt.patterns)
+		got := matchHost(tt.host, tt.patterns)
 		if got != tt.match {
-			t.Errorf("MatchHost(%q, %v) = %v; want %v", tt.host, tt.patterns, got, tt.match)
+			t.Errorf("matchHost(%q, %v) = %v; want %v", tt.host, tt.patterns, got, tt.match)
 		}
 	}
 }
@@ -129,10 +129,10 @@ func TestSSRF_TransportDialBlocked(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := SSRFConfig{
+	cfg := ssrfConfig{
 		BlockPrivateIPs: true,
 	}
-	tr := NewSSRFSafeTransport(cfg, 500*time.Millisecond)
+	tr := newSSRFSafeTransport(cfg, 500*time.Millisecond)
 	client := &http.Client{Transport: tr}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
@@ -153,10 +153,10 @@ func TestSSRF_Transport_AllowPrivateIPs(t *testing.T) {
 	defer srv.Close()
 
 	// 1. BlockPrivateIPs = false allows dialing 127.0.0.1
-	cfgDisabled := SSRFConfig{
+	cfgDisabled := ssrfConfig{
 		BlockPrivateIPs: false,
 	}
-	trDisabled := NewSSRFSafeTransport(cfgDisabled, 0) // verifies default timeout <= 0
+	trDisabled := newSSRFSafeTransport(cfgDisabled, 0) // verifies default timeout <= 0
 	client := &http.Client{Transport: trDisabled}
 
 	resp, err := client.Get(srv.URL)
@@ -166,25 +166,25 @@ func TestSSRF_Transport_AllowPrivateIPs(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// 2. AllowedHosts restriction rejection
-	cfgRestricted := SSRFConfig{
+	cfgRestricted := ssrfConfig{
 		BlockPrivateIPs: false,
 		AllowedHosts:    []string{"authorized-domain.com"},
 	}
-	trRestricted := NewSSRFSafeTransport(cfgRestricted, 500*time.Millisecond)
+	trRestricted := newSSRFSafeTransport(cfgRestricted, 500*time.Millisecond)
 	clientRestricted := &http.Client{Transport: trRestricted}
 
 	_, err = clientRestricted.Get(srv.URL)
-	if err == nil || !errors.Is(err, ErrHostNotAllowed) {
-		t.Fatalf("expected ErrHostNotAllowed, got: %v", err)
+	if err == nil || !errors.Is(err, errHostNotAllowed) {
+		t.Fatalf("expected errHostNotAllowed, got: %v", err)
 	}
 
 	// 3. AllowPrivateIPsForAllowedHosts permits private IP when explicitly in AllowedHosts
-	cfgAllowedPrivate := SSRFConfig{
+	cfgAllowedPrivate := ssrfConfig{
 		BlockPrivateIPs:                true,
 		AllowedHosts:                   []string{"127.0.0.1"},
 		AllowPrivateIPsForAllowedHosts: true,
 	}
-	trAllowedPrivate := NewSSRFSafeTransport(cfgAllowedPrivate, 500*time.Millisecond)
+	trAllowedPrivate := newSSRFSafeTransport(cfgAllowedPrivate, 500*time.Millisecond)
 	clientAllowedPrivate := &http.Client{Transport: trAllowedPrivate}
 
 	resp, err = clientAllowedPrivate.Get(srv.URL)

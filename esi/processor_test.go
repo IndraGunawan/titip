@@ -1,6 +1,7 @@
 package esi
 
 import (
+	"bufio"
 	"context"
 	"math"
 	"net/http"
@@ -40,7 +41,7 @@ func TestProcessor_InProcessFetcher(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/dashboard", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestProcessor_OutboundHTTP(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestProcessor_FallbackOnErrorContinue(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestProcessor_FallbackErrorMarker(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestProcessor_CircularInclude(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/circular", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -177,12 +178,11 @@ func TestProcessor_CircularInclude(t *testing.T) {
 
 func TestProcessor_MaxRecursionDepth(t *testing.T) {
 	var callCount atomic.Int32
-	var handler http.HandlerFunc
-	handler = func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div>nested <esi:include src="/nested" onerror="continue" /></div>`))
-	}
+	})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/nested", handler)
@@ -200,7 +200,7 @@ func TestProcessor_MaxRecursionDepth(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/page", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestProcessor_SSRFBlocked(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestProcessor_WorkerPanicRecovery(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestProcessor_FallbackToOutboundHTTPOn404(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
-	res, err := proc.Process(context.Background(), req, parentBody, frags)
+	res, err := proc.ProcessFragments(context.Background(), req, parentBody, frags)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestProcessor_BufferReleaseSafety(t *testing.T) {
 	proc := NewProcessor()
 
 	parentBody := []byte(`Hello World`)
-	res, err := proc.Process(context.Background(), nil, parentBody, nil)
+	res, err := proc.ProcessFragments(context.Background(), nil, parentBody, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestProcessor_CorruptedInnerOffsets(t *testing.T) {
 	frags[0].InnerEndPos = 9999999
 
 	proc := NewProcessor()
-	res, err := proc.Process(context.Background(), nil, parent, frags)
+	res, err := proc.ProcessFragments(context.Background(), nil, parent, frags)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestProcessor_CorruptedInnerOffsets(t *testing.T) {
 	}
 }
 
-func TestProcessor_ProcessDocument(t *testing.T) {
+func TestProcessor_Process(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -395,7 +395,7 @@ func TestProcessor_ProcessDocument(t *testing.T) {
 	// 1. Document with ESI tags: should scan and splice in one step
 	docWithESI := []byte(`<div>User: <esi:include src="/user" /></div>`)
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/page", nil)
-	res1, err := proc.ProcessDocument(context.Background(), req, docWithESI)
+	res1, err := proc.Process(context.Background(), req, docWithESI)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestProcessor_ProcessDocument(t *testing.T) {
 
 	// 2. Document without ESI tags: returns body untouched with zero buffer allocation
 	docWithoutESI := []byte(`<div>Plain HTML content without any ESI tags</div>`)
-	res2, err := proc.ProcessDocument(context.Background(), req, docWithoutESI)
+	res2, err := proc.Process(context.Background(), req, docWithoutESI)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestProcessor_SurrogateCapability(t *testing.T) {
 	// 2. Empty header sets capability
 	h := make(http.Header)
 	AddSurrogateCapability(h, "titip")
-	if got := h.Get(HeaderSurrogateCapability); got != `titip="ESI/1.0"` {
+	if got := h.Get(headerSurrogateCapability); got != `titip="ESI/1.0"` {
 		t.Errorf("expected %q, got %q", `titip="ESI/1.0"`, got)
 	}
 	if !HasSurrogateCapability(h, "titip") {
@@ -492,29 +492,186 @@ func TestProcessor_SurrogateCapability(t *testing.T) {
 
 	// 3. Already present token is not duplicated
 	AddSurrogateCapability(h, "titip")
-	if got := h.Get(HeaderSurrogateCapability); got != `titip="ESI/1.0"` {
+	if got := h.Get(headerSurrogateCapability); got != `titip="ESI/1.0"` {
 		t.Errorf("expected no duplicate, got %q", got)
 	}
 
 	// 4. Appends to existing capability from downstream
 	h2 := make(http.Header)
-	h2.Set(HeaderSurrogateCapability, `cdn="ESI/1.0"`)
+	h2.Set(headerSurrogateCapability, `cdn="ESI/1.0"`)
 	AddSurrogateCapability(h2, "titip")
 	expected := `cdn="ESI/1.0", titip="ESI/1.0"`
-	if got := h2.Get(HeaderSurrogateCapability); got != expected {
+	if got := h2.Get(headerSurrogateCapability); got != expected {
 		t.Errorf("expected %q, got %q", expected, got)
 	}
 
 	// 5. Default deviceID when empty is "esi"
 	h3 := make(http.Header)
-	proc := NewProcessor()
-	proc.AddSurrogateCapability(h3, "")
-	if got := h3.Get(HeaderSurrogateCapability); got != `esi="ESI/1.0"` {
+	AddSurrogateCapability(h3, "")
+	if got := h3.Get(headerSurrogateCapability); got != `esi="ESI/1.0"` {
 		t.Errorf("expected default deviceID esi, got %q", got)
 	}
-	if !proc.HasSurrogateCapability(h3, "esi") {
-		t.Errorf("expected proc.HasSurrogateCapability to be true")
+	if !HasSurrogateCapability(h3, "esi") {
+		t.Errorf("expected HasSurrogateCapability to be true")
 	}
 }
+
+func TestProcessor_ReconcileHeaders(t *testing.T) {
+	t.Run("default PreserveETag false strips ETag and LastModified", func(t *testing.T) {
+		p := NewProcessor()
+		h := make(http.Header)
+		h.Set("Surrogate-Control", "ESI/1.0")
+		h.Set("ETag", `"strong-123"`)
+		h.Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+		h.Set("Content-Length", "100")
+		h.Set("Content-Type", "text/html")
+
+		res := &Result{
+			raw:        []byte("spliced content"),
+			SetCookies: []string{"session=xyz; Path=/", "csrf=123; Secure"},
+		}
+
+		p.ReconcileHeaders(h, res)
+
+		if h.Get("Surrogate-Control") != "" {
+			t.Errorf("expected Surrogate-Control to be deleted, got %q", h.Get("Surrogate-Control"))
+		}
+		if h.Get("ETag") != "" {
+			t.Errorf("expected ETag to be deleted, got %q", h.Get("ETag"))
+		}
+		if h.Get("Last-Modified") != "" {
+			t.Errorf("expected Last-Modified to be deleted, got %q", h.Get("Last-Modified"))
+		}
+		if got := h.Get("Content-Length"); got != "15" {
+			t.Errorf("expected Content-Length to be 15, got %q", got)
+		}
+		if got := h.Values("Set-Cookie"); len(got) != 2 || got[0] != "session=xyz; Path=/" || got[1] != "csrf=123; Secure" {
+			t.Errorf("expected 2 Set-Cookie headers, got %v", got)
+		}
+		if h.Get("Content-Type") != "text/html" {
+			t.Errorf("expected Content-Type to remain intact, got %q", h.Get("Content-Type"))
+		}
+	})
+
+	t.Run("PreserveETag true weakens strong ETag and keeps weak and LastModified", func(t *testing.T) {
+		p := NewProcessor(WithPreserveETag(true))
+
+		// Strong ETag
+		h1 := make(http.Header)
+		h1.Set("Surrogate-Control", "ESI/1.0")
+		h1.Set("ETag", `"strong-456"`)
+		h1.Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+
+		p.ReconcileHeaders(h1, nil)
+		if got := h1.Get("ETag"); got != `W/"strong-456"` {
+			t.Errorf("expected weakened ETag W/\"strong-456\", got %q", got)
+		}
+		if got := h1.Get("Last-Modified"); got != "Wed, 21 Oct 2015 07:28:00 GMT" {
+			t.Errorf("expected Last-Modified to be preserved, got %q", got)
+		}
+		if h1.Get("Surrogate-Control") != "" {
+			t.Errorf("expected Surrogate-Control to be deleted")
+		}
+
+		// Already weak ETag
+		h2 := make(http.Header)
+		h2.Set("ETag", `W/"weak-789"`)
+		p.ReconcileHeaders(h2, nil)
+		if got := h2.Get("ETag"); got != `W/"weak-789"` {
+			t.Errorf("expected already-weak ETag unchanged, got %q", got)
+		}
+	})
+
+	t.Run("omits Content-Length when origin omitted it", func(t *testing.T) {
+		p := NewProcessor()
+		h := make(http.Header)
+		h.Set("Content-Type", "text/html")
+
+		res := &Result{
+			raw: []byte("spliced content"),
+		}
+		p.ReconcileHeaders(h, res)
+		if h.Get("Content-Length") != "" {
+			t.Errorf("expected no Content-Length added when originally omitted")
+		}
+	})
+
+	t.Run("nil resilience", func(t *testing.T) {
+		p := NewProcessor()
+		// Should not panic on nil header
+		p.ReconcileHeaders(nil, nil)
+
+		// Should not panic on nil result
+		h := make(http.Header)
+		h.Set("ETag", `"test"`)
+		h.Set("Content-Length", "50")
+
+		p.ReconcileHeaders(h, nil)
+		if h.Get("ETag") != "" {
+			t.Errorf("expected ETag stripped")
+		}
+		if got := h.Get("Content-Length"); got != "50" {
+			t.Errorf("expected Content-Length unchanged when res is nil, got %q", got)
+		}
+	})
+
+	t.Run("origin returns lowercase wire headers parsed via ReadResponse", func(t *testing.T) {
+		rawWire := "HTTP/1.1 200 OK\r\n" +
+			"surrogate-control: content=\"ESI/1.0\"\r\n" +
+			"etag: \"origin-wire-etag\"\r\n" +
+			"last-modified: Wed, 21 Oct 2015 07:28:00 GMT\r\n" +
+			"content-length: 100\r\n" +
+			"content-type: text/html\r\n" +
+			"\r\n" +
+			"raw body"
+
+		// 1. Default PreserveETag = false
+		resp1, err := http.ReadResponse(bufio.NewReader(strings.NewReader(rawWire)), nil)
+		if err != nil {
+			t.Fatalf("failed to parse raw wire response: %v", err)
+		}
+		pDefault := NewProcessor()
+		res := &Result{
+			raw:        []byte("spliced content"),
+			SetCookies: []string{"session=wire123; Path=/"},
+		}
+		pDefault.ReconcileHeaders(resp1.Header, res)
+
+		if resp1.Header.Get("Surrogate-Control") != "" {
+			t.Errorf("expected Surrogate-Control stripped, got %q", resp1.Header.Get("Surrogate-Control"))
+		}
+		if resp1.Header.Get("ETag") != "" {
+			t.Errorf("expected ETag stripped, got %q", resp1.Header.Get("ETag"))
+		}
+		if resp1.Header.Get("Last-Modified") != "" {
+			t.Errorf("expected Last-Modified stripped, got %q", resp1.Header.Get("Last-Modified"))
+		}
+		if got := resp1.Header.Get("Content-Length"); got != "15" {
+			t.Errorf("expected Content-Length updated to 15, got %q", got)
+		}
+		if got := resp1.Header.Get("Set-Cookie"); got != "session=wire123; Path=/" {
+			t.Errorf("expected Set-Cookie appended, got %q", got)
+		}
+
+		// 2. PreserveETag = true
+		resp2, err := http.ReadResponse(bufio.NewReader(strings.NewReader(rawWire)), nil)
+		if err != nil {
+			t.Fatalf("failed to parse raw wire response: %v", err)
+		}
+		pPreserve := NewProcessor(WithPreserveETag(true))
+		pPreserve.ReconcileHeaders(resp2.Header, res)
+
+		if got := resp2.Header.Get("ETag"); got != `W/"origin-wire-etag"` {
+			t.Errorf("expected weakened ETag, got %q", got)
+		}
+		if got := resp2.Header.Get("Last-Modified"); got != "Wed, 21 Oct 2015 07:28:00 GMT" {
+			t.Errorf("expected Last-Modified preserved, got %q", got)
+		}
+		if resp2.Header.Get("Surrogate-Control") != "" {
+			t.Errorf("expected Surrogate-Control stripped, got %q", resp2.Header.Get("Surrogate-Control"))
+		}
+	})
+}
+
 
 

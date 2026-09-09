@@ -1,9 +1,12 @@
 package titip
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1803,3 +1806,165 @@ func TestESI_UpstreamSurrogateCapabilityAdvertisement(t *testing.T) {
 		t.Errorf("expected origin to receive no Surrogate-Capability when ESI disabled, got %v", capVal3)
 	}
 }
+
+func TestESI_OriginLowerCaseWireHeaders_EndToEnd(t *testing.T) {
+	// Raw TCP origin that sends raw HTTP/1.1 response with lower-case header names
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer func() { _ = c.Close() }()
+				br := bufio.NewReader(c)
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil || line == "\r\n" {
+						break
+					}
+				}
+				body := `<!DOCTYPE html><html><body><div id="frag"><esi:include src="/frag" /></div></body></html>`
+				rawResp := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
+					"cache-control: public, max-age=60\r\n"+
+					"content-type: text/html\r\n"+
+					"surrogate-control: content=\"ESI/1.0\"\r\n"+
+					"etag: \"wire-etag-123\"\r\n"+
+					"last-modified: Wed, 21 Oct 2015 07:28:00 GMT\r\n"+
+					"content-length: %d\r\n"+
+					"connection: close\r\n\r\n%s", len(body), body)
+				_, _ = c.Write([]byte(rawResp))
+			}(conn)
+		}
+	}()
+
+	fragMux := http.NewServeMux()
+	fragMux.HandleFunc("/frag", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Set-Cookie", "user=alice; Path=/")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Hello World</span>`))
+	})
+
+	// Proxy handler that fetches from the raw TCP listener over HTTP
+	originProxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://"+ln.Addr().String()+"/page", nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		for k, vv := range resp.Header {
+			for _, v := range vv {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	})
+
+	t.Run("default stripping", func(t *testing.T) {
+		_, _, mw := setupTestTitip(t,
+			WithESI(
+				esi.WithInternalFetcher(esi.HandlerFetcher(fragMux)),
+			),
+		)
+		handler := mw.testHandler(originProxy)
+
+		// 1. Cold miss: verifies origin lowercase wire headers are reconciled after ESI splice
+		req1 := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
+		rec1 := httptest.NewRecorder()
+		handler.ServeHTTP(rec1, req1)
+
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec1.Code)
+		}
+		body1 := rec1.Body.String()
+		expectedBody := `<!DOCTYPE html><html><body><div id="frag"><span>Hello World</span></div></body></html>`
+		if body1 != expectedBody {
+			t.Errorf("unexpected body:\ngot:  %s\nwant: %s", body1, expectedBody)
+		}
+		if sc := rec1.Header().Get("Surrogate-Control"); sc != "" {
+			t.Errorf("expected Surrogate-Control stripped, got %q", sc)
+		}
+		if etag := rec1.Header().Get("ETag"); etag != "" {
+			t.Errorf("expected ETag stripped, got %q", etag)
+		}
+		if lm := rec1.Header().Get("Last-Modified"); lm != "" {
+			t.Errorf("expected Last-Modified stripped, got %q", lm)
+		}
+		if cl := rec1.Header().Get("Content-Length"); cl != strconv.Itoa(len(expectedBody)) {
+			t.Errorf("expected Content-Length %d, got %q", len(expectedBody), cl)
+		}
+		if cookie := rec1.Header().Get("Set-Cookie"); cookie != "user=alice; Path=/" {
+			t.Errorf("expected Set-Cookie forwarded, got %q", cookie)
+		}
+
+		// 2. Cache hit: verifies cached response retains reconciled headers
+		req2 := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
+		rec2 := httptest.NewRecorder()
+		handler.ServeHTTP(rec2, req2)
+
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec2.Code)
+		}
+		if !strings.Contains(rec2.Header().Get("Cache-Status"), "hit") {
+			t.Errorf("expected cache hit in Cache-Status header, got %q", rec2.Header().Get("Cache-Status"))
+		}
+		if rec2.Body.String() != expectedBody {
+			t.Errorf("unexpected cached body:\ngot:  %s\nwant: %s", rec2.Body.String(), expectedBody)
+		}
+		if sc := rec2.Header().Get("Surrogate-Control"); sc != "" {
+			t.Errorf("expected cached Surrogate-Control stripped, got %q", sc)
+		}
+		if etag := rec2.Header().Get("ETag"); etag != "" {
+			t.Errorf("expected cached ETag stripped, got %q", etag)
+		}
+		if lm := rec2.Header().Get("Last-Modified"); lm != "" {
+			t.Errorf("expected cached Last-Modified stripped, got %q", lm)
+		}
+		if cl := rec2.Header().Get("Content-Length"); cl != strconv.Itoa(len(expectedBody)) {
+			t.Errorf("expected cached Content-Length %d, got %q", len(expectedBody), cl)
+		}
+	})
+
+	t.Run("preserve etag enabled", func(t *testing.T) {
+		_, _, mw := setupTestTitip(t,
+			WithESI(
+				esi.WithInternalFetcher(esi.HandlerFetcher(fragMux)),
+				esi.WithPreserveETag(true),
+			),
+		)
+		handler := mw.testHandler(originProxy)
+
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/page-preserve", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+		expectedWeakETag := `W/"wire-etag-123"`
+		if got := rec.Header().Get("ETag"); got != expectedWeakETag {
+			t.Errorf("expected weakened ETag %q, got %q", expectedWeakETag, got)
+		}
+		if got := rec.Header().Get("Last-Modified"); got != "Wed, 21 Oct 2015 07:28:00 GMT" {
+			t.Errorf("expected Last-Modified preserved, got %q", got)
+		}
+		if sc := rec.Header().Get("Surrogate-Control"); sc != "" {
+			t.Errorf("expected Surrogate-Control stripped, got %q", sc)
+		}
+	})
+}
+

@@ -334,7 +334,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 			originReq.Header.Del(headerIfModifiedSince)
 		}
 		if t.esiProcessor != nil {
-			t.esiProcessor.AddSurrogateCapability(originReq.Header, "titip")
+			esi.AddSurrogateCapability(originReq.Header, "titip")
 		}
 	}
 
@@ -525,7 +525,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			}
 		}
 		if t.esiProcessor != nil {
-			t.esiProcessor.AddSurrogateCapability(revalReq.Header, "titip")
+			esi.AddSurrogateCapability(revalReq.Header, "titip")
 		}
 
 		reqTime := time.Now()
@@ -868,7 +868,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 			originReq.Method = http.MethodGet
 		}
 		if t.esiProcessor != nil {
-			t.esiProcessor.AddSurrogateCapability(originReq.Header, "titip")
+			esi.AddSurrogateCapability(originReq.Header, "titip")
 		}
 	} else if originReq.Context() != bgCtx {
 		originReq = r.WithContext(bgCtx)
@@ -1142,20 +1142,6 @@ func protoHeadersToHTTP(protoHeaders map[string]*pb.HeaderValues) http.Header {
 		}
 	}
 	return h
-}
-
-func (t *Titip) adjustESIHeaders(w http.ResponseWriter, varInfo *pb.VariantInfo) {
-	if t.esiProcessor == nil || varInfo == nil || len(varInfo.EsiFragments) == 0 {
-		return
-	}
-	if t.esiProcessor.PreserveETag() {
-		if etag := w.Header().Get(headerETag); etag != "" && !strings.HasPrefix(etag, "W/") {
-			w.Header().Set(headerETag, "W/"+etag)
-		}
-	} else {
-		w.Header().Del(headerETag)
-		w.Header().Del(headerLastModified)
-	}
 }
 
 func (t *Titip) recordRequest(ctx *requestContext, status string) {

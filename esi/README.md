@@ -53,7 +53,7 @@ func main() {
 
     req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.com/", nil)
 
-    result, err := proc.ProcessDocument(context.Background(), req, html)
+    result, err := proc.Process(context.Background(), req, html)
     if err != nil {
         panic(err)
     }
@@ -102,23 +102,27 @@ If the handler returns 404, the processor falls back to outbound HTTP.
 
 ## Protocol Helpers
 
-Helpers for upstream capability negotiation defined in the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/):
+Helpers for upstream capability negotiation and downstream response reconciliation defined in the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/) and RFC 9110:
 
 - `esi.AddSurrogateCapability(header http.Header, deviceID string)`: Advertises `Surrogate-Capability: <deviceID>="ESI/1.0"` to upstream origin servers.
 - `esi.HasSurrogateCapability(header http.Header, deviceID string) bool`: Checks for an ESI/1.0 capability token.
 - `esi.HasSurrogateControl(header http.Header) bool`: Checks if `Surrogate-Control` contains `ESI/1.0`.
 - `proc.IsEligible(header http.Header) bool`: Checks if response headers meet ESI processing requirements based on `WithHeaderRequired`.
+- `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI 1.0 specifications (removes `Surrogate-Control`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
 
 ## Memory Management
 
 Call `result.Release()` after reading `result.Body()` to return the buffer to the pool:
 
 ```go
-result, err := proc.ProcessDocument(ctx, req, body)
+result, err := proc.Process(ctx, req, body)
 if err != nil {
     return err
 }
 defer result.Release()
 
+proc.ReconcileHeaders(w.Header(), result)
 w.Write(result.Body())
 ```
+
+For advanced caching engines with pre-compiled fragments, use `proc.ProcessFragments(ctx, req, body, fragments)` to skip rescanning.

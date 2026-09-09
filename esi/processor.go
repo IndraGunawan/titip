@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,11 +19,20 @@ import (
 	proto "github.com/indragunawan/titip/proto"
 )
 
+// HTTP Header names used in ESI protocol processing.
+const (
+	headerSurrogateCapability = "Surrogate-Capability"
+	headerSurrogateControl    = "Surrogate-Control"
+
+	headerETag          = "ETag"
+	headerLastModified  = "Last-Modified"
+	headerContentLength = "Content-Length"
+	headerSetCookie     = "Set-Cookie"
+)
+
 var (
-	// ErrCircularInclude is returned when an ESI fragment causes a circular include loop.
-	ErrCircularInclude = errors.New("esi: circular include loop detected")
-	// ErrMaxDepthExceeded is returned when max recursion depth is reached.
-	ErrMaxDepthExceeded = errors.New("esi: max recursion depth exceeded")
+	errCircularInclude  = errors.New("esi: circular include loop detected")
+	errMaxDepthExceeded = errors.New("esi: max recursion depth exceeded")
 )
 
 type esiContextKey struct{}
@@ -110,13 +120,13 @@ func NewProcessor(opts ...Option) *Processor {
 		config.logger = slog.Default()
 	}
 	if config.httpClient == nil {
-		ssrfConfig := SSRFConfig{
+		sc := ssrfConfig{
 			BlockPrivateIPs:                !config.allowPrivateIPs,
 			AllowedHosts:                   config.allowedHosts,
 			AllowPrivateIPsForAllowedHosts: config.allowPrivateIPsForAllowedHosts,
 		}
 		config.httpClient = &http.Client{
-			Transport: NewSSRFSafeTransport(ssrfConfig, 10*time.Second),
+			Transport: newSSRFSafeTransport(sc, 10*time.Second),
 		}
 	}
 
@@ -138,12 +148,6 @@ func (p *Processor) PreserveETag() bool {
 	return p.config.preserveETag
 }
 
-// HeaderSurrogateCapability is the HTTP request header used by intermediaries to advertise ESI support to origins.
-const HeaderSurrogateCapability = "Surrogate-Capability"
-
-// HeaderSurrogateControl is the HTTP response header used by origins to direct ESI processing.
-const HeaderSurrogateControl = "Surrogate-Control"
-
 // AddSurrogateCapability appends an ESI/1.0 capability token for the specified deviceID
 // to the request's Surrogate-Capability header (e.g. `deviceID="ESI/1.0"`).
 // If deviceID is empty, "esi" is used.
@@ -155,11 +159,11 @@ func AddSurrogateCapability(h http.Header, deviceID string) {
 		deviceID = "esi"
 	}
 	token := fmt.Sprintf(`%s="ESI/1.0"`, deviceID)
-	existing := h.Get(HeaderSurrogateCapability)
+	existing := h.Get(headerSurrogateCapability)
 	if existing == "" {
-		h.Set(HeaderSurrogateCapability, token)
+		h.Set(headerSurrogateCapability, token)
 	} else if !strings.Contains(existing, token) {
-		h.Set(HeaderSurrogateCapability, existing+", "+token)
+		h.Set(headerSurrogateCapability, existing+", "+token)
 	}
 }
 
@@ -169,7 +173,7 @@ func HasSurrogateCapability(h http.Header, deviceID string) bool {
 	if h == nil {
 		return false
 	}
-	val := h.Get(HeaderSurrogateCapability)
+	val := h.Get(headerSurrogateCapability)
 	if val == "" {
 		return false
 	}
@@ -179,24 +183,12 @@ func HasSurrogateCapability(h http.Header, deviceID string) bool {
 	return strings.Contains(val, fmt.Sprintf(`%s="ESI/1.0"`, deviceID))
 }
 
-// AddSurrogateCapability appends an ESI/1.0 capability token for the specified deviceID
-// to the request's Surrogate-Capability header. If deviceID is empty, "esi" is used.
-func (p *Processor) AddSurrogateCapability(h http.Header, deviceID string) {
-	AddSurrogateCapability(h, deviceID)
-}
-
-// HasSurrogateCapability reports whether the request's Surrogate-Capability header
-// contains an ESI/1.0 capability token for the specified deviceID.
-func (p *Processor) HasSurrogateCapability(h http.Header, deviceID string) bool {
-	return HasSurrogateCapability(h, deviceID)
-}
-
 // HasSurrogateControl returns true if the header contains an ESI/1.0 directive in Surrogate-Control.
 func HasSurrogateControl(h http.Header) bool {
 	if h == nil {
 		return false
 	}
-	return strings.Contains(h.Get(HeaderSurrogateControl), "ESI/1.0")
+	return strings.Contains(h.Get(headerSurrogateControl), "ESI/1.0")
 }
 
 // IsEligible checks if the response headers satisfy ESI processing criteria.
@@ -208,21 +200,56 @@ func (p *Processor) IsEligible(h http.Header) bool {
 	return HasSurrogateControl(h)
 }
 
-// ProcessDocument scans body for ESI tags and executes includes in a single pass.
+// ReconcileHeaders updates h in-place per ESI 1.0 (§3.2) and RFC 9110 specifications:
+// - Removes Surrogate-Control header
+// - Weakens or removes ETag and Last-Modified according to PreserveETag
+// - Updates Content-Length if present to match the spliced body length
+// - Appends fragment Set-Cookie headers from res
+//
+// If the original headers must be preserved, call h.Clone() before passing.
+func (p *Processor) ReconcileHeaders(h http.Header, res *Result) {
+	if h == nil {
+		return
+	}
+
+	h.Del(headerSurrogateControl)
+
+	if p.PreserveETag() {
+		if etag := h.Get(headerETag); etag != "" {
+			if !strings.HasPrefix(etag, "W/") && !strings.HasPrefix(etag, "w/") {
+				h.Set(headerETag, "W/"+etag)
+			}
+		}
+	} else {
+		h.Del(headerETag)
+		h.Del(headerLastModified)
+	}
+
+	if res != nil {
+		if h.Get(headerContentLength) != "" {
+			h.Set(headerContentLength, strconv.Itoa(len(res.Body())))
+		}
+		for _, cookie := range res.SetCookies {
+			h.Add(headerSetCookie, cookie)
+		}
+	}
+}
+
+// Process scans body for ESI tags and executes includes in a single pass.
 // If no ESI tags are detected, it returns the body untouched with zero allocations.
-func (p *Processor) ProcessDocument(ctx context.Context, req *http.Request, body []byte) (*Result, error) {
+func (p *Processor) Process(ctx context.Context, req *http.Request, body []byte) (*Result, error) {
 	hasESI, fragments := Scan(body)
 	if !hasESI || len(fragments) == 0 {
 		return &Result{
 			raw: body,
 		}, nil
 	}
-	return p.Process(ctx, req, body, fragments)
+	return p.ProcessFragments(ctx, req, body, fragments)
 }
 
-// Process resolves all ESI fragments in parentBody, fetches includes concurrently,
+// ProcessFragments resolves all ESI fragments in parentBody, fetches includes concurrently,
 // splices the results, and returns an assembled Result.
-func (p *Processor) Process(
+func (p *Processor) ProcessFragments(
 	ctx context.Context,
 	parentReq *http.Request,
 	parentBody []byte,
@@ -464,7 +491,7 @@ func (p *Processor) executeInclude(
 
 	if state.depth >= effectiveMaxDepth {
 		p.metrics.recordFragment("fallback")
-		res.err = ErrMaxDepthExceeded
+		res.err = errMaxDepthExceeded
 		return res
 	}
 
@@ -477,7 +504,7 @@ func (p *Processor) executeInclude(
 				slog.Any("visited", state.visitedURLs),
 			)
 		}
-		res.err = ErrCircularInclude
+		res.err = errCircularInclude
 		return res
 	}
 
@@ -579,7 +606,7 @@ func (p *Processor) fetchFragment(
 	timeout time.Duration,
 	state esiExecutionState,
 ) ([]byte, []string, string, error) {
-	parsed, err := ValidateURLScheme(targetURL)
+	parsed, err := validateURLScheme(targetURL)
 	if err != nil {
 		p.metrics.recordFragment("ssrf_blocked")
 		return nil, nil, "", err

@@ -30,13 +30,9 @@ const (
 	// Protocol & Bypass Guards
 	headerUpgrade         = "Upgrade"
 	headerAccept          = "Accept"
-	headerAcceptLanguage  = "Accept-Language"
 	headerContentType     = "Content-Type"
-	headerContentLength   = "Content-Length"
 	headerRange           = "Range"
 	headerSetCookie       = "Set-Cookie"
-	headerCookie          = "Cookie"
-	headerUserAgent       = "User-Agent"
 	headerXForwardedProto = "X-Forwarded-Proto"
 	headerAuthorization   = "Authorization"
 	headerPragma          = "Pragma"
@@ -44,9 +40,8 @@ const (
 	headerContentLocation = "Content-Location"
 
 	// Surrogate & Tag Invalidation / ESI
-	headerCacheTag            = "Cache-Tag"
-	headerSurrogateControl    = "Surrogate-Control"
-	headerSurrogateCapability = "Surrogate-Capability"
+	headerCacheTag         = "Cache-Tag"
+	headerSurrogateControl = "Surrogate-Control"
 
 	// Common Header Values
 	contentTypeEventStream = "text/event-stream"
