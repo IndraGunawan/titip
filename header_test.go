@@ -163,7 +163,7 @@ func TestExtractVaryHeaderNames(t *testing.T) {
 	})
 }
 
-func TestETagMatches(t *testing.T) {
+func TestWeakETagMatches(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		client   string
@@ -183,9 +183,9 @@ func TestETagMatches(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := etagMatches(tt.client, tt.cached)
+		got := weakETagMatches(tt.client, tt.cached)
 		if got != tt.expected {
-			t.Errorf("etagMatches(%q, %q) = %v, want %v", tt.client, tt.cached, got, tt.expected)
+			t.Errorf("weakETagMatches(%q, %q) = %v, want %v", tt.client, tt.cached, got, tt.expected)
 		}
 	}
 }

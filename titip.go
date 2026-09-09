@@ -81,10 +81,10 @@ func New(opts ...Option) (*Titip, error) {
 // Purge invalidates cache entries matching the specified path, URL, exact query variant, or wildcard.
 //
 // The target supports four formats:
-//   - "/api/products"           — sweeps the path and ALL query string variations
+//   - "/api/products"           — purges the path and ALL query string variations
 //   - "/api/products?id=42"     — purges only this exact query variant
 //   - "/assets/*"               — wipes all cached paths under /assets/ (wildcard)
-//   - "https://example.com/api" — host-scoped sweep (include domain in target to scope by host)
+//   - "https://example.com/api" — host-scoped path purge (include domain in target to scope by host)
 //
 // By default, purge is a hard-delete (immediate physical eviction). Use WithSoftPurge()
 // to mark entries as stale instead for safe thundering-herd protection.

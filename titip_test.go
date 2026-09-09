@@ -176,6 +176,8 @@ func BenchmarkCacheHit(b *testing.B) {
 	recPrime := httptest.NewRecorder()
 	handler.ServeHTTP(recPrime, req)
 
+	b.ReportAllocs()
+	b.ResetTimer()
 	for b.Loop() {
 		rec := getResponseRecorder()
 		handler.ServeHTTP(rec, req)

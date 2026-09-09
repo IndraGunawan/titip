@@ -120,10 +120,9 @@ If the handler returns 404, the processor falls back to outbound HTTP.
 
 Helpers for upstream capability negotiation and downstream response reconciliation defined in the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/) and RFC 9110:
 
-- `esi.AddSurrogateCapability(header http.Header, deviceID string)`: Advertises `Surrogate-Capability: <deviceID>="ESI/1.0"` to upstream origin servers.
-- `esi.HasSurrogateCapability(header http.Header, deviceID string) bool`: Checks for an ESI/1.0 capability token.
-- `esi.HasSurrogateControl(header http.Header) bool`: Checks if `Surrogate-Control` contains `ESI/1.0`.
-- `proc.IsEligible(header http.Header) bool`: Checks if response headers meet ESI processing requirements based on `WithHeaderRequired`.
+- `esi.AddSurrogateCapability(header http.Header, deviceToken string)`: Advertises `Surrogate-Capability: <deviceToken>="ESI/1.0"` to upstream origin servers.
+- `proc.CanProcess(header http.Header) bool`: Reports whether response headers meet ESI processing requirements based on `WithHeaderRequired`.
+- `proc.ShouldPreserveETag() bool`: Reports whether downstream ETag (weakened) and Last-Modified headers are preserved based on `WithPreserveETag`.
 - `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI 1.0 specifications (removes `Surrogate-Control`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
 
 ## Memory Management

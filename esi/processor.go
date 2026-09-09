@@ -205,66 +205,43 @@ func NewProcessor(opts ...Option) *Processor {
 	}
 }
 
-// HeaderRequired returns true if ESI processing requires the Surrogate-Control header.
-func (p *Processor) HeaderRequired() bool {
-	return p.config.headerRequired
-}
-
-// PreserveETag returns true if downstream ETag and Last-Modified headers are preserved.
-func (p *Processor) PreserveETag() bool {
+// ShouldPreserveETag reports whether downstream ETag (weakened) and Last-Modified headers are preserved.
+func (p *Processor) ShouldPreserveETag() bool {
 	return p.config.preserveETag
 }
 
-// AddSurrogateCapability appends an ESI/1.0 capability token for the specified deviceID
-// to the request's Surrogate-Capability header (e.g. `deviceID="ESI/1.0"`).
-// If deviceID is empty, "esi" is used.
-func AddSurrogateCapability(h http.Header, deviceID string) {
+// AddSurrogateCapability appends an ESI/1.0 capability token for the specified deviceToken
+// to the request's Surrogate-Capability header (e.g. `deviceToken="ESI/1.0"`).
+// If deviceToken is empty, "esi" is used.
+func AddSurrogateCapability(h http.Header, deviceToken string) {
 	if h == nil {
 		return
 	}
-	if deviceID == "" {
-		deviceID = "esi"
+	var capability string
+	switch deviceToken {
+	case "", "esi":
+		capability = `esi="ESI/1.0"`
+	case "titip":
+		capability = `titip="ESI/1.0"`
+	default:
+		capability = deviceToken + `="ESI/1.0"`
 	}
-	token := fmt.Sprintf(`%s="ESI/1.0"`, deviceID)
 	existing := h.Get(headerSurrogateCapability)
 	if existing == "" {
-		h.Set(headerSurrogateCapability, token)
-	} else if !strings.Contains(existing, token) {
-		h.Set(headerSurrogateCapability, existing+", "+token)
+		h.Set(headerSurrogateCapability, capability)
+	} else if !strings.Contains(existing, capability) {
+		h.Set(headerSurrogateCapability, existing+", "+capability)
 	}
 }
 
-// HasSurrogateCapability reports whether the request's Surrogate-Capability header
-// contains an ESI/1.0 capability token for the specified deviceID (or any ESI/1.0 token if deviceID is empty).
-func HasSurrogateCapability(h http.Header, deviceID string) bool {
-	if h == nil {
-		return false
-	}
-	val := h.Get(headerSurrogateCapability)
-	if val == "" {
-		return false
-	}
-	if deviceID == "" {
-		return strings.Contains(val, "ESI/1.0")
-	}
-	return strings.Contains(val, fmt.Sprintf(`%s="ESI/1.0"`, deviceID))
-}
-
-// HasSurrogateControl returns true if the header contains an ESI/1.0 directive in Surrogate-Control.
-func HasSurrogateControl(h http.Header) bool {
-	if h == nil {
-		return false
-	}
-	return strings.Contains(h.Get(headerSurrogateControl), "ESI/1.0")
-}
-
-// IsEligible checks if the response headers satisfy ESI processing criteria.
-// When HeaderRequired is false, it returns true; otherwise it verifies Surrogate-Control contains "ESI/1.0".
-func (p *Processor) IsEligible(h http.Header) bool {
-	if !p.HeaderRequired() {
+// CanProcess reports whether the response headers satisfy ESI processing criteria.
+// When WithHeaderRequired is false (default), it returns true; otherwise it verifies
+// that Surrogate-Control contains "ESI/1.0".
+func (p *Processor) CanProcess(h http.Header) bool {
+	if !p.config.headerRequired {
 		return true
 	}
-	return HasSurrogateControl(h)
+	return h != nil && strings.Contains(h.Get(headerSurrogateControl), "ESI/1.0")
 }
 
 // ReconcileHeaders updates h in-place per ESI 1.0 (§3.2) and RFC 9110 specifications:
@@ -281,7 +258,7 @@ func (p *Processor) ReconcileHeaders(h http.Header, res *Result) {
 
 	h.Del(headerSurrogateControl)
 
-	if p.PreserveETag() {
+	if p.ShouldPreserveETag() {
 		if etag := h.Get(headerETag); etag != "" {
 			if !strings.HasPrefix(etag, "W/") && !strings.HasPrefix(etag, "w/") {
 				h.Set(headerETag, "W/"+etag)
@@ -454,14 +431,14 @@ func (p *Processor) expandNestedESI(
 	if !hasESI || len(frags) == 0 {
 		return body, cookies
 	}
-	processed, nestedCookies := p.processNestedESI(ctx, parentReq, body, frags, state)
+	processed, nestedCookies := p.executeAndSpliceNestedESI(ctx, parentReq, body, frags, state)
 	if len(nestedCookies) > 0 {
 		cookies = append(cookies, nestedCookies...)
 	}
 	return processed, cookies
 }
 
-func (p *Processor) processNestedESI(
+func (p *Processor) executeAndSpliceNestedESI(
 	ctx context.Context,
 	parentReq *http.Request,
 	body []byte,

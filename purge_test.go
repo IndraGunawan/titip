@@ -27,8 +27,8 @@ func TestParsePurgeTarget_PathOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if pt.mode != purgeModePathSweep {
-		t.Errorf("expected PathSweep mode, got: %v", pt.mode)
+	if pt.mode != purgeModePathAllVariants {
+		t.Errorf("expected PathAllVariants mode, got: %v", pt.mode)
 	}
 	if pt.path != "/api/products" {
 		t.Errorf("expected path /api/products, got: %s", pt.path)
@@ -85,8 +85,8 @@ func TestParsePurgeTarget_FullHTTPSURL_HostScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if pt.mode != purgeModePathSweep {
-		t.Errorf("expected PathSweep, got: %v", pt.mode)
+	if pt.mode != purgeModePathAllVariants {
+		t.Errorf("expected PathAllVariants, got: %v", pt.mode)
 	}
 	if pt.host != "example.com" {
 		t.Errorf("expected host example.com, got: %s", pt.host)
@@ -177,14 +177,14 @@ func TestParsePurgeTarget_QuerySortedForExactMatch(t *testing.T) {
 }
 
 func TestParsePurgeTarget_RespectsCacheKey(t *testing.T) {
-	// 1. ExcludeQueryString turns URL with query into PathSweep.
+	// 1. ExcludeQueryString turns URL with query into PathAllVariants.
 	cfgNoQuery := &CacheKey{ExcludeQueryString: true}
 	pt1, err := parsePurgeTarget("/items?id=100&page=2", cfgNoQuery)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if pt1.mode != purgeModePathSweep {
-		t.Errorf("expected PathSweep when query is excluded, got: %v", pt1.mode)
+	if pt1.mode != purgeModePathAllVariants {
+		t.Errorf("expected PathAllVariants when query is excluded, got: %v", pt1.mode)
 	}
 	if pt1.query != "" {
 		t.Errorf("expected empty query, got: %s", pt1.query)
@@ -282,9 +282,9 @@ func TestBuildPurgePatterns_ExactMode_WithScheme(t *testing.T) {
 	}
 }
 
-func TestBuildPurgePatterns_PathSweep_NoHost(t *testing.T) {
+func TestBuildPurgePatterns_PathAllVariants_NoHost(t *testing.T) {
 	pt := &purgeTarget{
-		mode: purgeModePathSweep,
+		mode: purgeModePathAllVariants,
 		path: "/api/products",
 	}
 	cfg := &CacheKey{}
@@ -298,9 +298,9 @@ func TestBuildPurgePatterns_PathSweep_NoHost(t *testing.T) {
 	}
 }
 
-func TestBuildPurgePatterns_PathSweep_NoHost_ExcludeHostConfig(t *testing.T) {
+func TestBuildPurgePatterns_PathAllVariants_NoHost_ExcludeHostConfig(t *testing.T) {
 	pt := &purgeTarget{
-		mode: purgeModePathSweep,
+		mode: purgeModePathAllVariants,
 		path: "/api/products",
 	}
 	cfg := &CacheKey{ExcludeHost: true}
@@ -314,9 +314,9 @@ func TestBuildPurgePatterns_PathSweep_NoHost_ExcludeHostConfig(t *testing.T) {
 	}
 }
 
-func TestBuildPurgePatterns_PathSweep_WithHost(t *testing.T) {
+func TestBuildPurgePatterns_PathAllVariants_WithHost(t *testing.T) {
 	pt := &purgeTarget{
-		mode: purgeModePathSweep,
+		mode: purgeModePathAllVariants,
 		path: "/api/products",
 		host: "example.com",
 	}
@@ -328,10 +328,10 @@ func TestBuildPurgePatterns_PathSweep_WithHost(t *testing.T) {
 	}
 }
 
-func TestBuildPurgePatterns_PathSweep_DualProtocol(t *testing.T) {
+func TestBuildPurgePatterns_PathAllVariants_DualProtocol(t *testing.T) {
 	// When IncludeProtocol=true and no scheme specified → two patterns (http + https).
 	pt := &purgeTarget{
-		mode: purgeModePathSweep,
+		mode: purgeModePathAllVariants,
 		path: "/api/products",
 		host: "example.com",
 	}
@@ -354,10 +354,10 @@ func TestBuildPurgePatterns_PathSweep_DualProtocol(t *testing.T) {
 	}
 }
 
-func TestBuildPurgePatterns_PathSweep_SingleScheme(t *testing.T) {
+func TestBuildPurgePatterns_PathAllVariants_SingleScheme(t *testing.T) {
 	// When IncludeProtocol=true and explicit scheme → single pattern.
 	pt := &purgeTarget{
-		mode:   purgeModePathSweep,
+		mode:   purgeModePathAllVariants,
 		path:   "/api/products",
 		host:   "example.com",
 		scheme: "https",
@@ -490,7 +490,7 @@ func TestPurge_EndToEnd_MatrixOfTargets(t *testing.T) {
 		keyCfg        CacheKey
 	}{
 		{
-			name:          "PathOnly_Sweep_PurgesFullHostKey",
+			name:          "PathOnly_AllVariants_PurgesFullHostKey",
 			cachedURL:     "http://localhost:8080/api/time",
 			purgeTarget:   "/api/time",
 			expectDeleted: true,
@@ -508,7 +508,7 @@ func TestPurge_EndToEnd_MatrixOfTargets(t *testing.T) {
 			expectDeleted: false,
 		},
 		{
-			name:          "PathSweep_PurgesAllQueryVariations",
+			name:          "PathAllVariants_PurgesAllQueryVariations",
 			cachedURL:     "http://localhost:8080/api/products?page=2&limit=50",
 			purgeTarget:   "/api/products",
 			expectDeleted: true,
@@ -611,17 +611,17 @@ func TestPurgeTarget_CaseInsensitivePath(t *testing.T) {
 		t.Errorf("expected exact pattern %q, got %v", expectedKey, exactPatterns)
 	}
 
-	// 2. Path sweep mode
-	ptSweep, err := parsePurgeTarget("http://example.com/Products/Shoes/Running", cfg)
+	// 2. Path all-variants mode
+	ptAllVariants, err := parsePurgeTarget("http://example.com/Products/Shoes/Running", cfg)
 	if err != nil {
 		t.Fatalf("parsePurgeTarget failed: %v", err)
 	}
-	if ptSweep.path != "/products/shoes/running" {
-		t.Errorf("expected lowercase path /products/shoes/running, got %s", ptSweep.path)
+	if ptAllVariants.path != "/products/shoes/running" {
+		t.Errorf("expected lowercase path /products/shoes/running, got %s", ptAllVariants.path)
 	}
-	sweepPatterns := buildPurgePatterns(ptSweep, cfg)
-	if len(sweepPatterns) != 1 || sweepPatterns[0] != "p=/products/shoes/running:h=example.com:m=*" {
-		t.Errorf("expected sweep pattern %q, got %v", "p=/products/shoes/running:h=example.com:m=*", sweepPatterns)
+	allVariantsPatterns := buildPurgePatterns(ptAllVariants, cfg)
+	if len(allVariantsPatterns) != 1 || allVariantsPatterns[0] != "p=/products/shoes/running:h=example.com:m=*" {
+		t.Errorf("expected all-variants pattern %q, got %v", "p=/products/shoes/running:h=example.com:m=*", allVariantsPatterns)
 	}
 
 	// 3. Wildcard mode

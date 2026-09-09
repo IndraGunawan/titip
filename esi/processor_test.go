@@ -461,31 +461,27 @@ func TestProcessor_Process(t *testing.T) {
 	}
 }
 
-func TestProcessor_IsEligible_And_HasSurrogateControl(t *testing.T) {
+func TestProcessor_CanProcess(t *testing.T) {
 	tests := []struct {
 		header   http.Header
-		hasSC    bool
 		required bool
 	}{
-		{nil, false, false},
-		{http.Header{}, false, false},
-		{http.Header{"Surrogate-Control": []string{"max-age=3600"}}, false, false},
-		{http.Header{"Surrogate-Control": []string{"content=\"ESI/1.0\""}}, true, true},
-		{http.Header{"Surrogate-Control": []string{"abc, content=\"ESI/1.0\", max-age=60"}}, true, true},
+		{nil, false},
+		{http.Header{}, false},
+		{http.Header{"Surrogate-Control": []string{"max-age=3600"}}, false},
+		{http.Header{"Surrogate-Control": []string{"content=\"ESI/1.0\""}}, true},
+		{http.Header{"Surrogate-Control": []string{"abc, content=\"ESI/1.0\", max-age=60"}}, true},
 	}
 
 	procDefault := NewProcessor()
 	procRequired := NewProcessor(WithHeaderRequired(true))
 
 	for _, tt := range tests {
-		if got := HasSurrogateControl(tt.header); got != tt.hasSC {
-			t.Errorf("HasSurrogateControl(%v) = %v, want %v", tt.header, got, tt.hasSC)
+		if !procDefault.CanProcess(tt.header) {
+			t.Errorf("procDefault.CanProcess(%v) = false, want true", tt.header)
 		}
-		if !procDefault.IsEligible(tt.header) {
-			t.Errorf("procDefault.IsEligible(%v) = false, want true", tt.header)
-		}
-		if got := procRequired.IsEligible(tt.header); got != tt.required {
-			t.Errorf("procRequired.IsEligible(%v) = %v, want %v", tt.header, got, tt.required)
+		if got := procRequired.CanProcess(tt.header); got != tt.required {
+			t.Errorf("procRequired.CanProcess(%v) = %v, want %v", tt.header, got, tt.required)
 		}
 	}
 }
@@ -493,24 +489,12 @@ func TestProcessor_IsEligible_And_HasSurrogateControl(t *testing.T) {
 func TestProcessor_SurrogateCapability(t *testing.T) {
 	// 1. Nil header safe
 	AddSurrogateCapability(nil, "titip")
-	if HasSurrogateCapability(nil, "titip") {
-		t.Errorf("expected false for nil header")
-	}
 
 	// 2. Empty header sets capability
 	h := make(http.Header)
 	AddSurrogateCapability(h, "titip")
 	if got := h.Get(headerSurrogateCapability); got != `titip="ESI/1.0"` {
 		t.Errorf("expected %q, got %q", `titip="ESI/1.0"`, got)
-	}
-	if !HasSurrogateCapability(h, "titip") {
-		t.Errorf("expected HasSurrogateCapability(h, \"titip\") to be true")
-	}
-	if HasSurrogateCapability(h, "akamai") {
-		t.Errorf("expected HasSurrogateCapability(h, \"akamai\") to be false")
-	}
-	if !HasSurrogateCapability(h, "") {
-		t.Errorf("expected generic HasSurrogateCapability(h, \"\") to be true")
 	}
 
 	// 3. Already present token is not duplicated
@@ -533,9 +517,6 @@ func TestProcessor_SurrogateCapability(t *testing.T) {
 	AddSurrogateCapability(h3, "")
 	if got := h3.Get(headerSurrogateCapability); got != `esi="ESI/1.0"` {
 		t.Errorf("expected default deviceID esi, got %q", got)
-	}
-	if !HasSurrogateCapability(h3, "esi") {
-		t.Errorf("expected HasSurrogateCapability to be true")
 	}
 }
 

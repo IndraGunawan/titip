@@ -205,7 +205,7 @@ Titip provides a programmatic Go API for **Hierarchical Path Purging**, **Surrog
 ### Programmatic Go API
 
 ```go
-// 1. Path Sweep (purges /api/products and all its query string variants)
+// 1. Path Purge (purges /api/products and all its query string variants)
 err := cache.Purge(ctx, "/api/products")
 
 // 2. Exact Query Invalidation (purges only ?id=10, leaves other queries intact)

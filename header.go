@@ -89,8 +89,8 @@ func strongETagMatches(clientETag, cachedETag string) bool {
 	return c == s
 }
 
-// etagMatches performs weak ETag comparison per RFC-7232 Section 2.3.2.
-func etagMatches(clientETag, cachedETag string) bool {
+// weakETagMatches performs weak ETag comparison per RFC 9110 §13.1.1 and RFC 7232 §2.3.2.
+func weakETagMatches(clientETag, cachedETag string) bool {
 	c := strings.TrimSpace(clientETag)
 	s := strings.TrimSpace(cachedETag)
 	if c == "" || s == "" {

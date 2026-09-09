@@ -1,9 +1,9 @@
 package titip
 
 import (
-	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	pb "github.com/indragunawan/titip/proto"
 )
@@ -41,7 +41,9 @@ func (t *Titip) processESI(
 			defer res.Release()
 			body = res.Body()
 			t.esiProcessor.ReconcileHeaders(reconciled, res)
-			detail = fmt.Sprintf("%s; detail=\"esi-includes=%d;time=%s\"", rfc9211Detail, len(fragments), res.Duration.String())
+			if t.config.cacheStatusMode == CacheStatusRFC9211 {
+				detail = rfc9211Detail + "; detail=\"esi-includes=" + strconv.Itoa(len(fragments)) + ";time=" + res.Duration.String() + "\""
+			}
 		}
 	} else {
 		reconciled.Del(headerSurrogateControl)

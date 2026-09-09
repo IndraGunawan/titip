@@ -1281,11 +1281,15 @@ func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
 	if mw.esiProcessor == nil {
 		t.Fatalf("expected ESI processor to be initialized")
 	}
-	if !mw.esiProcessor.HeaderRequired() {
-		t.Errorf("expected HeaderRequired to be true")
+	scHeader := http.Header{"Surrogate-Control": []string{`content="ESI/1.0"`}}
+	if !mw.esiProcessor.CanProcess(scHeader) {
+		t.Errorf("expected CanProcess to be true with Surrogate-Control")
 	}
-	if mw.esiProcessor.PreserveETag() != false {
-		t.Errorf("expected default PreserveETag=false, got true")
+	if mw.esiProcessor.CanProcess(http.Header{}) {
+		t.Errorf("expected CanProcess to be false without Surrogate-Control when WithHeaderRequired(true)")
+	}
+	if mw.esiProcessor.ShouldPreserveETag() {
+		t.Errorf("expected default ShouldPreserveETag=false, got true")
 	}
 }
 

@@ -343,9 +343,9 @@ func buildUnsortedQueryString(r *http.Request, cfg *CacheKey) string {
 	return qsBuf.String()
 }
 
-// isStandardListVaryHeader reports whether name is a standard content-negotiation header
+// isSortableVaryHeader reports whether name is a standard content-negotiation header
 // whose comma-separated tokens can be sorted deterministically without changing semantics.
-func isStandardListVaryHeader(name string) bool {
+func isSortableVaryHeader(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "accept-encoding", "accept-language", "accept":
 		return true
@@ -388,7 +388,7 @@ func generateVariantKey(r *http.Request, varyHeaderNames []string) string {
 		buf.WriteString(canonicalName)
 		buf.WriteByte('=')
 		if len(vals) > 0 {
-			if isStandardListVaryHeader(canonicalName) {
+			if isSortableVaryHeader(canonicalName) {
 				var tokens []string
 				for _, v := range vals {
 					for tok := range strings.SplitSeq(v, ",") {
