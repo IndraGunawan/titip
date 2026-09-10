@@ -144,8 +144,8 @@ func (fg *flightGroup) release(key string, tracker *flightTracker) {
 type Result struct {
 	buf        *bytes.Buffer
 	raw        []byte
-	SetCookies []string
-	Duration   time.Duration
+	setCookies []string
+	duration   time.Duration
 }
 
 // Body returns the assembled document byte slice.
@@ -158,6 +158,14 @@ func (r *Result) Body() []byte {
 		return r.buf.Bytes()
 	}
 	return r.raw
+}
+
+// Duration returns the total wall-clock time spent resolving and splicing all ESI includes.
+func (r *Result) Duration() time.Duration {
+	if r == nil {
+		return 0
+	}
+	return r.duration
 }
 
 // Release returns the internal buffer back to the memory pool.
@@ -224,17 +232,16 @@ func (p *Processor) ShouldPreserveETag() bool {
 
 // AddSurrogateCapability appends an ESI/1.0 capability token for the specified deviceToken
 // to the request's Surrogate-Capability header (e.g. `deviceToken="ESI/1.0"`).
+// If p is nil or h is nil, this is a no-op.
 // If deviceToken is empty, "esi" is used.
-func AddSurrogateCapability(h http.Header, deviceToken string) {
-	if h == nil {
+func (p *Processor) AddSurrogateCapability(h http.Header, deviceToken string) {
+	if p == nil || h == nil {
 		return
 	}
 	var capability string
 	switch deviceToken {
 	case "", "esi":
 		capability = `esi="ESI/1.0"`
-	case "titip":
-		capability = `titip="ESI/1.0"`
 	default:
 		capability = deviceToken + `="ESI/1.0"`
 	}
@@ -285,22 +292,10 @@ func (p *Processor) ReconcileHeaders(h http.Header, res *Result) {
 		if h.Get(headerContentLength) != "" {
 			h.Set(headerContentLength, strconv.Itoa(len(res.Body())))
 		}
-		for _, cookie := range res.SetCookies {
+		for _, cookie := range res.setCookies {
 			h.Add(headerSetCookie, cookie)
 		}
 	}
-}
-
-// Process scans body for ESI tags and executes includes in a single pass.
-// If no ESI tags are detected, it returns the body untouched with zero allocations.
-func (p *Processor) Process(ctx context.Context, req *http.Request, body []byte) (*Result, error) {
-	hasESI, fragments := Scan(body)
-	if !hasESI || len(fragments) == 0 {
-		return &Result{
-			raw: body,
-		}, nil
-	}
-	return p.ProcessFragments(ctx, req, body, fragments)
 }
 
 // ProcessFragments resolves all ESI fragments in parentBody, fetches includes concurrently,
@@ -369,8 +364,8 @@ func (p *Processor) ProcessFragments(
 
 	return &Result{
 		buf:        outBuf,
-		SetCookies: allCookies,
-		Duration:   totalDur,
+		setCookies: allCookies,
+		duration:   totalDur,
 	}, nil
 }
 
@@ -439,8 +434,8 @@ func (p *Processor) expandNestedESI(
 	cookies []string,
 	state esiExecutionState,
 ) ([]byte, []string) {
-	hasESI, frags := Scan(body)
-	if !hasESI || len(frags) == 0 {
+	frags := Scan(body)
+	if len(frags) == 0 {
 		return body, cookies
 	}
 	processed, nestedCookies := p.executeAndSpliceNestedESI(ctx, parentReq, body, frags, state)
@@ -759,6 +754,7 @@ func (p *Processor) fetchViaCustomFetcher(
 			return nil, nil, "in_process", err
 		}
 	}
+	p.AddSurrogateCapability(req.Header, "titip")
 
 	type customFetchResult struct {
 		body    []byte
@@ -823,7 +819,7 @@ func (p *Processor) fetchOutboundHTTP(
 	}
 
 	req.Header.Set("Accept-Encoding", "identity")
-	AddSurrogateCapability(req.Header, "esi")
+	p.AddSurrogateCapability(req.Header, "titip")
 	if parentReq != nil {
 		if ua := parentReq.Header.Get("User-Agent"); ua != "" {
 			req.Header.Set("User-Agent", ua)

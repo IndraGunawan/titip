@@ -26,18 +26,18 @@ var (
 )
 
 // Scan inspects the HTML byte slice for ESI tags and extracts pre-compiled fragment metadata.
-// It returns hasESI=true and the list of sorted EsiFragment descriptors if any ESI directives exist.
-func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
+// It returns a slice of EsiFragment descriptors if any ESI directives exist, or nil if none are found.
+func Scan(b []byte) []*proto.EsiFragment {
 	if len(b) == 0 {
-		return false, nil
+		return nil
 	}
 
 	// Fast pre-check using SIMD bytes.Contains
 	if !bytes.Contains(b, []byte("<esi:")) && !bytes.Contains(b, tagESIInlineComment) {
-		return false, nil
+		return nil
 	}
 
-	fragments = make([]*proto.EsiFragment, 0, 8)
+	var fragments []*proto.EsiFragment
 	pos := 0
 	bufLen := len(b)
 
@@ -58,7 +58,6 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 				StartPos: stripStart,
 				EndPos:   stripEnd,
 			})
-			hasESI = true
 
 			// Find matching --> closing wrapper
 			contentStart := tagStart + len(tagESIInlineComment)
@@ -69,16 +68,14 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 
 				// Recursively scan inner block for tags within <!--esi ... -->
 				innerBlock := b[contentStart:commentCloseStart]
-				if innerHasESI, innerFrags := Scan(innerBlock); innerHasESI {
-					for _, ifrag := range innerFrags {
-						ifrag.StartPos += int64(contentStart)
-						ifrag.EndPos += int64(contentStart)
-						if ifrag.InnerStartPos > 0 {
-							ifrag.InnerStartPos += int64(contentStart)
-							ifrag.InnerEndPos += int64(contentStart)
-						}
-						fragments = append(fragments, ifrag)
+				for _, ifrag := range Scan(innerBlock) {
+					ifrag.StartPos += int64(contentStart)
+					ifrag.EndPos += int64(contentStart)
+					if ifrag.InnerStartPos > 0 {
+						ifrag.InnerStartPos += int64(contentStart)
+						ifrag.InnerEndPos += int64(contentStart)
 					}
+					fragments = append(fragments, ifrag)
 				}
 
 				// Strip --> closing wrapper
@@ -103,7 +100,6 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 				frag, nextPos := parseESIInclude(b, tagStart)
 				if frag != nil {
 					fragments = append(fragments, frag)
-					hasESI = true
 				}
 				pos = nextPos
 				continue
@@ -121,7 +117,6 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 						StartPos: int64(tagStart),
 						EndPos:   int64(tagEnd),
 					})
-					hasESI = true
 					pos = tagEnd
 					continue
 				}
@@ -139,7 +134,6 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 							StartPos: int64(tagStart),
 							EndPos:   int64(endOffset),
 						})
-						hasESI = true
 						pos = endOffset
 						continue
 					}
@@ -151,7 +145,6 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 							StartPos: int64(tagStart),
 							EndPos:   int64(tagEnd),
 						})
-						hasESI = true
 						pos = tagEnd
 						continue
 					}
@@ -162,7 +155,7 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 		pos = tagStart + 1
 	}
 
-	return hasESI, fragments
+	return fragments
 }
 
 // parseESIInclude parses an <esi:include> tag starting at tagStart.

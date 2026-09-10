@@ -333,7 +333,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 			originReq.Header.Del(headerIfModifiedSince)
 		}
 		if t.esiProcessor != nil {
-			esi.AddSurrogateCapability(originReq.Header, "titip")
+			t.esiProcessor.AddSurrogateCapability(originReq.Header, "titip")
 		}
 	}
 
@@ -413,7 +413,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 
 	// ESI Processing on Cold Miss
 	if t.canProcessESI(headersClone) {
-		if hasESI, fragments := esi.Scan(bodyBytes); hasESI && len(fragments) > 0 {
+		if fragments := esi.Scan(bodyBytes); len(fragments) > 0 {
 			var statusToken, rfc9211Detail string
 			missReason := "fwd=uri-miss"
 			if ctx.isVaryMiss {
@@ -540,7 +540,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			}
 		}
 		if t.esiProcessor != nil {
-			esi.AddSurrogateCapability(revalReq.Header, "titip")
+			t.esiProcessor.AddSurrogateCapability(revalReq.Header, "titip")
 		}
 
 		reqTime := time.Now()
@@ -748,7 +748,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 	// ESI Processing on fresh revalidation
 	if t.canProcessESI(res.headers) {
-		if hasESI, fragments := esi.Scan(res.body); hasESI && len(fragments) > 0 {
+		if fragments := esi.Scan(res.body); len(fragments) > 0 {
 			t.recordRequest(ctx, statusMiss)
 			detail := ""
 			if t.config.cacheStatusMode == CacheStatusRFC9211 {
@@ -824,7 +824,7 @@ func (t *Titip) saveVariantToStorage(
 	// Check for ESI directives in body
 	var fragments []*pb.EsiFragment
 	if t.canProcessESI(headers) {
-		_, fragments = esi.Scan(bodyBytes)
+		fragments = esi.Scan(bodyBytes)
 	}
 
 	// Compress body payload
@@ -907,7 +907,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 			originReq.Method = http.MethodGet
 		}
 		if t.esiProcessor != nil {
-			esi.AddSurrogateCapability(originReq.Header, "titip")
+			t.esiProcessor.AddSurrogateCapability(originReq.Header, "titip")
 		}
 	} else if originReq.Context() != bgCtx {
 		originReq = r.WithContext(bgCtx)
