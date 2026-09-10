@@ -80,6 +80,8 @@ func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
 	defer cleanup()
 
+	var fragSurrogateCap string
+
 	// 1. Define a root Caddy server handler that routes both /page and /api/fragment
 	rootServer := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		switch r.URL.Path {
@@ -89,6 +91,7 @@ func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprint(w, `<div>Page Content: <esi:include src="/api/fragment" /></div>`)
 		case "/api/fragment":
+			fragSurrogateCap = r.Header.Get("Surrogate-Capability")
 			w.Header().Set("Content-Type", "text/html")
 			w.Header().Set("Cache-Control", "public, max-age=60")
 			w.WriteHeader(http.StatusOK)
@@ -126,6 +129,9 @@ func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 	expected := `<div>Page Content: <span>Dynamic Spliced Fragment</span></div>`
 	if rec.Body.String() != expected {
 		t.Fatalf("ESI multi-route splicing failed.\nExpected: %s\nGot:      %s", expected, rec.Body.String())
+	}
+	if !strings.Contains(fragSurrogateCap, `titip="ESI/1.0"`) {
+		t.Errorf("expected fragment subrequest to have Surrogate-Capability containing titip=\"ESI/1.0\", got %q", fragSurrogateCap)
 	}
 }
 

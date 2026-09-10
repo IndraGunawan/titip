@@ -47,6 +47,19 @@ func parseDate(dateHeader string) (time.Time, error) {
 	return http.ParseTime(trimmed)
 }
 
+func parseExpiresLifetime(expHeader string, dateVal, respTime time.Time) time.Duration {
+	expDate, err := parseDate(expHeader)
+	if err != nil || expDate.IsZero() {
+		return 0
+	}
+	if !dateVal.IsZero() && expDate.After(dateVal) {
+		return expDate.Sub(dateVal)
+	} else if expDate.After(respTime) {
+		return expDate.Sub(respTime)
+	}
+	return 0
+}
+
 // extractTieredCacheControl resolves the effective Cache-Control header string using RFC 9213 tiered precedence:
 // 1. Titip-Cache-Control (Highest Priority — specific to Titip)
 // 2. CDN-Cache-Control (RFC 9213 generic targeted header)
@@ -110,14 +123,7 @@ func calculateFreshness(statusCode int, reqHeaders, respHeaders http.Header, req
 		} else if info.Directives.MaxAge >= 0 { // RFC 9111 §5.2.2.1: max-age directive
 			info.FreshnessLifetime = time.Duration(info.Directives.MaxAge) * time.Second
 		} else if expHeader := respHeaders.Get(headerExpires); expHeader != "" { // RFC 9111 §5.3: Expires header
-			expDate, err := parseDate(expHeader)
-			if err == nil && !expDate.IsZero() {
-				if !dateVal.IsZero() && expDate.After(dateVal) {
-					info.FreshnessLifetime = expDate.Sub(dateVal)
-				} else if expDate.After(respTime) {
-					info.FreshnessLifetime = expDate.Sub(respTime)
-				}
-			}
+			info.FreshnessLifetime = parseExpiresLifetime(expHeader, dateVal, respTime)
 		}
 
 		// RFC 9111 §5.2.2.4: no-cache requires revalidation before each use (FreshnessLifetime = 0)
@@ -136,14 +142,7 @@ func calculateFreshness(statusCode int, reqHeaders, respHeaders http.Header, req
 		}
 	} else if expHeader := respHeaders.Get(headerExpires); expHeader != "" {
 		// RFC 9111 §4.2.1: Expires without Cache-Control provides freshness lifetime
-		expDate, err := parseDate(expHeader)
-		if err == nil && !expDate.IsZero() {
-			if !dateVal.IsZero() && expDate.After(dateVal) {
-				info.FreshnessLifetime = expDate.Sub(dateVal)
-			} else if expDate.After(respTime) {
-				info.FreshnessLifetime = expDate.Sub(respTime)
-			}
-		}
+		info.FreshnessLifetime = parseExpiresLifetime(expHeader, dateVal, respTime)
 	}
 
 	// 5. Effective TTL stored in cache (freshness_lifetime - corrected_initial_age)
@@ -203,14 +202,18 @@ func isResponseCacheable(statusCode int, reqHeaders, respHeaders http.Header, di
 		}
 	}
 
-	// RFC 9111 §4.2.1: If no Cache-Control header, check if Expires header provides future freshness
-	if directives == nil {
+	hasFutureExpires := func() bool {
 		expHeader := respHeaders.Get(headerExpires)
 		if expHeader == "" {
 			return false
 		}
 		expDate, err := parseDate(expHeader)
-		if err != nil || expDate.IsZero() || !expDate.After(time.Now()) {
+		return err == nil && !expDate.IsZero() && expDate.After(time.Now())
+	}
+
+	// RFC 9111 §4.2.1: If no Cache-Control header, check if Expires header provides future freshness
+	if directives == nil {
+		if !hasFutureExpires() {
 			return false
 		}
 		// RFC 9111 §3.5: Request Authorization header guard for shared cache
@@ -240,12 +243,7 @@ func isResponseCacheable(statusCode int, reqHeaders, respHeaders http.Header, di
 
 	// RFC 9111 §4.2.1 & §5.2.2: Must have explicit freshness indicator (max-age, s-maxage, public, no-cache, or valid Expires)
 	if directives.MaxAge < 0 && directives.SMaxAge < 0 && !directives.Public && !directives.NoCachePresent && len(directives.NoCache) == 0 {
-		expHeader := respHeaders.Get(headerExpires)
-		if expHeader == "" {
-			return false
-		}
-		expDate, err := parseDate(expHeader)
-		if err != nil || expDate.IsZero() || !expDate.After(time.Now()) {
+		if !hasFutureExpires() {
 			return false
 		}
 	}

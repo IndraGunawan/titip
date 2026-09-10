@@ -9,14 +9,15 @@ message HeaderValues {
 }
 
 message EsiFragment {
-  int32 start_pos = 1;
-  int32 end_pos = 2;
+  int64 start_pos = 1;
+  int64 end_pos = 2;
   string src = 3;
   string alt = 4;
   string on_error = 5;
   uint32 max_depth = 6;
-  uint32 timeout_ms = 7;
-  bytes fallback_body = 8;
+  int64 timeout_ms = 7;
+  int64 inner_start_pos = 8;
+  int64 inner_end_pos = 9;
 }
 
 // VariantInfo stores metadata for a specific Vary header combination

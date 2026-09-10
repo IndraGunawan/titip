@@ -30,13 +30,9 @@ const (
 	// Protocol & Bypass Guards
 	headerUpgrade         = "Upgrade"
 	headerAccept          = "Accept"
-	headerAcceptLanguage  = "Accept-Language"
 	headerContentType     = "Content-Type"
-	headerContentLength   = "Content-Length"
 	headerRange           = "Range"
 	headerSetCookie       = "Set-Cookie"
-	headerCookie          = "Cookie"
-	headerUserAgent       = "User-Agent"
 	headerXForwardedProto = "X-Forwarded-Proto"
 	headerAuthorization   = "Authorization"
 	headerPragma          = "Pragma"
@@ -93,8 +89,8 @@ func strongETagMatches(clientETag, cachedETag string) bool {
 	return c == s
 }
 
-// etagMatches performs weak ETag comparison per RFC-7232 Section 2.3.2.
-func etagMatches(clientETag, cachedETag string) bool {
+// weakETagMatches performs weak ETag comparison per RFC 9110 §13.1.1 and RFC 7232 §2.3.2.
+func weakETagMatches(clientETag, cachedETag string) bool {
 	c := strings.TrimSpace(clientETag)
 	s := strings.TrimSpace(cachedETag)
 	if c == "" || s == "" {

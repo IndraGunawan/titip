@@ -75,11 +75,7 @@ func putResponseRecorder(rec *responseRecorder) {
 	if rec == nil {
 		return
 	}
-	if rec.Body != nil && rec.Body.Cap() > maxBufferSize {
-		rec.Body = new(bytes.Buffer)
-	} else if rec.Body != nil {
-		rec.Body.Reset()
-	} else {
+	if rec.Body == nil || rec.Body.Cap() > maxBufferSize {
 		rec.Body = new(bytes.Buffer)
 	}
 	rec.Reset()

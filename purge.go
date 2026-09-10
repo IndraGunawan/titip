@@ -14,8 +14,8 @@ const (
 	// purgeModeExact: exact primary key match (path + specific query string).
 	purgeModeExact purgeMode = iota
 
-	// purgeModePathSweep: pattern match — purge a path and ALL its query variations.
-	purgeModePathSweep
+	// purgeModePathAllVariants: pattern match — purge a path and ALL its query variations.
+	purgeModePathAllVariants
 
 	// purgeModeWildcard: pattern match — purge all paths under a directory prefix.
 	purgeModeWildcard
@@ -33,10 +33,10 @@ type purgeTarget struct {
 // parsePurgeTarget parses a raw purge target string into a structured purgeTarget.
 //
 // Supported formats:
-//   - "/api/products"              → path sweep (all query variants)
+//   - "/api/products"              → path purge (all query variants)
 //   - "/api/products?id=42"        → exact match (specific query variant only)
 //   - "/assets/*"                  → wildcard directory purge
-//   - "https://example.com/api"    → host-scoped path sweep
+//   - "https://example.com/api"    → host-scoped path purge (all query variants)
 //
 // parsePurgeTarget parses a raw purge target string into a structured purgeTarget,
 // respecting the active CacheKey rules (query filters, sorting, trailing slashes, host exclusion).
@@ -129,17 +129,17 @@ func parsePurgeTarget(target string, cfg *CacheKey) (*purgeTarget, error) {
 		}
 	}
 
-	// No query (or empty after filtering/exclusion) → sweep all variants for this path.
-	pt.mode = purgeModePathSweep
+	// No query (or empty after filtering/exclusion) → match all variants for this path.
+	pt.mode = purgeModePathAllVariants
 	return pt, nil
 }
 
 // buildPurgePatterns generates the Redis glob patterns for a purge target.
 //
 // Pattern rules:
-//   - Exact mode:       full primary key string (used for direct delete/soft-purge)
-//   - PathSweep mode:   "meta:p=<path>[:h=<host>]:m=*"  (optionally with scheme suffix)
-//   - Wildcard mode:    "meta:p=<path>/*"                (prefix match on path segment)
+//   - Exact mode:            full primary key string (used for direct delete/soft-purge)
+//   - PathAllVariants mode:  "meta:p=<path>[:h=<host>]:m=*"  (optionally with scheme suffix)
+//   - Wildcard mode:         "meta:p=<path>/*"                (prefix match on path segment)
 //
 // When IncludeProtocol is true and no scheme is specified, two patterns are returned
 // (one for http, one for https) to honour the dual-protocol rule.
@@ -151,12 +151,12 @@ func buildPurgePatterns(pt *purgeTarget, cfg *CacheKey) []string {
 	switch pt.mode {
 	case purgeModeExact:
 		if !cfg.ExcludeHost && pt.host == "" {
-			return buildSweepPatterns(pt, cfg)
+			return buildAllVariantsPurgePatterns(pt, cfg)
 		}
 		return []string{buildExactKey(pt, cfg)}
 
-	case purgeModePathSweep:
-		return buildSweepPatterns(pt, cfg)
+	case purgeModePathAllVariants:
+		return buildAllVariantsPurgePatterns(pt, cfg)
 
 	case purgeModeWildcard:
 		return buildWildcardPatterns(pt, cfg)
@@ -186,8 +186,8 @@ func buildExactKey(pt *purgeTarget, cfg *CacheKey) string {
 	return sb.String()
 }
 
-// buildSweepPatterns returns patterns that match a path and ALL its query/method/scheme variants.
-func buildSweepPatterns(pt *purgeTarget, cfg *CacheKey) []string {
+// buildAllVariantsPurgePatterns returns patterns that match a path and ALL its query/method/scheme variants.
+func buildAllVariantsPurgePatterns(pt *purgeTarget, cfg *CacheKey) []string {
 	base := buildPathHostBase(pt, cfg)
 	qsSuffix := ""
 	if pt.query != "" {
@@ -235,7 +235,7 @@ func buildWildcardPatterns(pt *purgeTarget, cfg *CacheKey) []string {
 	return []string{prefix + "*"}
 }
 
-// buildPathHostBase builds the "p=<path>[:h=<host>]" prefix for sweep patterns.
+// buildPathHostBase builds the "p=<path>[:h=<host>]" prefix for all-variants patterns.
 func buildPathHostBase(pt *purgeTarget, cfg *CacheKey) string {
 	var sb strings.Builder
 	sb.WriteString("p=")

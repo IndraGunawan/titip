@@ -52,8 +52,8 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 		// Check for <!--esi unescaping
 		if tagStart+len(tagESIInlineComment) <= bufLen && bytes.Equal(b[tagStart:tagStart+len(tagESIInlineComment)], tagESIInlineComment) {
 			// Strip <!--esi opening wrapper
-			stripStart := int32(tagStart)
-			stripEnd := int32(tagStart + len(tagESIInlineComment))
+			stripStart := int64(tagStart)
+			stripEnd := int64(tagStart + len(tagESIInlineComment))
 			fragments = append(fragments, &proto.EsiFragment{
 				StartPos: stripStart,
 				EndPos:   stripEnd,
@@ -71,16 +71,20 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 				innerBlock := b[contentStart:commentCloseStart]
 				if innerHasESI, innerFrags := Scan(innerBlock); innerHasESI {
 					for _, ifrag := range innerFrags {
-						ifrag.StartPos += int32(contentStart)
-						ifrag.EndPos += int32(contentStart)
+						ifrag.StartPos += int64(contentStart)
+						ifrag.EndPos += int64(contentStart)
+						if ifrag.InnerStartPos > 0 {
+							ifrag.InnerStartPos += int64(contentStart)
+							ifrag.InnerEndPos += int64(contentStart)
+						}
 						fragments = append(fragments, ifrag)
 					}
 				}
 
 				// Strip --> closing wrapper
 				fragments = append(fragments, &proto.EsiFragment{
-					StartPos: int32(commentCloseStart),
-					EndPos:   int32(commentCloseEnd),
+					StartPos: int64(commentCloseStart),
+					EndPos:   int64(commentCloseEnd),
 				})
 
 				pos = commentCloseEnd
@@ -95,7 +99,7 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 		if tagStart+len(tagESIIncludeOpen) <= bufLen && bytes.Equal(b[tagStart:tagStart+len(tagESIIncludeOpen)], tagESIIncludeOpen) {
 			// Must have a whitespace or '/' or '>' right after tag name
 			nextChar := b[tagStart+len(tagESIIncludeOpen)]
-			if isWhitespace(nextChar) || nextChar == '/' || nextChar == '>' {
+			if isASCIIWhitespace(nextChar) || nextChar == '/' || nextChar == '>' {
 				frag, nextPos := parseESIInclude(b, tagStart)
 				if frag != nil {
 					fragments = append(fragments, frag)
@@ -109,13 +113,13 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 		// Check for <esi:remove>...</esi:remove>
 		if tagStart+len(tagESIRemoveOpen) <= bufLen && bytes.Equal(b[tagStart:tagStart+len(tagESIRemoveOpen)], tagESIRemoveOpen) {
 			nextChar := b[tagStart+len(tagESIRemoveOpen)]
-			if isWhitespace(nextChar) || nextChar == '>' {
+			if isASCIIWhitespace(nextChar) || nextChar == '>' {
 				closeIdx := bytes.Index(b[tagStart:], tagESIRemoveClose)
 				if closeIdx != -1 {
 					tagEnd := tagStart + closeIdx + len(tagESIRemoveClose)
 					fragments = append(fragments, &proto.EsiFragment{
-						StartPos: int32(tagStart),
-						EndPos:   int32(tagEnd),
+						StartPos: int64(tagStart),
+						EndPos:   int64(tagEnd),
 					})
 					hasESI = true
 					pos = tagEnd
@@ -127,25 +131,25 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 		// Check for <esi:comment ... /> or <esi:comment>...</esi:comment>
 		if tagStart+len(tagESICommentOpen) <= bufLen && bytes.Equal(b[tagStart:tagStart+len(tagESICommentOpen)], tagESICommentOpen) {
 			nextChar := b[tagStart+len(tagESICommentOpen)]
-			if isWhitespace(nextChar) || nextChar == '/' || nextChar == '>' {
-				closingBracket, isSelfClosing := findTagClosingBracket(b, tagStart)
-				if closingBracket != -1 {
+			if isASCIIWhitespace(nextChar) || nextChar == '/' || nextChar == '>' {
+				endOffset, isSelfClosing := scanTagHeaderEnd(b, tagStart)
+				if endOffset != -1 {
 					if isSelfClosing {
 						fragments = append(fragments, &proto.EsiFragment{
-							StartPos: int32(tagStart),
-							EndPos:   int32(closingBracket),
+							StartPos: int64(tagStart),
+							EndPos:   int64(endOffset),
 						})
 						hasESI = true
-						pos = closingBracket
+						pos = endOffset
 						continue
 					}
 					// Paired comment tag
-					closeIdx := bytes.Index(b[closingBracket:], tagESICommentClose)
+					closeIdx := bytes.Index(b[endOffset:], tagESICommentClose)
 					if closeIdx != -1 {
-						tagEnd := closingBracket + closeIdx + len(tagESICommentClose)
+						tagEnd := endOffset + closeIdx + len(tagESICommentClose)
 						fragments = append(fragments, &proto.EsiFragment{
-							StartPos: int32(tagStart),
-							EndPos:   int32(tagEnd),
+							StartPos: int64(tagStart),
+							EndPos:   int64(tagEnd),
 						})
 						hasESI = true
 						pos = tagEnd
@@ -163,82 +167,83 @@ func Scan(b []byte) (hasESI bool, fragments []*proto.EsiFragment) {
 
 // parseESIInclude parses an <esi:include> tag starting at tagStart.
 func parseESIInclude(b []byte, tagStart int) (*proto.EsiFragment, int) {
-	tagEndBracket, isSelfClosing := findTagClosingBracket(b, tagStart)
-	if tagEndBracket == -1 {
+	tagEndOffset, isSelfClosing := scanTagHeaderEnd(b, tagStart)
+	if tagEndOffset == -1 {
 		return nil, tagStart + 1
 	}
 
 	var tagHeader []byte
 	if isSelfClosing {
-		tagHeader = b[tagStart : tagEndBracket-2]
+		tagHeader = b[tagStart : tagEndOffset-2]
 	} else {
-		tagHeader = b[tagStart : tagEndBracket-1]
+		tagHeader = b[tagStart : tagEndOffset-1]
 	}
 
 	src := extractAttribute(tagHeader, attrSrc)
 	alt := extractAttribute(tagHeader, attrAlt)
-	timeoutBytes := extractAttributeBytes(tagHeader, attrTimeout)
-	maxDepthBytes := extractAttributeBytes(tagHeader, attrMaxDepth)
+	timeoutRaw := extractAttributeRaw(tagHeader, attrTimeout)
+	maxDepthRaw := extractAttributeRaw(tagHeader, attrMaxDepth)
 	onError := extractAttribute(tagHeader, attrOnError)
 
-	var timeoutMs uint32
-	if len(timeoutBytes) > 0 {
-		timeoutMs = parseTimeoutBytes(timeoutBytes)
+	var timeoutMs int64
+	if len(timeoutRaw) > 0 {
+		timeoutMs = parseTimeout(timeoutRaw)
 	}
 
 	var maxDepth uint32
-	if len(maxDepthBytes) > 0 {
-		if v, err := strconv.ParseUint(string(bytes.TrimSpace(maxDepthBytes)), 10, 32); err == nil {
+	if len(maxDepthRaw) > 0 {
+		if v, err := strconv.ParseUint(string(bytes.TrimSpace(maxDepthRaw)), 10, 32); err == nil {
 			maxDepth = uint32(v)
 		}
 	}
 
 	if isSelfClosing {
 		return &proto.EsiFragment{
-			StartPos:  int32(tagStart),
-			EndPos:    int32(tagEndBracket),
+			StartPos:  int64(tagStart),
+			EndPos:    int64(tagEndOffset),
 			Src:       src,
 			Alt:       alt,
 			OnError:   onError,
 			MaxDepth:  maxDepth,
 			TimeoutMs: timeoutMs,
-		}, tagEndBracket
+		}, tagEndOffset
 	}
 
 	// Paired <esi:include>...</esi:include>
-	closeIdx := bytes.Index(b[tagEndBracket:], tagESIIncludeClose)
+	closeIdx := bytes.Index(b[tagEndOffset:], tagESIIncludeClose)
 	if closeIdx != -1 {
-		bodyEnd := tagEndBracket + closeIdx
+		bodyEnd := tagEndOffset + closeIdx
 		fullEnd := bodyEnd + len(tagESIIncludeClose)
-		fallbackBody := b[tagEndBracket:bodyEnd]
 
 		return &proto.EsiFragment{
-			StartPos:     int32(tagStart),
-			EndPos:       int32(fullEnd),
-			Src:          src,
-			Alt:          alt,
-			OnError:      onError,
-			MaxDepth:     maxDepth,
-			TimeoutMs:    timeoutMs,
-			FallbackBody: bytes.Clone(fallbackBody),
+			StartPos:      int64(tagStart),
+			EndPos:        int64(fullEnd),
+			Src:           src,
+			Alt:           alt,
+			OnError:       onError,
+			MaxDepth:      maxDepth,
+			TimeoutMs:     timeoutMs,
+			InnerStartPos: int64(tagEndOffset),
+			InnerEndPos:   int64(bodyEnd),
 		}, fullEnd
 	}
 
 	// Unclosed paired tag, treat as self-closing
 	return &proto.EsiFragment{
-		StartPos:  int32(tagStart),
-		EndPos:    int32(tagEndBracket),
+		StartPos:  int64(tagStart),
+		EndPos:    int64(tagEndOffset),
 		Src:       src,
 		Alt:       alt,
 		OnError:   onError,
 		MaxDepth:  maxDepth,
 		TimeoutMs: timeoutMs,
-	}, tagEndBracket
+	}, tagEndOffset
 }
 
-// findTagClosingBracket locates the end of an opening HTML/ESI tag, respecting quoted strings.
-// Returns the slice index after the closing '>' and whether the tag ends with '/>'.
-func findTagClosingBracket(b []byte, tagStart int) (int, bool) {
+// scanTagHeaderEnd locates the end of an opening HTML/ESI tag, respecting quoted strings.
+// Returns the slice offset immediately after the closing '>' and whether the tag was self-closing ('/>').
+// If unclosed, endOffset returns -1.
+func scanTagHeaderEnd(b []byte, tagStart int) (endOffset int, isSelfClosing bool) {
 	bufLen := len(b)
 	i := tagStart + 1
 	var inQuote byte
@@ -274,8 +279,8 @@ func findTagClosingBracket(b []byte, tagStart int) (int, bool) {
 	return -1, false
 }
 
-// extractAttributeBytes scans a tag header for attr="value" or attr='value' or attr=value and returns []byte.
-func extractAttributeBytes(tagHeader []byte, attrName []byte) []byte {
+// extractAttributeRaw scans a tag header for attr="value" or attr='value' or attr=value and returns []byte without allocating.
+func extractAttributeRaw(tagHeader []byte, attrName []byte) []byte {
 	idx := 0
 	headerLen := len(tagHeader)
 
@@ -288,7 +293,7 @@ func extractAttributeBytes(tagHeader []byte, attrName []byte) []byte {
 		attrStart := idx + matchIdx
 
 		// Check boundaries before and after attribute name
-		validBefore := (attrStart == 0) || isWhitespace(tagHeader[attrStart-1])
+		validBefore := (attrStart == 0) || isASCIIWhitespace(tagHeader[attrStart-1])
 		afterIdx := attrStart + len(attrName)
 		if !validBefore || afterIdx >= headerLen {
 			idx = afterIdx
@@ -297,7 +302,7 @@ func extractAttributeBytes(tagHeader []byte, attrName []byte) []byte {
 
 		// Skip whitespace between attr name and '='
 		curr := afterIdx
-		for curr < headerLen && isWhitespace(tagHeader[curr]) {
+		for curr < headerLen && isASCIIWhitespace(tagHeader[curr]) {
 			curr++
 		}
 
@@ -308,7 +313,7 @@ func extractAttributeBytes(tagHeader []byte, attrName []byte) []byte {
 
 		// Skip '=' and whitespace
 		curr++
-		for curr < headerLen && isWhitespace(tagHeader[curr]) {
+		for curr < headerLen && isASCIIWhitespace(tagHeader[curr]) {
 			curr++
 		}
 
@@ -329,7 +334,7 @@ func extractAttributeBytes(tagHeader []byte, attrName []byte) []byte {
 
 		// Unquoted value
 		valStart := curr
-		for curr < headerLen && !isWhitespace(tagHeader[curr]) && tagHeader[curr] != '>' {
+		for curr < headerLen && !isASCIIWhitespace(tagHeader[curr]) && tagHeader[curr] != '>' {
 			if tagHeader[curr] == '/' && (curr+1 >= headerLen || tagHeader[curr+1] == '>') {
 				break
 			}
@@ -343,16 +348,16 @@ func extractAttributeBytes(tagHeader []byte, attrName []byte) []byte {
 
 // extractAttribute scans a tag header for attr="value" or attr='value' or attr=value.
 func extractAttribute(tagHeader []byte, attrName []byte) string {
-	b := extractAttributeBytes(tagHeader, attrName)
+	b := extractAttributeRaw(tagHeader, attrName)
 	if len(b) == 0 {
 		return ""
 	}
 	return string(b)
 }
 
-// parseTimeoutBytes parses timeout strings like "0.5", "2.5s", "500ms" into milliseconds.
+// parseTimeout parses timeout strings like "0.5", "2.5s", "500ms" into milliseconds.
 // stdlib time.ParseDuration covers this; fallback bare seconds → ms.
-func parseTimeoutBytes(b []byte) uint32 {
+func parseTimeout(b []byte) int64 {
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 {
 		return 0
@@ -363,17 +368,19 @@ func parseTimeoutBytes(b []byte) uint32 {
 		if d <= 0 {
 			return 0
 		}
-		return uint32(d.Milliseconds())
+		return d.Milliseconds()
 	}
 	if d, err := time.ParseDuration(s + "s"); err == nil {
 		if d <= 0 {
 			return 0
 		}
-		return uint32(d.Milliseconds())
+		return d.Milliseconds()
 	}
 	return 0
 }
 
-func isWhitespace(c byte) bool {
+// isASCIIWhitespace reports whether c is an ASCII whitespace byte (space, tab, LF, or CR).
+// HTML5 §2.4.1 and XML 1.0 §2.3 strictly restrict tag whitespace to ASCII whitespace.
+func isASCIIWhitespace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }

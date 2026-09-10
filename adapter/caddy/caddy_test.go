@@ -19,6 +19,7 @@ import (
 	caddymain "github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddytest"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 	"go.uber.org/zap/zapcore"
@@ -28,6 +29,230 @@ func init() {
 	caddymain.RegisterSlogHandlerFactory(func(h slog.Handler, core zapcore.Core, moduleID string) slog.Handler {
 		return slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn})
 	})
+}
+
+func TestCaddy_BasicCaching(t *testing.T) {
+	var originCalls atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "hello from origin")
+	}))
+	defer origin.Close()
+
+	tester := caddytest.NewTester(t)
+	tester.InitServer(fmt.Sprintf(`
+	{
+		skip_install_trust
+		admin localhost:2999
+		http_port 9080
+		https_port 9443
+		grace_period 1ns
+	}
+	http://localhost:9080 {
+		titip {
+			storage test
+			cache_status rfc9211
+		}
+		reverse_proxy %s
+	}
+	`, origin.Listener.Addr().String()), "caddyfile")
+
+	// 1. Initial request -> Cache Miss (origin called)
+	req1, err := http.NewRequest(http.MethodGet, "http://localhost:9080/data", nil)
+	if err != nil {
+		t.Fatalf("new request error: %v", err)
+	}
+	resp1, body1 := tester.AssertResponse(req1, 200, "hello from origin")
+	status1 := resp1.Header.Get("Cache-Status")
+	if !strings.Contains(status1, "fwd=uri-miss") {
+		t.Errorf("expected Cache-Status on miss to contain fwd=uri-miss, got %q", status1)
+	}
+	if originCalls.Load() != 1 {
+		t.Errorf("expected 1 origin call on miss, got %d", originCalls.Load())
+	}
+
+	// 2. Second request -> Cache Hit (origin NOT called)
+	req2, err := http.NewRequest(http.MethodGet, "http://localhost:9080/data", nil)
+	if err != nil {
+		t.Fatalf("new request error: %v", err)
+	}
+	resp2, body2 := tester.AssertResponse(req2, 200, "hello from origin")
+	if body1 != body2 {
+		t.Errorf("body mismatch: %q vs %q", body1, body2)
+	}
+	status2 := resp2.Header.Get("Cache-Status")
+	if !strings.Contains(status2, "hit") {
+		t.Errorf("expected Cache-Status on hit to contain hit, got %q", status2)
+	}
+	if originCalls.Load() != 1 {
+		t.Errorf("cache hit should not increment origin calls, got %d", originCalls.Load())
+	}
+}
+
+func TestCaddy_AdminPurge(t *testing.T) {
+	var originCalls atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Cache-Tag", "catalog")
+		_, _ = fmt.Fprintf(w, "call-%d", count)
+	}))
+	defer origin.Close()
+
+	tester := caddytest.NewTester(t)
+	tester.InitServer(fmt.Sprintf(`
+	{
+		skip_install_trust
+		admin localhost:2999
+		http_port 9080
+		https_port 9443
+		grace_period 1ns
+	}
+	http://localhost:9080 {
+		titip {
+			storage test
+			cache_status rfc9211
+		}
+		reverse_proxy %s
+	}
+	`, origin.Listener.Addr().String()), "caddyfile")
+
+	targetURL := "http://localhost:9080/purge-test"
+	adminClient := &http.Client{}
+
+	// 1. Miss -> primes cache with call-1
+	req1, _ := http.NewRequest(http.MethodGet, targetURL, nil)
+	resp1, body1 := tester.AssertResponse(req1, 200, "call-1")
+	if !strings.Contains(resp1.Header.Get("Cache-Status"), "fwd=uri-miss") {
+		t.Fatalf("expected miss on first request, got: %s", resp1.Header.Get("Cache-Status"))
+	}
+	if body1 != "call-1" {
+		t.Fatalf("expected body call-1, got %s", body1)
+	}
+
+	// 2. Hit -> served from cache (still call-1)
+	req2, _ := http.NewRequest(http.MethodGet, targetURL, nil)
+	resp2, body2 := tester.AssertResponse(req2, 200, "call-1")
+	if !strings.Contains(resp2.Header.Get("Cache-Status"), "hit") {
+		t.Fatalf("expected hit on second request, got: %s", resp2.Header.Get("Cache-Status"))
+	}
+	if body2 != "call-1" {
+		t.Fatalf("expected cached body call-1, got %s", body2)
+	}
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected origin calls to stay 1, got %d", originCalls.Load())
+	}
+
+	// 3. Purge by URL via real Caddy admin API POST /titip/purge
+	purgePayload := `{"urls":["http://localhost:9080/purge-test"],"soft":false}`
+	purgeReq, _ := http.NewRequest(http.MethodPost, "http://localhost:2999/titip/purge", bytes.NewBufferString(purgePayload))
+	purgeReq.Header.Set("Content-Type", "application/json")
+
+	purgeResp, err := adminClient.Do(purgeReq)
+	if err != nil {
+		t.Fatalf("admin purge request failed: %v", err)
+	}
+	defer func() { _ = purgeResp.Body.Close() }()
+	if purgeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(purgeResp.Body)
+		t.Fatalf("admin purge status %d: %s", purgeResp.StatusCode, string(body))
+	}
+
+	// 4. Request after URL purge must be a MISS -> calls origin again (call-2)
+	req3, _ := http.NewRequest(http.MethodGet, targetURL, nil)
+	resp3, body3 := tester.AssertResponse(req3, 200, "call-2")
+	if !strings.Contains(resp3.Header.Get("Cache-Status"), "fwd=uri-miss") {
+		t.Errorf("expected miss after admin purge, got Cache-Status: %q", resp3.Header.Get("Cache-Status"))
+	}
+	if body3 != "call-2" {
+		t.Errorf("expected fresh body call-2, got %s", body3)
+	}
+	if originCalls.Load() != 2 {
+		t.Errorf("expected origin calls to be 2 after purge, got %d", originCalls.Load())
+	}
+
+	// 5. Request primes cache again with call-2 (confirm hit)
+	req4, _ := http.NewRequest(http.MethodGet, targetURL, nil)
+	resp4, body4 := tester.AssertResponse(req4, 200, "call-2")
+	if !strings.Contains(resp4.Header.Get("Cache-Status"), "hit") {
+		t.Fatalf("expected hit on second request, got: %s", resp4.Header.Get("Cache-Status"))
+	}
+	if body4 != "call-2" {
+		t.Fatalf("expected cached body call-2, got %s", body4)
+	}
+
+	// 6. Purge by Tag via real Caddy admin API POST /titip/purge
+	tagPurgePayload := `{"tags":["catalog"],"soft":false}`
+	tagPurgeReq, _ := http.NewRequest(http.MethodPost, "http://localhost:2999/titip/purge", bytes.NewBufferString(tagPurgePayload))
+	tagPurgeReq.Header.Set("Content-Type", "application/json")
+
+	tagPurgeResp, err := adminClient.Do(tagPurgeReq)
+	if err != nil {
+		t.Fatalf("admin tag purge request failed: %v", err)
+	}
+	defer func() { _ = tagPurgeResp.Body.Close() }()
+	if tagPurgeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(tagPurgeResp.Body)
+		t.Fatalf("admin tag purge status %d: %s", tagPurgeResp.StatusCode, string(body))
+	}
+
+	// 7. Request after Tag purge must be a MISS -> calls origin again (call-3)
+	req5, _ := http.NewRequest(http.MethodGet, targetURL, nil)
+	resp5, body5 := tester.AssertResponse(req5, 200, "call-3")
+	if !strings.Contains(resp5.Header.Get("Cache-Status"), "fwd=uri-miss") {
+		t.Errorf("expected miss after tag purge, got Cache-Status: %q", resp5.Header.Get("Cache-Status"))
+	}
+	if body5 != "call-3" {
+		t.Errorf("expected fresh body call-3, got %s", body5)
+	}
+	if originCalls.Load() != 3 {
+		t.Errorf("expected origin calls to be 3 after tag purge, got %d", originCalls.Load())
+	}
+}
+
+func TestCaddy_ESI(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		switch r.URL.Path {
+		case "/page":
+			_, _ = fmt.Fprint(w, `<div>Page: <esi:include src="/fragment" /></div>`)
+		case "/fragment":
+			_, _ = fmt.Fprint(w, `<span>Dynamic Fragment</span>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer origin.Close()
+
+	tester := caddytest.NewTester(t)
+	tester.InitServer(fmt.Sprintf(`
+	{
+		skip_install_trust
+		admin localhost:2999
+		http_port 9080
+		https_port 9443
+		grace_period 1ns
+	}
+	http://localhost:9080 {
+		titip {
+			storage test
+			esi {
+				enabled true
+			}
+		}
+		reverse_proxy %s
+	}
+	`, origin.Listener.Addr().String()), "caddyfile")
+
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost:9080/page", nil)
+	_, body := tester.AssertResponse(req, 200, "<div>Page: <span>Dynamic Fragment</span></div>")
+	expected := "<div>Page: <span>Dynamic Fragment</span></div>"
+	if body != expected {
+		t.Errorf("ESI splicing mismatch: expected %q, got %q", expected, body)
+	}
 }
 
 // parseAndProvisionHandler is a helper that parses a Caddyfile snippet and provisions the Handler.
@@ -52,55 +277,6 @@ func parseAndProvisionHandler(t testing.TB, caddyfileBlock string) (*Handler, fu
 	return &h, cleanup
 }
 
-func TestCaddyHandler_MiddlewareExecution(t *testing.T) {
-	t.Parallel()
-	caddyfileInput := `titip {
-		cache_status rfc9211
-		background_fetch_timeout 5s
-		storage test
-	}`
-
-	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
-	defer cleanup()
-
-	var upstreamCalls atomic.Int32
-	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
-		upstreamCalls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "public, max-age=60")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, `{"message":"caddy proxied content"}`)
-		return nil
-	})
-
-	// 1. Initial request (miss)
-	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/caddy/test", nil)
-	rec1 := httptest.NewRecorder()
-	if err := h.ServeHTTP(rec1, req1, next); err != nil {
-		t.Fatalf("serveHTTP error: %v", err)
-	}
-
-	if rec1.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d", rec1.Code)
-	}
-	if upstreamCalls.Load() != 1 {
-		t.Fatalf("expected 1 upstream call, got %d", upstreamCalls.Load())
-	}
-
-	// 2. Second request (hit)
-	rec2 := httptest.NewRecorder()
-	if err := h.ServeHTTP(rec2, req1, next); err != nil {
-		t.Fatalf("serveHTTP error: %v", err)
-	}
-
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d", rec2.Code)
-	}
-	if upstreamCalls.Load() != 1 {
-		t.Fatalf("cache hit should not call upstream: %d", upstreamCalls.Load())
-	}
-}
-
 func TestCaddyHandler_ProvisionMissingStorage(t *testing.T) {
 	t.Parallel()
 	config := `titip {
@@ -116,8 +292,7 @@ func TestCaddyHandler_ProvisionMissingStorage(t *testing.T) {
 	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
 	defer cancel()
 
-	err := h.Provision(ctx)
-	if err == nil {
+	if err := h.Provision(ctx); err == nil {
 		t.Fatalf("expected failure when provisioning Handler without storage")
 	}
 }
@@ -141,97 +316,6 @@ func TestCaddyHandler_ProvisionUnknownStorage(t *testing.T) {
 
 	if err == nil {
 		t.Fatalf("expected failure when unknown storage module 'memcached' is configured")
-	}
-}
-
-// End-to-end live admin purge invalidation.
-func TestAdminPurge_EndToEndLiveInvalidation(t *testing.T) {
-	t.Parallel()
-	caddyfileInput := `titip {
-		storage test
-	}`
-
-	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
-	defer cleanup()
-
-	h.id = "test-admin-e2e"
-	registerInstance(h.id, h.instance)
-	defer unregisterInstance(h.id)
-
-	var originCalls atomic.Int32
-	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
-		callNum := originCalls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "public, max-age=60")
-		w.Header().Set("Cache-Tag", "catalog,items")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintf(w, `{"call":%d,"data":"item-123"}`, callNum)
-		return nil
-	})
-
-	testURL := "http://example.com/api/item-123"
-	req := httptest.NewRequest(http.MethodGet, testURL, nil)
-
-	// 1. Prime cache (Miss -> call #1)
-	rec1 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec1, req, next)
-	if rec1.Body.String() != `{"call":1,"data":"item-123"}` {
-		t.Fatalf("expected call 1, got %s", rec1.Body.String())
-	}
-	if originCalls.Load() != 1 {
-		t.Fatalf("expected 1 origin call, got %d", originCalls.Load())
-	}
-
-	// 2. Cache Hit (Hit -> 0 origin calls)
-	rec2 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec2, req, next)
-	if rec2.Body.String() != `{"call":1,"data":"item-123"}` {
-		t.Fatalf("expected cached call 1, got %s", rec2.Body.String())
-	}
-	if originCalls.Load() != 1 {
-		t.Fatalf("cache hit should not increment origin calls: %d", originCalls.Load())
-	}
-
-	// 3. Trigger Soft Purge via Admin API
-	purgeBody := fmt.Sprintf(`{"urls": [%q], "soft": true}`, testURL)
-	purgeReq := httptest.NewRequest(http.MethodPost, "/titip/purge", bytes.NewBufferString(purgeBody))
-	purgeReq.Header.Set("Content-Type", "application/json")
-	purgeRec := httptest.NewRecorder()
-
-	_ = handleAdminPurge(purgeRec, purgeReq)
-	if purgeRec.Code != http.StatusOK {
-		t.Fatalf("admin purge failed with status %d: %s", purgeRec.Code, purgeRec.Body.String())
-	}
-
-	// 4. Subsequent request must synchronously fetch fresh data (call #2)
-	rec3 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec3, req, next)
-	if rec3.Body.String() != `{"call":2,"data":"item-123"}` {
-		t.Fatalf("expected fresh call 2 after purge, got %s", rec3.Body.String())
-	}
-	if originCalls.Load() != 2 {
-		t.Fatalf("expected 2 origin calls after purge, got %d", originCalls.Load())
-	}
-
-	// 5. Test Tag Purge
-	tagPurgeBody := `{"tags": ["catalog"], "soft": true}`
-	tagPurgeReq := httptest.NewRequest(http.MethodPost, "/titip/purge", bytes.NewBufferString(tagPurgeBody))
-	tagPurgeReq.Header.Set("Content-Type", "application/json")
-	tagPurgeRec := httptest.NewRecorder()
-
-	_ = handleAdminPurge(tagPurgeRec, tagPurgeReq)
-	if tagPurgeRec.Code != http.StatusOK {
-		t.Fatalf("tag purge failed with status %d", tagPurgeRec.Code)
-	}
-
-	// 6. Request after tag purge fetches fresh data (call #3)
-	rec4 := httptest.NewRecorder()
-	_ = h.ServeHTTP(rec4, req, next)
-	if rec4.Body.String() != `{"call":3,"data":"item-123"}` {
-		t.Fatalf("expected fresh call 3 after tag purge, got %s", rec4.Body.String())
-	}
-	if originCalls.Load() != 3 {
-		t.Fatalf("expected 3 origin calls after tag purge, got %d", originCalls.Load())
 	}
 }
 

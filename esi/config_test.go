@@ -6,20 +6,23 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestConfig_Options(t *testing.T) {
-	cfg := Config{
-		MaxDepth:              3,
-		MaxTimeout:            30 * time.Second,
-		MaxConcurrentRequests: 8,
-		MaxResponseSize:       10 * 1024 * 1024,
+	cfg := config{
+		maxDepth:              3,
+		maxTimeout:            30 * time.Second,
+		maxConcurrentRequests: 8,
+		maxResponseSize:       10 * 1024 * 1024,
 	}
 
 	dummyFetcher := func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
 		return nil, nil, nil
 	}
 
+	reg := prometheus.NewRegistry()
 	opts := []Option{
 		WithHeaderRequired(true),
 		WithInternalFetcher(dummyFetcher),
@@ -33,93 +36,97 @@ func TestConfig_Options(t *testing.T) {
 		WithDisableForwardCookies(true),
 		WithIncludeErrorMarker("<!-- error placeholder -->"),
 		WithPreserveETag(true),
+		WithMetrics(reg),
 	}
 
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 
-	if !cfg.HeaderRequired {
-		t.Errorf("expected HeaderRequired to be true")
+	if !cfg.headerRequired {
+		t.Errorf("expected headerRequired to be true")
 	}
-	if cfg.InternalFetcher == nil {
-		t.Errorf("expected InternalFetcher to be non-nil")
+	if cfg.internalFetcher == nil {
+		t.Errorf("expected internalFetcher to be non-nil")
 	}
-	if cfg.MaxDepth != 5 {
-		t.Errorf("expected MaxDepth 5, got %d", cfg.MaxDepth)
+	if cfg.maxDepth != 5 {
+		t.Errorf("expected maxDepth 5, got %d", cfg.maxDepth)
 	}
-	if cfg.MaxTimeout != 10*time.Second {
-		t.Errorf("expected MaxTimeout 10s, got %v", cfg.MaxTimeout)
+	if cfg.maxTimeout != 10*time.Second {
+		t.Errorf("expected maxTimeout 10s, got %v", cfg.maxTimeout)
 	}
-	if cfg.MaxConcurrentRequests != 16 {
-		t.Errorf("expected MaxConcurrentRequests 16, got %d", cfg.MaxConcurrentRequests)
+	if cfg.maxConcurrentRequests != 16 {
+		t.Errorf("expected maxConcurrentRequests 16, got %d", cfg.maxConcurrentRequests)
 	}
-	if !cfg.AllowPrivateIPs {
-		t.Errorf("expected AllowPrivateIPs to be true")
+	if !cfg.allowPrivateIPs {
+		t.Errorf("expected allowPrivateIPs to be true")
 	}
-	if len(cfg.AllowedHosts) != 2 || cfg.AllowedHosts[0] != "cdn.example.com" || cfg.AllowedHosts[1] != "*.partner.com" {
-		t.Errorf("unexpected AllowedHosts: %v", cfg.AllowedHosts)
+	if len(cfg.allowedHosts) != 2 || cfg.allowedHosts[0] != "cdn.example.com" || cfg.allowedHosts[1] != "*.partner.com" {
+		t.Errorf("unexpected allowedHosts: %v", cfg.allowedHosts)
 	}
-	if !cfg.AllowPrivateIPsForAllowedHosts {
-		t.Errorf("expected AllowPrivateIPsForAllowedHosts to be true")
+	if !cfg.allowPrivateIPsForAllowedHosts {
+		t.Errorf("expected allowPrivateIPsForAllowedHosts to be true")
 	}
-	if cfg.MaxResponseSize != 2048 {
-		t.Errorf("expected MaxResponseSize 2048, got %d", cfg.MaxResponseSize)
+	if cfg.maxResponseSize != 2048 {
+		t.Errorf("expected maxResponseSize 2048, got %d", cfg.maxResponseSize)
 	}
-	if !cfg.DisableForwardCookies {
-		t.Errorf("expected DisableForwardCookies to be true")
+	if !cfg.disableForwardCookies {
+		t.Errorf("expected disableForwardCookies to be true")
 	}
-	if cfg.IncludeErrorMarker != "<!-- error placeholder -->" {
-		t.Errorf("unexpected IncludeErrorMarker: %s", cfg.IncludeErrorMarker)
+	if cfg.includeErrorMarker != "<!-- error placeholder -->" {
+		t.Errorf("unexpected includeErrorMarker: %s", cfg.includeErrorMarker)
 	}
-	if !cfg.PreserveETag {
-		t.Errorf("expected PreserveETag to be true")
+	if !cfg.preserveETag {
+		t.Errorf("expected preserveETag to be true")
+	}
+	if cfg.metrics != reg {
+		t.Errorf("expected metrics registerer to be set")
 	}
 }
 
 func TestConfig_Options_BoundaryGuards(t *testing.T) {
-	cfg := Config{
-		MaxDepth:              3,
-		MaxTimeout:            30 * time.Second,
-		MaxConcurrentRequests: 8,
-		MaxResponseSize:       10 * 1024 * 1024,
+	cfg := config{
+		maxDepth:              3,
+		maxTimeout:            30 * time.Second,
+		maxConcurrentRequests: 8,
+		maxResponseSize:       10 * 1024 * 1024,
 	}
 
 	// Applying invalid / zero values should preserve existing configuration
 	WithMaxDepth(0)(&cfg)
-	if cfg.MaxDepth != 3 {
-		t.Errorf("expected MaxDepth preserved at 3, got %d", cfg.MaxDepth)
+	if cfg.maxDepth != 3 {
+		t.Errorf("expected maxDepth preserved at 3, got %d", cfg.maxDepth)
 	}
 
 	WithMaxTimeout(0)(&cfg)
-	if cfg.MaxTimeout != 30*time.Second {
-		t.Errorf("expected MaxTimeout preserved at 30s, got %v", cfg.MaxTimeout)
+	if cfg.maxTimeout != 30*time.Second {
+		t.Errorf("expected maxTimeout preserved at 30s, got %v", cfg.maxTimeout)
 	}
 
 	WithMaxTimeout(-5 * time.Second)(&cfg)
-	if cfg.MaxTimeout != 30*time.Second {
-		t.Errorf("expected MaxTimeout preserved at 30s, got %v", cfg.MaxTimeout)
+	if cfg.maxTimeout != 30*time.Second {
+		t.Errorf("expected maxTimeout preserved at 30s, got %v", cfg.maxTimeout)
 	}
 
 	WithMaxConcurrentRequests(0)(&cfg)
-	if cfg.MaxConcurrentRequests != 8 {
-		t.Errorf("expected MaxConcurrentRequests preserved at 8, got %d", cfg.MaxConcurrentRequests)
+	if cfg.maxConcurrentRequests != 8 {
+		t.Errorf("expected maxConcurrentRequests preserved at 8, got %d", cfg.maxConcurrentRequests)
 	}
 
 	WithMaxConcurrentRequests(-1)(&cfg)
-	if cfg.MaxConcurrentRequests != 8 {
-		t.Errorf("expected MaxConcurrentRequests preserved at 8, got %d", cfg.MaxConcurrentRequests)
+	if cfg.maxConcurrentRequests != 8 {
+		t.Errorf("expected maxConcurrentRequests preserved at 8, got %d", cfg.maxConcurrentRequests)
 	}
 
 	WithMaxResponseSize(-10)(&cfg)
-	if cfg.MaxResponseSize != 10*1024*1024 {
-		t.Errorf("expected MaxResponseSize preserved, got %d", cfg.MaxResponseSize)
+	if cfg.maxResponseSize != 10*1024*1024 {
+		t.Errorf("expected maxResponseSize preserved, got %d", cfg.maxResponseSize)
 	}
 
-	// 0 is valid for MaxResponseSize (unlimited)
+	// 0 is valid for maxResponseSize (unlimited)
 	WithMaxResponseSize(0)(&cfg)
-	if cfg.MaxResponseSize != 0 {
-		t.Errorf("expected MaxResponseSize 0 (unlimited), got %d", cfg.MaxResponseSize)
+	if cfg.maxResponseSize != 0 {
+		t.Errorf("expected maxResponseSize 0 (unlimited), got %d", cfg.maxResponseSize)
 	}
 }
 
@@ -160,7 +167,7 @@ func TestHandlerFetcher_Errors(t *testing.T) {
 		fetcher := HandlerFetcher(nil)
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/page", nil)
 		_, _, err := fetcher(context.Background(), "/frag", req)
-		if err == nil || err.Error() != "titip: esi: router is nil" {
+		if err == nil || err.Error() != "esi: router is nil" {
 			t.Fatalf("expected router is nil error, got: %v", err)
 		}
 	})

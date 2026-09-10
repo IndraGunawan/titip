@@ -62,7 +62,7 @@ type config struct {
 	tagHeaderName                 string
 	backgroundFetchTimeout        time.Duration
 	storageTimeout                time.Duration
-	esi                           esi.Config
+	esiOptions                    []esi.Option
 }
 
 // Option configures Titip middleware options.
@@ -162,12 +162,10 @@ func WithBackgroundFetchTimeout(d time.Duration) Option {
 // If no options are provided, ESI is enabled with safe production defaults.
 func WithESI(opts ...esi.Option) Option {
 	return func(c *config) {
-		c.esi.Enabled = true
-		for _, opt := range opts {
-			if opt != nil {
-				opt(&c.esi)
-			}
+		if c.esiOptions == nil {
+			c.esiOptions = make([]esi.Option, 0, len(opts))
 		}
+		c.esiOptions = append(c.esiOptions, opts...)
 	}
 }
 

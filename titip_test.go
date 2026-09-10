@@ -176,6 +176,8 @@ func BenchmarkCacheHit(b *testing.B) {
 	recPrime := httptest.NewRecorder()
 	handler.ServeHTTP(recPrime, req)
 
+	b.ReportAllocs()
+	b.ResetTimer()
 	for b.Loop() {
 		rec := getResponseRecorder()
 		handler.ServeHTTP(rec, req)
@@ -436,17 +438,8 @@ func TestNew_MinimalOptions(t *testing.T) {
 	if mw.logger == nil {
 		t.Errorf("expected non-nil default logger")
 	}
-	if mw.config.esi.MaxDepth != 3 {
-		t.Errorf("expected ESI MaxDepth 3, got %d", mw.config.esi.MaxDepth)
-	}
-	if mw.config.esi.MaxTimeout != 30*time.Second {
-		t.Errorf("expected ESI MaxTimeout 30s, got %v", mw.config.esi.MaxTimeout)
-	}
-	if mw.config.esi.MaxConcurrentRequests != 8 {
-		t.Errorf("expected ESI MaxConcurrentRequests 8, got %d", mw.config.esi.MaxConcurrentRequests)
-	}
-	if mw.config.esi.MaxResponseSize != 10*1024*1024 {
-		t.Errorf("expected ESI MaxResponseSize 10MB, got %d", mw.config.esi.MaxResponseSize)
+	if mw.esiProcessor != nil {
+		t.Errorf("expected ESI processor to be nil by default")
 	}
 
 	// 2. Execute live HTTP request lifecycle
