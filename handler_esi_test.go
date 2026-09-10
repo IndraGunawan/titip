@@ -1971,3 +1971,67 @@ func TestESI_OriginLowerCaseWireHeaders_EndToEnd(t *testing.T) {
 		}
 	})
 }
+
+func TestESI_HeaderRequired_EndToEnd(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/frag", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<span>Resolved Fragment</span>"))
+	})
+	mux.HandleFunc("/page-with-sc", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", `content="ESI/1.0"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/frag" /></div>`))
+	})
+	mux.HandleFunc("/page-without-sc", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/frag" /></div>`))
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithHeaderRequired(true),
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
+	)
+	handler := mw.testHandler(mux)
+
+	// 1. Request to page WITHOUT Surrogate-Control: ESI should be bypassed
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/page-without-sc", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec1.Code)
+	}
+	bodyWithoutSC := rec1.Body.String()
+	if !strings.Contains(bodyWithoutSC, `<esi:include src="/frag" />`) {
+		t.Errorf("expected unparsed ESI tag when Surrogate-Control missing, got %q", bodyWithoutSC)
+	}
+	if strings.Contains(bodyWithoutSC, "Resolved Fragment") {
+		t.Errorf("expected fragment to NOT be processed when Surrogate-Control missing")
+	}
+
+	// 2. Request to page WITH Surrogate-Control: ESI should be executed
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/page-with-sc", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec2.Code)
+	}
+	bodyWithSC := rec2.Body.String()
+	expectedProcessed := `<div><span>Resolved Fragment</span></div>`
+	if bodyWithSC != expectedProcessed {
+		t.Errorf("expected %q, got %q", expectedProcessed, bodyWithSC)
+	}
+	if sc := rec2.Header().Get("Surrogate-Control"); sc != "" {
+		t.Errorf("expected Surrogate-Control to be stripped from client response, got %q", sc)
+	}
+}
+
