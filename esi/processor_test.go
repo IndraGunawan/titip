@@ -19,6 +19,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+func testProcess(proc *Processor, ctx context.Context, req *http.Request, body []byte) (*Result, error) {
+	fragments := Scan(body)
+	if len(fragments) == 0 {
+		return &Result{
+			raw: body,
+		}, nil
+	}
+	return proc.ProcessFragments(ctx, req, body, fragments)
+}
+
 func processResult(t *testing.T, proc *Processor, html string, reqPath ...string) (*Result, time.Duration) {
 	t.Helper()
 	path := "http://localhost/test"
@@ -27,7 +37,7 @@ func processResult(t *testing.T, proc *Processor, html string, reqPath ...string
 	}
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	start := time.Now()
-	res, err := proc.Process(context.Background(), req, []byte(html))
+	res, err := testProcess(proc, context.Background(), req, []byte(html))
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("unexpected process error: %v", err)
@@ -84,7 +94,7 @@ func TestProcessor_InProcessFetcher(t *testing.T) {
 
 	html := []byte(`<html><body><div id="cart"><esi:include src="/api/cart" /></div><div id="user"><esi:include src="/api/user" /></div></body></html>`)
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/dashboard", nil)
-	res, err := proc.Process(context.Background(), req, html)
+	res, err := testProcess(proc, context.Background(), req, html)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -95,8 +105,8 @@ func TestProcessor_InProcessFetcher(t *testing.T) {
 		t.Errorf("got %q, want %q", string(res.Body()), expectedBody)
 	}
 
-	if len(res.SetCookies) != 1 || !strings.Contains(res.SetCookies[0], "cart_id=12345") {
-		t.Errorf("expected cart_id cookie, got: %v", res.SetCookies)
+	if len(res.setCookies) != 1 || !strings.Contains(res.setCookies[0], "cart_id=12345") {
+		t.Errorf("expected cart_id cookie, got: %v", res.setCookies)
 	}
 
 	mfs, err := reg.Gather()
@@ -130,7 +140,7 @@ func TestProcessor_OutboundHTTP(t *testing.T) {
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
-	res, err := proc.Process(context.Background(), req, []byte(`<div><esi:include src="`+ts.URL+`/fragment" /></div>`))
+	res, err := testProcess(proc, context.Background(), req, []byte(`<div><esi:include src="`+ts.URL+`/fragment" /></div>`))
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -173,7 +183,7 @@ func TestProcessor_OutboundHTTP_RelativePath(t *testing.T) {
 		req.Header.Set("User-Agent", "TestClient/1.0")
 		req.Header.Set("Cookie", "session=secret123")
 
-		res, err := proc.Process(context.Background(), req, []byte(`<div><esi:include src="/relative-fragment" /></div>`))
+		res, err := testProcess(proc, context.Background(), req, []byte(`<div><esi:include src="/relative-fragment" /></div>`))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -222,7 +232,7 @@ func TestProcessor_OutboundHTTP_RelativePath(t *testing.T) {
 		req.Host = uTLS.Host
 		req.Header.Set("X-Forwarded-Proto", "https")
 
-		res, err := procTLS.Process(context.Background(), req, []byte(`<div><esi:include src="/secure-frag" /></div>`))
+		res, err := testProcess(procTLS, context.Background(), req, []byte(`<div><esi:include src="/secure-frag" /></div>`))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -332,7 +342,7 @@ func TestProcessor_FallbackToOutboundHTTPOn404(t *testing.T) {
 	// causing Processor to fall back to outbound HTTP
 	parentBody := []byte(`<div><esi:include src="` + ts.URL + `/fallback-path" /></div>`)
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
-	res, err := proc.Process(context.Background(), req, parentBody)
+	res, err := testProcess(proc, context.Background(), req, parentBody)
 	if err != nil {
 		t.Fatalf("process error: %v", err)
 	}
@@ -400,8 +410,8 @@ func TestSafeSlice_BoundsAndSafety(t *testing.T) {
 
 func TestProcessor_CorruptedInnerOffsets(t *testing.T) {
 	parent := []byte(`<div><esi:include src="/failing-api">fallback</esi:include></div>`)
-	hasESI, frags := Scan(parent)
-	if !hasESI || len(frags) == 0 {
+	frags := Scan(parent)
+	if len(frags) == 0 {
 		t.Fatalf("expected fragment from scan")
 	}
 	// Corrupt inner offsets
@@ -422,7 +432,7 @@ func TestProcessor_CorruptedInnerOffsets(t *testing.T) {
 	}
 }
 
-func TestProcessor_Process(t *testing.T) {
+func TestProcessor_ScanAndProcessFragments(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -436,7 +446,7 @@ func TestProcessor_Process(t *testing.T) {
 	// 1. Document with ESI tags: should scan and splice in one step
 	docWithESI := []byte(`<div>User: <esi:include src="/user" /></div>`)
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/page", nil)
-	res1, err := proc.Process(context.Background(), req, docWithESI)
+	res1, err := testProcess(proc, context.Background(), req, docWithESI)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -449,7 +459,7 @@ func TestProcessor_Process(t *testing.T) {
 
 	// 2. Document without ESI tags: returns body untouched with zero buffer allocation
 	docWithoutESI := []byte(`<div>Plain HTML content without any ESI tags</div>`)
-	res2, err := proc.Process(context.Background(), req, docWithoutESI)
+	res2, err := testProcess(proc, context.Background(), req, docWithoutESI)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -490,34 +500,44 @@ func TestProcessor_CanProcess(t *testing.T) {
 }
 
 func TestProcessor_SurrogateCapability(t *testing.T) {
-	// 1. Nil header safe
-	AddSurrogateCapability(nil, "titip")
+	proc := NewProcessor()
 
-	// 2. Empty header sets capability
+	// 1. Nil processor does not add capability
+	var nilProc *Processor
+	nilHeader := make(http.Header)
+	nilProc.AddSurrogateCapability(nilHeader, "titip")
+	if got := nilHeader.Get(headerSurrogateCapability); got != "" {
+		t.Errorf("expected nil processor to not set capability, got %q", got)
+	}
+
+	// 2. Nil header safe
+	proc.AddSurrogateCapability(nil, "titip")
+
+	// 3. Empty header sets capability
 	h := make(http.Header)
-	AddSurrogateCapability(h, "titip")
+	proc.AddSurrogateCapability(h, "titip")
 	if got := h.Get(headerSurrogateCapability); got != `titip="ESI/1.0"` {
 		t.Errorf("expected %q, got %q", `titip="ESI/1.0"`, got)
 	}
 
-	// 3. Already present token is not duplicated
-	AddSurrogateCapability(h, "titip")
+	// 4. Already present token is not duplicated
+	proc.AddSurrogateCapability(h, "titip")
 	if got := h.Get(headerSurrogateCapability); got != `titip="ESI/1.0"` {
 		t.Errorf("expected no duplicate, got %q", got)
 	}
 
-	// 4. Appends to existing capability from downstream
+	// 5. Appends to existing capability from downstream
 	h2 := make(http.Header)
 	h2.Set(headerSurrogateCapability, `cdn="ESI/1.0"`)
-	AddSurrogateCapability(h2, "titip")
+	proc.AddSurrogateCapability(h2, "titip")
 	expected := `cdn="ESI/1.0", titip="ESI/1.0"`
 	if got := h2.Get(headerSurrogateCapability); got != expected {
 		t.Errorf("expected %q, got %q", expected, got)
 	}
 
-	// 5. Default deviceID when empty is "esi"
+	// 6. Default deviceID when empty is "esi"
 	h3 := make(http.Header)
-	AddSurrogateCapability(h3, "")
+	proc.AddSurrogateCapability(h3, "")
 	if got := h3.Get(headerSurrogateCapability); got != `esi="ESI/1.0"` {
 		t.Errorf("expected default deviceID esi, got %q", got)
 	}
@@ -546,7 +566,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 
 		res := &Result{
 			raw:        []byte("spliced content"),
-			SetCookies: []string{"session=xyz; Path=/", "csrf=123; Secure"},
+			setCookies: []string{"session=xyz; Path=/", "csrf=123; Secure"},
 		}
 
 		p.ReconcileHeaders(h, res)
@@ -636,7 +656,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 
 		res := &Result{
 			raw:        []byte("spliced content"),
-			SetCookies: []string{"session=wire123; Path=/"},
+			setCookies: []string{"session=wire123; Path=/"},
 		}
 
 		// 1. Default PreserveETag = false
@@ -994,7 +1014,7 @@ func TestProcessor_ConcurrentUsers_NoDataLeak(t *testing.T) {
 			req.AddCookie(&http.Cookie{Name: "session", Value: username})
 
 			html := `<div>Welcome: <esi:include src="/me" /></div>`
-			res, err := proc.Process(context.Background(), req, []byte(html))
+			res, err := testProcess(proc, context.Background(), req, []byte(html))
 			if err != nil {
 				t.Errorf("Process error: %v", err)
 				return
@@ -1050,7 +1070,7 @@ func TestProcessor_MemoizedBufferNeverMutated(t *testing.T) {
 	sb.WriteString("</body></html>")
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/page", nil)
-	res, err := proc.Process(context.Background(), req, []byte(sb.String()))
+	res, err := testProcess(proc, context.Background(), req, []byte(sb.String()))
 	if err != nil {
 		t.Fatalf("Process error: %v", err)
 	}
@@ -1071,4 +1091,40 @@ func TestProcessor_MemoizedBufferNeverMutated(t *testing.T) {
 	if occurrences != count {
 		t.Errorf("expected %d intact occurrences, got %d", count, occurrences)
 	}
+}
+
+func TestProcessor_InlineCommentUnescape(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("Alice"))
+	})
+	proc := NewProcessor(WithInternalFetcher(HandlerFetcher(mux)))
+
+	t.Run("plain content unescaped without tags (inner scan returns nil)", func(t *testing.T) {
+		html := []byte(`<div><!--esi <p>Rendered by ESI</p> --></div>`)
+		res, err := testProcess(proc, context.Background(), nil, html)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer res.Release()
+
+		expected := `<div> <p>Rendered by ESI</p> </div>`
+		if string(res.Body()) != expected {
+			t.Errorf("got %q, want %q", string(res.Body()), expected)
+		}
+	})
+
+	t.Run("unescaped content with nested include", func(t *testing.T) {
+		html := []byte(`<div><!--esi Hello <esi:include src="/user" />! --></div>`)
+		res, err := testProcess(proc, context.Background(), nil, html)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer res.Release()
+
+		expected := `<div> Hello Alice! </div>`
+		if string(res.Body()) != expected {
+			t.Errorf("got %q, want %q", string(res.Body()), expected)
+		}
+	})
 }

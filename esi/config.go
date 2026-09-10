@@ -42,7 +42,7 @@ type config struct {
 	httpClient *http.Client
 }
 
-// Option configures ESI engine parameters.
+// Option configures ESI processor parameters.
 type Option func(*config)
 
 // WithHeaderRequired configures whether ESI is processed only when Surrogate-Control is present.
@@ -190,7 +190,6 @@ func HandlerFetcher(router http.Handler) InternalFetcherFunc {
 			Body:       http.NoBody,
 		}
 		subReq.Header.Set("Accept-Encoding", "identity")
-		AddSurrogateCapability(subReq.Header, "esi")
 		if r.Trailer != nil {
 			subReq.Trailer = r.Trailer.Clone()
 		}

@@ -42,7 +42,7 @@ func (t *Titip) processESI(
 			body = res.Body()
 			t.esiProcessor.ReconcileHeaders(reconciled, res)
 			if t.config.cacheStatusMode == CacheStatusRFC9211 {
-				detail = rfc9211Detail + "; detail=\"esi-includes=" + strconv.Itoa(len(fragments)) + ";time=" + res.Duration.String() + "\""
+				detail = rfc9211Detail + "; detail=\"esi-includes=" + strconv.Itoa(len(fragments)) + ";time=" + res.Duration().String() + "\""
 			}
 		}
 	} else {

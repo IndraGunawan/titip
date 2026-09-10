@@ -330,7 +330,6 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 				Body:       http.NoBody,
 			}
 			virtReq.Header.Set("Accept-Encoding", "identity") // https://github.com/caddyserver/caddy/issues/4352
-			esi.AddSurrogateCapability(virtReq.Header, "titip")
 			if r.Trailer != nil {
 				virtReq.Trailer = r.Trailer.Clone()
 			}

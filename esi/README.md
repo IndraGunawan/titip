@@ -69,7 +69,13 @@ func main() {
 
     req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.com/", nil)
 
-    result, err := proc.Process(context.Background(), req, html)
+    fragments := esi.Scan(html)
+    if len(fragments) == 0 {
+        fmt.Println(string(html))
+        return
+    }
+
+    result, err := proc.ProcessFragments(context.Background(), req, html, fragments)
     if err != nil {
         panic(err)
     }
@@ -120,7 +126,7 @@ If the handler returns 404, the processor falls back to outbound HTTP.
 
 Helpers for upstream capability negotiation and downstream response reconciliation defined in the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/) and RFC 9110:
 
-- `esi.AddSurrogateCapability(header http.Header, deviceToken string)`: Advertises `Surrogate-Capability: <deviceToken>="ESI/1.0"` to upstream origin servers.
+- `proc.AddSurrogateCapability(header http.Header, deviceToken string)`: Advertises `Surrogate-Capability: <deviceToken>="ESI/1.0"` to upstream origin servers (nil-safe no-op).
 - `proc.CanProcess(header http.Header) bool`: Reports whether response headers meet ESI processing requirements based on `WithHeaderRequired`.
 - `proc.ShouldPreserveETag() bool`: Reports whether downstream ETag (weakened) and Last-Modified headers are preserved based on `WithPreserveETag`.
 - `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI 1.0 specifications (removes `Surrogate-Control`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
@@ -130,14 +136,15 @@ Helpers for upstream capability negotiation and downstream response reconciliati
 Call `result.Release()` after reading `result.Body()` to return the buffer to the pool:
 
 ```go
-result, err := proc.Process(ctx, req, body)
-if err != nil {
-    return err
+fragments := esi.Scan(body)
+if len(fragments) > 0 {
+    result, err := proc.ProcessFragments(ctx, req, body, fragments)
+    if err != nil {
+        return err
+    }
+    defer result.Release()
+
+    proc.ReconcileHeaders(w.Header(), result)
+    w.Write(result.Body())
 }
-defer result.Release()
-
-proc.ReconcileHeaders(w.Header(), result)
-w.Write(result.Body())
 ```
-
-For advanced caching engines with pre-compiled fragments, use `proc.ProcessFragments(ctx, req, body, fragments)` to skip rescanning.

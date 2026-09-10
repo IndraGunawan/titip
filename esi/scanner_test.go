@@ -9,11 +9,8 @@ import (
 
 func TestScanner_BasicSelfClosing(t *testing.T) {
 	html := []byte(`<!DOCTYPE html><html><body><esi:include src="/api/user" /></body></html>`)
-	hasESI, frags := Scan(html)
+	frags := Scan(html)
 
-	if !hasESI {
-		t.Fatalf("expected hasESI to be true")
-	}
 	if len(frags) != 1 {
 		t.Fatalf("expected 1 fragment, got %d", len(frags))
 	}
@@ -35,9 +32,9 @@ func TestScanner_BasicSelfClosing(t *testing.T) {
 
 func TestScanner_PairedWithFallback(t *testing.T) {
 	html := []byte(`<div><esi:include src="/cart" alt="/cart-cached" timeout="0.5" max-depth="2" onerror="continue"><span>Default Cart</span></esi:include></div>`)
-	hasESI, frags := Scan(html)
+	frags := Scan(html)
 
-	if !hasESI || len(frags) != 1 {
+	if len(frags) != 1 {
 		t.Fatalf("expected 1 fragment, got %d", len(frags))
 	}
 
@@ -71,8 +68,8 @@ func TestScanner_PairedWithFallback(t *testing.T) {
 func TestScanner_InnerContentPositions(t *testing.T) {
 	t.Run("multiple paired tags in single document", func(t *testing.T) {
 		html := []byte(`<header><esi:include src="/nav">Fallback Nav</esi:include></header><main><esi:include src="/content">Fallback Content</esi:include></main><footer><esi:include src="/footer" /></footer>`)
-		hasESI, frags := Scan(html)
-		if !hasESI || len(frags) != 3 {
+		frags := Scan(html)
+		if len(frags) != 3 {
 			t.Fatalf("expected 3 fragments, got %d", len(frags))
 		}
 
@@ -94,8 +91,8 @@ func TestScanner_InnerContentPositions(t *testing.T) {
 
 	t.Run("empty paired tag", func(t *testing.T) {
 		html := []byte(`<div><esi:include src="/empty"></esi:include></div>`)
-		hasESI, frags := Scan(html)
-		if !hasESI || len(frags) != 1 {
+		frags := Scan(html)
+		if len(frags) != 1 {
 			t.Fatalf("expected 1 fragment, got %d", len(frags))
 		}
 		f := frags[0]
@@ -109,8 +106,8 @@ func TestScanner_InnerContentPositions(t *testing.T) {
 
 	t.Run("paired tag nested inside inline comment wrapper", func(t *testing.T) {
 		html := []byte(`<div class="wrap"><!--esi <esi:include src="/user"><strong>Default User</strong></esi:include> --></div>`)
-		hasESI, frags := Scan(html)
-		if !hasESI {
+		frags := Scan(html)
+		if len(frags) == 0 {
 			t.Fatal("expected ESI detected")
 		}
 		var includeFrag *proto.EsiFragment
@@ -132,8 +129,8 @@ func TestScanner_InnerContentPositions(t *testing.T) {
 	t.Run("multiline complex inner HTML", func(t *testing.T) {
 		inner := "\n  <div class=\"widget\" data-id=\"42\">\n    <p>Loading...</p>\n  </div>\n"
 		html := []byte(`<esi:include src="/widget">` + inner + `</esi:include>`)
-		hasESI, frags := Scan(html)
-		if !hasESI || len(frags) != 1 {
+		frags := Scan(html)
+		if len(frags) != 1 {
 			t.Fatalf("expected 1 fragment, got %d", len(frags))
 		}
 		f := frags[0]
@@ -158,7 +155,7 @@ func TestScanner_MaxDepth_EdgeCases(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		_, frags := Scan([]byte(tt.tag))
+		frags := Scan([]byte(tt.tag))
 		if len(frags) != 1 {
 			t.Fatalf("expected 1 fragment for %s, got %d", tt.tag, len(frags))
 		}
@@ -170,9 +167,9 @@ func TestScanner_MaxDepth_EdgeCases(t *testing.T) {
 
 func TestScanner_QuoteAwareClosingBracket(t *testing.T) {
 	html := []byte(`<esi:include src="/api/search?q=foo>bar&sort=asc" />`)
-	hasESI, frags := Scan(html)
+	frags := Scan(html)
 
-	if !hasESI || len(frags) != 1 {
+	if len(frags) != 1 {
 		t.Fatalf("expected 1 fragment, got %d", len(frags))
 	}
 	if frags[0].Src != "/api/search?q=foo>bar&sort=asc" {
@@ -182,9 +179,9 @@ func TestScanner_QuoteAwareClosingBracket(t *testing.T) {
 
 func TestScanner_RemoveBlock(t *testing.T) {
 	html := []byte(`<h1>Hello</h1><esi:remove><p>This should be removed</p></esi:remove><p>World</p>`)
-	hasESI, frags := Scan(html)
+	frags := Scan(html)
 
-	if !hasESI || len(frags) != 1 {
+	if len(frags) != 1 {
 		t.Fatalf("expected 1 fragment for remove, got %d", len(frags))
 	}
 	if frags[0].Src != "" || frags[0].InnerStartPos != 0 || frags[0].InnerEndPos != 0 {
@@ -197,9 +194,9 @@ func TestScanner_RemoveBlock(t *testing.T) {
 
 func TestScanner_CommentTag(t *testing.T) {
 	html := []byte(`<h1>Title</h1><esi:comment text="Internal comment" /><esi:comment>Block comment</esi:comment>`)
-	hasESI, frags := Scan(html)
+	frags := Scan(html)
 
-	if !hasESI || len(frags) != 2 {
+	if len(frags) != 2 {
 		t.Fatalf("expected 2 fragments for comments, got %d", len(frags))
 	}
 	if string(html[frags[0].StartPos:frags[0].EndPos]) != `<esi:comment text="Internal comment" />` {
@@ -211,48 +208,63 @@ func TestScanner_CommentTag(t *testing.T) {
 }
 
 func TestScanner_InlineCommentUnescape(t *testing.T) {
-	html := []byte(`<!--esi <esi:include src="/footer" /> -->`)
-	hasESI, frags := Scan(html)
+	t.Run("with inner include", func(t *testing.T) {
+		html := []byte(`<!--esi <esi:include src="/footer" /> -->`)
+		frags := Scan(html)
 
-	if !hasESI {
-		t.Fatalf("expected hasESI to be true")
-	}
-	// Should produce 3 fragments:
-	// 1: <!--esi prefix (stripped)
-	// 2: <esi:include src="/footer" /> (executed)
-	// 3: --> suffix (stripped)
-	if len(frags) != 3 {
-		t.Fatalf("expected 3 fragments for inline comment unescape, got %d", len(frags))
-	}
+		// Should produce 3 fragments:
+		// 1: <!--esi prefix (stripped)
+		// 2: <esi:include src="/footer" /> (executed)
+		// 3: --> suffix (stripped)
+		if len(frags) != 3 {
+			t.Fatalf("expected 3 fragments for inline comment unescape, got %d", len(frags))
+		}
 
-	if string(html[frags[0].StartPos:frags[0].EndPos]) != "<!--esi" {
-		t.Errorf("frag 0 should be <!--esi, got %s", html[frags[0].StartPos:frags[0].EndPos])
-	}
-	if frags[1].Src != "/footer" {
-		t.Errorf("frag 1 should be /footer include, got %s", frags[1].Src)
-	}
-	if string(html[frags[2].StartPos:frags[2].EndPos]) != "-->" {
-		t.Errorf("frag 2 should be -->, got %s", html[frags[2].StartPos:frags[2].EndPos])
-	}
+		if string(html[frags[0].StartPos:frags[0].EndPos]) != "<!--esi" {
+			t.Errorf("frag 0 should be <!--esi, got %s", html[frags[0].StartPos:frags[0].EndPos])
+		}
+		if frags[1].Src != "/footer" {
+			t.Errorf("frag 1 should be /footer include, got %s", frags[1].Src)
+		}
+		if string(html[frags[2].StartPos:frags[2].EndPos]) != "-->" {
+			t.Errorf("frag 2 should be -->, got %s", html[frags[2].StartPos:frags[2].EndPos])
+		}
+	})
+
+	t.Run("with plain text only (inner scan returns nil)", func(t *testing.T) {
+		html := []byte(`<!--esi <p>Client-hidden content unescaped by ESI</p> -->`)
+		frags := Scan(html)
+
+		// Should produce exactly 2 strip fragments (<!--esi and -->) while Scan(innerBlock) returns nil:
+		if len(frags) != 2 {
+			t.Fatalf("expected 2 fragments for plain inline comment unescape, got %d", len(frags))
+		}
+		if string(html[frags[0].StartPos:frags[0].EndPos]) != "<!--esi" {
+			t.Errorf("frag 0 should be <!--esi, got %s", html[frags[0].StartPos:frags[0].EndPos])
+		}
+		if string(html[frags[1].StartPos:frags[1].EndPos]) != "-->" {
+			t.Errorf("frag 1 should be -->, got %s", html[frags[1].StartPos:frags[1].EndPos])
+		}
+	})
 }
 
 func TestScanner_NoESI(t *testing.T) {
 	html := []byte(`<html><body><p>Normal text without any directives</p></body></html>`)
-	hasESI, frags := Scan(html)
-	if hasESI || frags != nil {
-		t.Errorf("expected no ESI, got hasESI=%v, len(frags)=%d", hasESI, len(frags))
+	frags := Scan(html)
+	if len(frags) != 0 {
+		t.Errorf("expected no ESI, got len(frags)=%d", len(frags))
 	}
 }
 
 func TestScanner_NilOrEmpty(t *testing.T) {
-	hasESI, frags := Scan(nil)
-	if hasESI || frags != nil {
-		t.Errorf("expected false, nil for nil input")
+	frags := Scan(nil)
+	if frags != nil {
+		t.Errorf("expected nil for nil input, got %v", frags)
 	}
 
-	hasESI, frags = Scan([]byte{})
-	if hasESI || frags != nil {
-		t.Errorf("expected false, nil for empty input")
+	frags = Scan([]byte{})
+	if frags != nil {
+		t.Errorf("expected nil for empty input, got %v", frags)
 	}
 }
 
@@ -303,9 +315,9 @@ func TestScanner_AttributeVariations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hasESI, frags := Scan([]byte(tt.html))
-			if !hasESI || len(frags) != 1 {
-				t.Fatalf("expected 1 fragment, got hasESI=%v, len(frags)=%d", hasESI, len(frags))
+			frags := Scan([]byte(tt.html))
+			if len(frags) != 1 {
+				t.Fatalf("expected 1 fragment, got len(frags)=%d", len(frags))
 			}
 			f := frags[0]
 			if f.Src != tt.wantSrc {
@@ -340,8 +352,8 @@ func TestScanner_TimeoutFormats(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.timeoutStr, func(t *testing.T) {
 			html := `<esi:include src="/api" timeout="` + tt.timeoutStr + `" />`
-			hasESI, frags := Scan([]byte(html))
-			if !hasESI || len(frags) != 1 {
+			frags := Scan([]byte(html))
+			if len(frags) != 1 {
 				t.Fatalf("expected 1 fragment, got %d", len(frags))
 			}
 			if frags[0].TimeoutMs != tt.wantMs {
@@ -354,8 +366,8 @@ func TestScanner_TimeoutFormats(t *testing.T) {
 func TestScanner_MalformedAndUnclosed(t *testing.T) {
 	t.Run("unclosed paired tag falls back to self closing", func(t *testing.T) {
 		html := []byte(`<esi:include src="/stream">Content without close tag`)
-		hasESI, frags := Scan(html)
-		if !hasESI || len(frags) != 1 {
+		frags := Scan(html)
+		if len(frags) != 1 {
 			t.Fatalf("expected 1 fragment, got %d", len(frags))
 		}
 		if frags[0].Src != "/stream" {
@@ -368,48 +380,48 @@ func TestScanner_MalformedAndUnclosed(t *testing.T) {
 
 	t.Run("unclosed tag bracket at eof", func(t *testing.T) {
 		html := []byte(`<esi:include src="/incomplete`)
-		hasESI, frags := Scan(html)
-		if hasESI || len(frags) != 0 {
+		frags := Scan(html)
+		if len(frags) != 0 {
 			t.Errorf("expected no fragments for tag without closing bracket, got %d", len(frags))
 		}
 	})
 
 	t.Run("similar tag name prefix not matched", func(t *testing.T) {
 		html := []byte(`<esi:include_custom src="/ignore" /><esi:commentary>text</esi:commentary>`)
-		hasESI, frags := Scan(html)
-		if hasESI || len(frags) != 0 {
-			t.Errorf("expected non-standard tags to be ignored, got hasESI=%v, len(frags)=%d", hasESI, len(frags))
+		frags := Scan(html)
+		if len(frags) != 0 {
+			t.Errorf("expected non-standard tags to be ignored, got len(frags)=%d", len(frags))
 		}
 	})
 
 	t.Run("unclosed remove block at eof", func(t *testing.T) {
 		html := []byte(`<esi:remove><p>No closing tag at eof`)
-		hasESI, frags := Scan(html)
-		if hasESI || len(frags) != 0 {
+		frags := Scan(html)
+		if len(frags) != 0 {
 			t.Errorf("expected unclosed remove block to be ignored, got %d", len(frags))
 		}
 	})
 
 	t.Run("unclosed comment block at eof", func(t *testing.T) {
 		html := []byte(`<esi:comment><p>No closing tag at eof`)
-		hasESI, frags := Scan(html)
-		if hasESI || len(frags) != 0 {
+		frags := Scan(html)
+		if len(frags) != 0 {
 			t.Errorf("expected unclosed comment block to be ignored, got %d", len(frags))
 		}
 	})
 
 	t.Run("inline comment without close", func(t *testing.T) {
 		html := []byte(`<!--esi <esi:include src="/frag" />`)
-		hasESI, frags := Scan(html)
-		if !hasESI || len(frags) < 1 {
+		frags := Scan(html)
+		if len(frags) < 1 {
 			t.Fatalf("expected unclosed inline comment to still process opening, got %d", len(frags))
 		}
 	})
 
 	t.Run("unclosed attribute quote at eof", func(t *testing.T) {
 		html := []byte(`<esi:include src="unterminated`)
-		hasESI, frags := Scan(html)
-		if hasESI || len(frags) != 0 {
+		frags := Scan(html)
+		if len(frags) != 0 {
 			t.Errorf("expected unclosed quote tag to be ignored, got %d", len(frags))
 		}
 	})
@@ -438,8 +450,8 @@ func BenchmarkESIScanner_MultiTag(b *testing.B) {
 	data := buf.Bytes()
 
 	for b.Loop() {
-		hasESI, frags := Scan(data)
-		if !hasESI || len(frags) == 0 {
+		frags := Scan(data)
+		if len(frags) == 0 {
 			b.Fatal("failed scan")
 		}
 	}
@@ -449,8 +461,8 @@ func BenchmarkESIScanner_NoESI(b *testing.B) {
 	html := []byte(`<!DOCTYPE html><html><head><title>Static Page</title></head><body><div class='container'><p>Hello World without any ESI directives.</p></div></body></html>`)
 
 	for b.Loop() {
-		hasESI, _ := Scan(html)
-		if hasESI {
+		frags := Scan(html)
+		if len(frags) > 0 {
 			b.Fatal("expected no ESI")
 		}
 	}
@@ -486,7 +498,7 @@ func BenchmarkESI_ScanAndSplice_ColdMiss(b *testing.B) {
 
 	for b.Loop() {
 		// 1. Scan from scratch on cold miss
-		_, frags := Scan(parentData)
+		frags := Scan(parentData)
 
 		// 2. Splice into recycled buffer
 		pooledBuf.Reset()
@@ -524,7 +536,7 @@ func BenchmarkESI_PreCompiled_CacheHit_PooledBuffer(b *testing.B) {
 	parentData := buf.Bytes()
 
 	// Pre-compile once (as stored in Redis on initial cold miss)
-	_, preCompiledFrags := Scan(parentData)
+	preCompiledFrags := Scan(parentData)
 
 	fragPayloads := [][]byte{
 		[]byte("<nav>Header Nav Menu</nav>"),
@@ -557,8 +569,8 @@ func BenchmarkESIScanner_PairedWithInnerContent(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		hasESI, frags := Scan(html)
-		if !hasESI || len(frags) != 1 {
+		frags := Scan(html)
+		if len(frags) != 1 {
 			b.Fatal("scan failed")
 		}
 	}
