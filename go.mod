@@ -6,7 +6,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.29
 	github.com/pquerna/cachecontrol v0.2.0
 	github.com/prometheus/client_golang v1.24.1
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 	google.golang.org/protobuf v1.36.12
 )
 
