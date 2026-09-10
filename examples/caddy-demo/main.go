@@ -115,7 +115,7 @@ func main() {
 			})
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		respBytes, _ := io.ReadAll(resp.Body)
 		w.WriteHeader(resp.StatusCode)
@@ -500,7 +500,12 @@ curl -i http://localhost:8080/api/time</code></pre>
 	})
 
 	log.Println("Mock upstream origin server listening on :9000...")
-	if err := http.ListenAndServe(":9000", mux); err != nil {
+	server := &http.Server{
+		Addr:              ":9000",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }

@@ -154,7 +154,7 @@ func TestCaddy_AdminPurge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin purge request failed: %v", err)
 	}
-	defer purgeResp.Body.Close()
+	defer func() { _ = purgeResp.Body.Close() }()
 	if purgeResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(purgeResp.Body)
 		t.Fatalf("admin purge status %d: %s", purgeResp.StatusCode, string(body))
@@ -192,7 +192,7 @@ func TestCaddy_AdminPurge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin tag purge request failed: %v", err)
 	}
-	defer tagPurgeResp.Body.Close()
+	defer func() { _ = tagPurgeResp.Body.Close() }()
 	if tagPurgeResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(tagPurgeResp.Body)
 		t.Fatalf("admin tag purge status %d: %s", tagPurgeResp.StatusCode, string(body))

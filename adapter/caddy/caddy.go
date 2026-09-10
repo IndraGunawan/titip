@@ -367,7 +367,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.instance = instance
 	registerInstance(h.id, instance)
 
-	storageName := "unknown"
+	var storageName string
 	sMod := h.storageMod
 	if sMod == nil && app != nil {
 		sMod = app.storageMod
