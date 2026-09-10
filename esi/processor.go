@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"runtime/debug"
 	"slices"
@@ -68,12 +67,16 @@ type flightTracker struct {
 type flightGroup struct {
 	mu       sync.Mutex
 	trackers map[string]*flightTracker
+	results  map[string]*rawFetchResult
+	errors   map[string]error
 	sf       singleflight.Group
 }
 
 func newFlightGroup() *flightGroup {
 	return &flightGroup{
 		trackers: make(map[string]*flightTracker),
+		results:  make(map[string]*rawFetchResult),
+		errors:   make(map[string]error),
 	}
 }
 
@@ -85,6 +88,12 @@ func (fg *flightGroup) do(
 	fg.mu.Lock()
 	defer fg.mu.Unlock()
 
+	if res, ok := fg.results[key]; ok {
+		ch := make(chan singleflight.Result, 1)
+		ch <- singleflight.Result{Val: res, Err: fg.errors[key], Shared: true}
+		return nil, ch
+	}
+
 	tracker, ok := fg.trackers[key]
 	if !ok {
 		flightCtx, cancel := context.WithCancel(parentCtx)
@@ -95,12 +104,13 @@ func (fg *flightGroup) do(
 		fg.trackers[key] = tracker
 
 		ch := fg.sf.DoChan(key, func() (any, error) {
-			defer func() {
-				fg.mu.Lock()
-				delete(fg.trackers, key)
-				fg.mu.Unlock()
-			}()
-			return fn(flightCtx)
+			res, err := fn(flightCtx)
+			fg.mu.Lock()
+			fg.results[key] = res
+			fg.errors[key] = err
+			delete(fg.trackers, key)
+			fg.mu.Unlock()
+			return res, err
 		})
 		return tracker, ch
 	}
@@ -113,6 +123,9 @@ func (fg *flightGroup) do(
 }
 
 func (fg *flightGroup) release(key string, tracker *flightTracker) {
+	if tracker == nil {
+		return
+	}
 	fg.mu.Lock()
 	defer fg.mu.Unlock()
 
@@ -125,7 +138,6 @@ func (fg *flightGroup) release(key string, tracker *flightTracker) {
 		}
 	}
 }
-
 
 // Result contains the assembled document and metadata resulting from ESI processing.
 // Callers must invoke Release when finished to return the underlying buffer to the memory pool.
@@ -433,7 +445,7 @@ func (p *Processor) expandNestedESI(
 	}
 	processed, nestedCookies := p.executeAndSpliceNestedESI(ctx, parentReq, body, frags, state)
 	if len(nestedCookies) > 0 {
-		cookies = append(cookies, nestedCookies...)
+		cookies = append(slices.Clone(cookies), nestedCookies...)
 	}
 	return processed, cookies
 }
@@ -820,24 +832,7 @@ func (p *Processor) fetchOutboundHTTP(
 			req.Header.Set("Accept-Language", al)
 		}
 
-		isSameHost := req.URL.Host == "" || strings.EqualFold(req.URL.Host, parentReq.Host)
-		if !isSameHost {
-			tHost, tPort, err1 := net.SplitHostPort(req.URL.Host)
-			if err1 != nil {
-				tHost = req.URL.Host
-				tPort = ""
-			}
-			pHost, pPort, err2 := net.SplitHostPort(parentReq.Host)
-			if err2 != nil {
-				pHost = parentReq.Host
-				pPort = ""
-			}
-			if strings.EqualFold(tHost, pHost) {
-				if tPort == pPort || ((tPort == "" || tPort == "80" || tPort == "443") && (pPort == "" || pPort == "80" || pPort == "443")) {
-					isSameHost = true
-				}
-			}
-		}
+		isSameHost := req.URL.Host == "" || strings.EqualFold(stripDefaultPort(req.URL.Host), stripDefaultPort(parentReq.Host))
 
 		if isSameHost {
 			for _, c := range parentReq.Header.Values("Cookie") {
@@ -881,6 +876,11 @@ func (p *Processor) fetchOutboundHTTP(
 	return body, cookies, "http", nil
 }
 
+// spliceFragments splices resolved fragment bodies into the parent HTML buffer out.
+//
+// INVARIANT: res.body may be shared across multiple duplicate tags via document-level
+// singleflight memoization. NEVER mutate res.body in-place. Always write transformations
+// directly into the destination buffer 'out'.
 func (p *Processor) spliceFragments(parent []byte, results []*fragmentResult, out *bytes.Buffer) {
 	if len(results) == 0 {
 		out.Write(parent)
@@ -932,4 +932,9 @@ func (p *Processor) resolveFallback(innerBody []byte, onError string) []byte {
 		return []byte(p.config.includeErrorMarker)
 	}
 	return nil
+}
+
+func stripDefaultPort(h string) string {
+	h = strings.TrimSuffix(h, ":80")
+	return strings.TrimSuffix(h, ":443")
 }

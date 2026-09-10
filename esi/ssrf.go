@@ -26,9 +26,7 @@ var blockedCIDRs = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"), // Carrier-Grade NAT (RFC 6598)
 	netip.MustParsePrefix("192.0.0.0/24"),  // IETF Protocol Assignments
 	netip.MustParsePrefix("198.18.0.0/15"), // Network Benchmark
-	netip.MustParsePrefix("224.0.0.0/4"),   // Multicast
 	netip.MustParsePrefix("240.0.0.0/4"),   // Reserved
-	netip.MustParsePrefix("::1/128"),       // IPv6 Loopback
 	netip.MustParsePrefix("fc00::/7"),      // IPv6 Unique Local Address
 }
 

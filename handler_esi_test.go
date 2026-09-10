@@ -1971,4 +1971,3 @@ func TestESI_OriginLowerCaseWireHeaders_EndToEnd(t *testing.T) {
 		}
 	})
 }
-

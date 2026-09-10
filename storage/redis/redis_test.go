@@ -759,7 +759,7 @@ func TestPurgeAll(t *testing.T) {
 			Tags:       []string{"all-tag"},
 		}
 		v := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
-		body := []byte(fmt.Sprintf("body_%d", i))
+		body := fmt.Appendf(nil, "body_%d", i)
 		if err := store.SetVariant(ctx, pk, meta, v, body, 60*time.Second); err != nil {
 			t.Fatalf("set variant failed: %v", err)
 		}

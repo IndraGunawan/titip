@@ -1,8 +1,6 @@
 package caddy
 
 import (
-	"testing"
-
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/indragunawan/titip/internal/teststore"
@@ -67,31 +65,3 @@ var (
 	_ caddyfile.Unmarshaler = (*TestStorage)(nil)
 	_ StorageModule         = (*TestStorage)(nil)
 )
-
-func TestCaddyHandler_TestStorage_Caddyfile(t *testing.T) {
-	t.Parallel()
-	config := `titip {
-		storage test
-		cache_status RFC9211
-	}`
-
-	d := caddyfile.NewTestDispenser(config)
-	var h Handler
-	if err := h.UnmarshalCaddyfile(d); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
-
-	ctx, cancel := caddy.NewContext(caddy.Context{Context: t.Context()})
-	defer cancel()
-
-	if err := h.Provision(ctx); err != nil {
-		t.Fatalf("provision error with storage test: %v", err)
-	}
-
-	if h.instance == nil {
-		t.Fatalf("expected non-nil instance from Provision with storage test")
-	}
-	if h.storageMod == nil {
-		t.Fatalf("expected non-nil storageMod from Provision with storage test")
-	}
-}

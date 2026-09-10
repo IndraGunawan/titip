@@ -374,13 +374,6 @@ func generateVariantKey(r *http.Request, varyHeaderNames []string) string {
 		}
 
 		vals := r.Header.Values(canonicalName)
-		if len(vals) == 0 {
-			// Also check standard Header get
-			val := r.Header.Get(canonicalName)
-			if val != "" {
-				vals = []string{val}
-			}
-		}
 
 		if !first {
 			buf.WriteByte('|')

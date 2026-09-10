@@ -2,6 +2,7 @@ package caddy
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -98,6 +99,15 @@ func getInstances() []*titip.Titip {
 	return list
 }
 
+func coalesce[T any](vals ...*T) *T {
+	for _, v := range vals {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
 // CacheKey defines the cache key generation parameters in Caddy.
 type CacheKey struct {
 	IncludeProtocol          *bool               `json:"include_protocol,omitempty"`
@@ -165,16 +175,11 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		h.logger = ctx.Slogger()
 	}
 
-	// Check for global App defaults
+	// Check for global App defaults if configured
 	var app *App
-	func() {
-		defer func() { _ = recover() }()
-		if appIface, err := ctx.App("titip"); err == nil && appIface != nil {
-			if a, ok := appIface.(*App); ok && a != nil {
-				app = a
-			}
-		}
-	}()
+	if appIface, err := ctx.AppIfConfigured("titip"); err == nil && appIface != nil {
+		app, _ = appIface.(*App)
+	}
 
 	// 1. Provision dynamic storage guest module (or inherit from global App)
 	var store storage.Storage
@@ -209,11 +214,27 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithLogger(h.logger))
 	}
 
-	// Cache-Status header mode (inherit from app if not set)
-	cacheStatus := h.CacheStatus
-	if cacheStatus == "" && app != nil {
-		cacheStatus = app.CacheStatus
+	var (
+		appCacheStatus    string
+		appRespectClient  *bool
+		appAutoInvalidate *bool
+		appConvertHead    *bool
+		appBgTimeout      string
+		appStorageTimeout string
+		appUseRewritten   *bool
+	)
+	if app != nil {
+		appCacheStatus = app.CacheStatus
+		appRespectClient = app.RespectClientCacheControl
+		appAutoInvalidate = app.AutoInvalidateMutatingMethods
+		appConvertHead = app.ConvertHeadToGet
+		appBgTimeout = app.BackgroundFetchTimeout
+		appStorageTimeout = app.StorageTimeout
+		appUseRewritten = app.UseRewrittenURL
 	}
+
+	// Cache-Status header mode (inherit from app if not set)
+	cacheStatus := cmp.Or(h.CacheStatus, appCacheStatus)
 	switch strings.ToLower(cacheStatus) {
 	case "simple", "":
 		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusSimpleToken))
@@ -225,55 +246,26 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
 	}
 
-	// RespectClientCacheControl (inherit from app if not set)
-	respectClient := h.RespectClientCacheControl
-	if respectClient == nil && app != nil {
-		respectClient = app.RespectClientCacheControl
-	}
-	if respectClient != nil && *respectClient {
+	if v := coalesce(h.RespectClientCacheControl, appRespectClient); v != nil && *v {
 		opts = append(opts, titip.WithRespectClientCacheControl())
 	}
-
-	// AutoInvalidateMutatingMethods (inherit from app if not set)
-	autoInvalidate := h.AutoInvalidateMutatingMethods
-	if autoInvalidate == nil && app != nil {
-		autoInvalidate = app.AutoInvalidateMutatingMethods
-	}
-	if autoInvalidate != nil && *autoInvalidate {
+	if v := coalesce(h.AutoInvalidateMutatingMethods, appAutoInvalidate); v != nil && *v {
 		opts = append(opts, titip.WithAutoInvalidateMutatingMethods())
 	}
-
-	// ConvertHeadToGet (inherit from app if not set)
-	convertHead := h.ConvertHeadToGet
-	if convertHead == nil && app != nil {
-		convertHead = app.ConvertHeadToGet
+	if v := coalesce(h.ConvertHeadToGet, appConvertHead); v != nil {
+		opts = append(opts, titip.WithConvertHeadToGet(*v))
 	}
-	if convertHead != nil {
-		opts = append(opts, titip.WithConvertHeadToGet(*convertHead))
-	}
-
-	// BackgroundFetchTimeout (inherit from app if not set)
-	bgFetchTimeout := h.BackgroundFetchTimeout
-	if bgFetchTimeout == "" && app != nil {
-		bgFetchTimeout = app.BackgroundFetchTimeout
-	}
-	if bgFetchTimeout != "" {
-		d, err := caddy.ParseDuration(bgFetchTimeout)
+	if bg := cmp.Or(h.BackgroundFetchTimeout, appBgTimeout); bg != "" {
+		d, err := caddy.ParseDuration(bg)
 		if err != nil {
-			return fmt.Errorf("titip: invalid background_fetch_timeout duration %q: %w", bgFetchTimeout, err)
+			return fmt.Errorf("titip: invalid background_fetch_timeout duration %q: %w", bg, err)
 		}
 		opts = append(opts, titip.WithBackgroundFetchTimeout(d))
 	}
-
-	// StorageTimeout (inherit from app if not set)
-	storageTimeout := h.StorageTimeout
-	if storageTimeout == "" && app != nil {
-		storageTimeout = app.StorageTimeout
-	}
-	if storageTimeout != "" {
-		d, err := caddy.ParseDuration(storageTimeout)
+	if st := cmp.Or(h.StorageTimeout, appStorageTimeout); st != "" {
+		d, err := caddy.ParseDuration(st)
 		if err != nil {
-			return fmt.Errorf("titip: invalid storage_timeout duration %q: %w", storageTimeout, err)
+			return fmt.Errorf("titip: invalid storage_timeout duration %q: %w", st, err)
 		}
 		opts = append(opts, titip.WithStorageTimeout(d))
 	}
@@ -282,15 +274,10 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithTagHeaderName(h.TagHeader))
 	}
 
-	// UseRewrittenURL (inherit from app if not set)
-	useRewritten := false
-	if app != nil && app.UseRewrittenURL != nil {
-		useRewritten = *app.UseRewrittenURL
+	h.useRewrittenURL = false
+	if v := coalesce(h.UseRewrittenURL, appUseRewritten); v != nil {
+		h.useRewrittenURL = *v
 	}
-	if h.UseRewrittenURL != nil {
-		useRewritten = *h.UseRewrittenURL
-	}
-	h.useRewrittenURL = useRewritten
 
 	// CacheKey configuration: default -> global App defaults -> route overrides
 	if (app != nil && app.CacheKey != nil) || h.CacheKey != nil {
@@ -381,22 +368,14 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	registerInstance(h.id, instance)
 
 	storageName := "unknown"
-	if h.storageMod != nil {
-		if mod, ok := h.storageMod.(caddy.Module); ok {
-			storageName = strings.TrimPrefix(string(mod.CaddyModule().ID), "titip.storage.")
-		}
-	} else if app != nil && app.storageMod != nil {
-		if mod, ok := app.storageMod.(caddy.Module); ok {
-			storageName = strings.TrimPrefix(string(mod.CaddyModule().ID), "titip.storage.")
-		}
+	sMod := h.storageMod
+	if sMod == nil && app != nil {
+		sMod = app.storageMod
 	}
-	if storageName == "unknown" {
-		tName := strings.TrimPrefix(fmt.Sprintf("%T", store), "*")
-		if before, _, ok := strings.Cut(tName, "."); ok {
-			storageName = strings.ToLower(before)
-		} else {
-			storageName = strings.ToLower(tName)
-		}
+	if mod, ok := sMod.(caddy.Module); ok {
+		storageName = strings.TrimPrefix(string(mod.CaddyModule().ID), "titip.storage.")
+	} else {
+		storageName = fmt.Sprintf("%T", store)
 	}
 
 	if h.logger != nil {
@@ -770,7 +749,6 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 	err := handler.UnmarshalCaddyfile(h.Dispenser)
 	return &handler, err
 }
-
 
 func applyCacheKey(target *titip.CacheKey, src *CacheKey) error {
 	if src == nil {

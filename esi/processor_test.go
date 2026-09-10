@@ -2,7 +2,10 @@ package esi
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"fmt"
+	"hash/crc32"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -953,5 +956,119 @@ func TestProcessor_SharedSrc_DifferentMaxDepths(t *testing.T) {
 	}
 	if calls := nestedCalls.Load(); calls != 1 {
 		t.Errorf("expected exactly 1 fetch to /nested-root via singleflight, got %d", calls)
+	}
+}
+
+func TestProcessor_ConcurrentUsers_NoDataLeak(t *testing.T) {
+	t.Parallel()
+
+	var meCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
+		meCalls.Add(1)
+		cookie, _ := r.Cookie("session")
+		user := "anonymous"
+		if cookie != nil {
+			user = cookie.Value
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprintf(w, "Profile of %s", user)
+	})
+
+	proc := NewProcessor(
+		WithInternalFetcher(HandlerFetcher(mux)),
+	)
+
+	const numUsers = 20
+	var wg sync.WaitGroup
+	wg.Add(numUsers)
+
+	results := make([]string, numUsers)
+
+	for i := range numUsers {
+		idx := i
+		username := fmt.Sprintf("user-%d", idx)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
+			req.AddCookie(&http.Cookie{Name: "session", Value: username})
+
+			html := `<div>Welcome: <esi:include src="/me" /></div>`
+			res, err := proc.Process(context.Background(), req, []byte(html))
+			if err != nil {
+				t.Errorf("Process error: %v", err)
+				return
+			}
+			defer res.Release()
+			results[idx] = string(res.Body())
+		}()
+	}
+
+	wg.Wait()
+
+	if calls := meCalls.Load(); calls != numUsers {
+		t.Fatalf("expected %d calls to /me (one per user), got %d", numUsers, calls)
+	}
+
+	for i, body := range results {
+		expected := fmt.Sprintf("<div>Welcome: Profile of user-%d</div>", i)
+		if body != expected {
+			t.Errorf("user %d data leak or mismatch! Expected %q, got %q", i, expected, body)
+		}
+	}
+}
+
+func TestProcessor_MemoizedBufferNeverMutated(t *testing.T) {
+	t.Parallel()
+
+	// 1. Setup a sentinel canary byte slice
+	canaryOriginal := []byte("<div><span id='canary'>CANARY_PROTECTED_DATA_12345</span></div>")
+	baselineCRC := crc32.ChecksumIEEE(canaryOriginal)
+	pristineCopy := bytes.Clone(canaryOriginal)
+
+	var calls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/canary", func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(canaryOriginal)
+	})
+
+	proc := NewProcessor(
+		WithMaxTimeout(5*time.Second),
+		WithInternalFetcher(HandlerFetcher(mux)),
+	)
+
+	// 2. Document with 5 duplicate tags on the same page
+	const count = 5
+	var sb strings.Builder
+	sb.WriteString("<html><body>")
+	for range count {
+		sb.WriteString(`<div><esi:include src="/canary" /></div>`)
+	}
+	sb.WriteString("</body></html>")
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/page", nil)
+	res, err := proc.Process(context.Background(), req, []byte(sb.String()))
+	if err != nil {
+		t.Fatalf("Process error: %v", err)
+	}
+	defer res.Release()
+
+	// 3. CANARY ASSERTION: Verify the source byte slice was not mutated in-place
+	currentCRC := crc32.ChecksumIEEE(canaryOriginal)
+	if currentCRC != baselineCRC || !bytes.Equal(canaryOriginal, pristineCopy) {
+		t.Fatalf("CRITICAL REGRESSION: A function in the ESI pipeline (e.g. spliceFragments) " +
+			"mutated the memoized fragment in-place! Memory corruption detected.")
+	}
+
+	// 4. Verify all duplicate tags rendered pristine output and exactly 1 fetch occurred
+	if calls.Load() != 1 {
+		t.Errorf("expected exactly 1 upstream fetch, got %d", calls.Load())
+	}
+	occurrences := strings.Count(string(res.Body()), "CANARY_PROTECTED_DATA_12345")
+	if occurrences != count {
+		t.Errorf("expected %d intact occurrences, got %d", count, occurrences)
 	}
 }
