@@ -165,5 +165,6 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
   - `bench`: Performance and allocation benchmarks (e.g. `bench: add cache key benchmark`).
   - `chore`: Maintenance, dependencies, or tooling (e.g. `chore: update dependencies`).
   - `docs`: Documentation updates (e.g. `docs: update contributing guide`).
+  - Do not use scopes (use plain `feat:`, `fix:`, etc.).
 - **No Binary / Temporary Artifacts**:
   - Never commit `.DS_Store`, generated test binaries, or scratch files.

@@ -139,6 +139,13 @@ type ESIConfig struct {
 	ErrorMarker                    string   `json:"error_marker,omitempty"`
 }
 
+// ServerTimingConfig defines Server-Timing parameters in Caddy.
+type ServerTimingConfig struct {
+	Enabled     *bool  `json:"enabled,omitempty"`
+	CookieName  string `json:"cookie_name,omitempty"`
+	CookieValue string `json:"cookie_value,omitempty"`
+}
+
 // Handler implements the Caddy HTTP middleware for Titip caching.
 type Handler struct {
 	StorageRaw                    json.RawMessage `json:"storage,omitempty" caddy:"namespace=titip.storage inline_key=name"`
@@ -149,9 +156,10 @@ type Handler struct {
 	BackgroundFetchTimeout        string          `json:"background_fetch_timeout,omitempty"`
 	StorageTimeout                string          `json:"storage_timeout,omitempty"`
 	TagHeader                     string          `json:"tag_header,omitempty"`
-	CacheKey                      *CacheKey       `json:"cache_key,omitempty"`
-	ESI                           *ESIConfig      `json:"esi,omitempty"`
-	UseRewrittenURL               *bool           `json:"use_rewritten_url,omitempty"`
+	CacheKey                      *CacheKey           `json:"cache_key,omitempty"`
+	ESI                           *ESIConfig          `json:"esi,omitempty"`
+	UseRewrittenURL               *bool               `json:"use_rewritten_url,omitempty"`
+	ServerTiming                  *ServerTimingConfig `json:"server_timing,omitempty"`
 
 	storageMod      StorageModule
 	instance        *titip.Titip
@@ -222,6 +230,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		appBgTimeout      string
 		appStorageTimeout string
 		appUseRewritten   *bool
+		appServerTiming   *ServerTimingConfig
 	)
 	if app != nil {
 		appCacheStatus = app.CacheStatus
@@ -231,6 +240,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		appBgTimeout = app.BackgroundFetchTimeout
 		appStorageTimeout = app.StorageTimeout
 		appUseRewritten = app.UseRewrittenURL
+		appServerTiming = app.ServerTiming
 	}
 
 	// Cache-Status header mode (inherit from app if not set)
@@ -357,6 +367,16 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		esiOpts = append(esiOpts, esi.WithInternalFetcher(internalFetcher))
 
 		opts = append(opts, titip.WithESI(esiOpts...))
+	}
+
+	if stCfg := coalesce(h.ServerTiming, appServerTiming); stCfg != nil {
+		if stCfg.Enabled != nil && !*stCfg.Enabled {
+			opts = append(opts, titip.WithServerTiming(false))
+		} else if stCfg.CookieName != "" {
+			opts = append(opts, titip.WithServerTimingCookie(stCfg.CookieName, stCfg.CookieValue))
+		} else {
+			opts = append(opts, titip.WithServerTiming(true))
+		}
 	}
 
 	instance, err := titip.New(opts...)
@@ -541,6 +561,12 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					}
 				}
 				h.UseRewrittenURL = &val
+			case "server_timing":
+				st, err := parseServerTimingCaddyfile(d)
+				if err != nil {
+					return err
+				}
+				h.ServerTiming = st
 			default:
 				return d.Errf("unknown titip directive %q", d.Val())
 			}
@@ -842,6 +868,32 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 		*opts = append(*opts, esi.WithIncludeErrorMarker(src.ErrorMarker))
 	}
 	return nil
+}
+
+func parseServerTimingCaddyfile(d *caddyfile.Dispenser) (*ServerTimingConfig, error) {
+	st := new(ServerTimingConfig)
+	enabled := true
+	if d.NextArg() {
+		arg := d.Val()
+		if arg == "cookie" {
+			if !d.NextArg() {
+				return nil, d.Err("server_timing cookie requires <name> and <value>")
+			}
+			st.CookieName = d.Val()
+			if !d.NextArg() {
+				return nil, d.Err("server_timing cookie requires <name> and <value>")
+			}
+			st.CookieValue = d.Val()
+		} else {
+			var err error
+			enabled, err = strconv.ParseBool(arg)
+			if err != nil {
+				return nil, d.Errf("invalid boolean value %q for server_timing: %v", arg, err)
+			}
+		}
+	}
+	st.Enabled = &enabled
+	return st, nil
 }
 
 // Interface guards

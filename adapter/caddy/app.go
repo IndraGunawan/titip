@@ -49,6 +49,9 @@ type App struct {
 	// UseRewrittenURL uses the rewritten request URL rather than client original request URL.
 	UseRewrittenURL *bool `json:"use_rewritten_url,omitempty"`
 
+	// ServerTiming defines default Server-Timing parameters.
+	ServerTiming *ServerTimingConfig `json:"server_timing,omitempty"`
+
 	storageMod StorageModule
 }
 
@@ -186,6 +189,13 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 					}
 				}
 				app.UseRewrittenURL = &val
+
+			case "server_timing":
+				st, err := parseServerTimingCaddyfile(d)
+				if err != nil {
+					return nil, err
+				}
+				app.ServerTiming = st
 
 			default:
 				return nil, d.Errf("unknown global titip directive: %s", d.Val())

@@ -27,6 +27,8 @@ func (t *Titip) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 	ctx := acquireRequestContext(w, r, next)
 	defer releaseRequestContext(ctx)
 
+	ctx.serverTiming = t.config.serverTiming.enabled(r)
+
 	for state := stateCheckBypass; state != nil; {
 		state = state(t, ctx)
 	}
@@ -46,28 +48,28 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 	// A. WebSocket Handshake Bypass (RFC 6455 / RFC 9110 §7.8)
 	if containsToken(ctx.r.Header.Get(headerUpgrade), upgradeWebSocket) {
 		t.recordRequest(ctx, statusBypass)
-		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=websocket-upgrade")
+		t.emitCacheStatus(ctx, tokenBypass, "fwd=bypass; detail=websocket-upgrade")
 		return stateBypassOrigin
 	}
 
 	// B. Server-Sent Events (SSE) Bypass
 	if strings.Contains(strings.ToLower(ctx.r.Header.Get(headerAccept)), contentTypeEventStream) {
 		t.recordRequest(ctx, statusBypass)
-		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=sse-stream")
+		t.emitCacheStatus(ctx, tokenBypass, "fwd=bypass; detail=sse-stream")
 		return stateBypassOrigin
 	}
 
 	// C. Range Byte Request Bypass
 	if ctx.r.Header.Get(headerRange) != "" {
 		t.recordRequest(ctx, statusBypass)
-		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=range-request")
+		t.emitCacheStatus(ctx, tokenBypass, "fwd=bypass; detail=range-request")
 		return stateBypassOrigin
 	}
 
 	// D. Mutating Methods (POST, PUT, DELETE, PATCH)
 	if isMutatingMethod(ctx.r.Method) {
 		t.recordRequest(ctx, statusBypass)
-		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=method")
+		t.emitCacheStatus(ctx, tokenBypass, "fwd=method")
 		t.handleMutatingRequest(ctx.w, ctx.r, ctx.next)
 		return nil
 	}
@@ -75,7 +77,7 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 	// E. Non-Cacheable Methods (only GET and HEAD are cached)
 	if ctx.r.Method != http.MethodGet && ctx.r.Method != http.MethodHead {
 		t.recordRequest(ctx, statusBypass)
-		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=method")
+		t.emitCacheStatus(ctx, tokenBypass, "fwd=method")
 		return stateBypassOrigin
 	}
 
@@ -91,20 +93,20 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 				// RFC 9111 §5.2.1.4 / §5.2.1.5: no-store and no-cache
 				if reqCC.NoStore || reqCC.NoCache {
 					t.recordRequest(ctx, statusBypass)
-					t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=no-store")
+					t.emitCacheStatus(ctx, tokenBypass, "fwd=request; detail=no-store")
 					return stateBypassOrigin
 				}
 				// RFC 9111 §5.2.1.1: max-age=0 forces revalidation / origin bypass
 				if reqCC.MaxAge == 0 {
 					t.recordRequest(ctx, statusBypass)
-					t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=max-age-0")
+					t.emitCacheStatus(ctx, tokenBypass, "fwd=request; detail=max-age-0")
 					return stateBypassOrigin
 				}
 			}
 		} else if strings.EqualFold(strings.TrimSpace(pragma), "no-cache") {
 			// RFC 9111 §5.4: Pragma: no-cache acts as Cache-Control: no-cache
 			t.recordRequest(ctx, statusBypass)
-			t.emitCacheStatus(ctx.w, tokenBypass, "fwd=request; detail=pragma-no-cache")
+			t.emitCacheStatus(ctx, tokenBypass, "fwd=request; detail=pragma-no-cache")
 			return stateBypassOrigin
 		}
 	}
@@ -117,7 +119,14 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 	ctx.primaryKey = generatePrimaryKey(ctx.r, &t.config.cacheKey)
 
 	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
+	var t0 time.Time
+	if ctx.serverTiming {
+		t0 = time.Now()
+	}
 	meta, isSoftPurged, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)
+	if ctx.serverTiming {
+		ctx.metaDuration = time.Since(t0)
+	}
 	storeCancel()
 
 	if err != nil {
@@ -125,7 +134,7 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
 			t.logger.ErrorContext(ctx.r.Context(), "storage error fetching metadata, bypassing to origin", "error", err, "key", ctx.primaryKey)
 		}
-		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=storage-fallback")
+		t.emitCacheStatus(ctx, tokenBypass, "fwd=bypass; detail=storage-fallback")
 		return stateBypassOrigin
 	}
 
@@ -135,7 +144,7 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 		// RFC 9111 §5.2.1.7: only-if-cached requires responding with 504 Gateway Timeout on miss
 		if ctx.reqCC != nil && ctx.reqCC.OnlyIfCached {
 			t.recordRequest(ctx, statusMiss)
-			t.emitCacheStatus(ctx.w, tokenMiss, "miss; detail=only-if-cached")
+			t.emitCacheStatus(ctx, tokenMiss, "miss; detail=only-if-cached")
 			http.Error(ctx.w, "Gateway Timeout", http.StatusGatewayTimeout)
 			return nil
 		}
@@ -159,7 +168,7 @@ func stateMatchVariant(t *Titip, ctx *requestContext) stateFn {
 		// RFC 9111 §5.2.1.7: only-if-cached requires responding with 504 Gateway Timeout on miss
 		if ctx.reqCC != nil && ctx.reqCC.OnlyIfCached {
 			t.recordRequest(ctx, statusMiss)
-			t.emitCacheStatus(ctx.w, tokenMiss, "miss; detail=only-if-cached")
+			t.emitCacheStatus(ctx, tokenMiss, "miss; detail=only-if-cached")
 			http.Error(ctx.w, "Gateway Timeout", http.StatusGatewayTimeout)
 			return nil
 		}
@@ -209,7 +218,7 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	// If client requested only-if-cached and entry is expired, return 504 per RFC 9111 §5.2.1.7
 	if t.config.respectClientCacheControl && strings.Contains(strings.Join(ctx.r.Header.Values(headerCacheControl), ", "), "only-if-cached") {
 		t.recordRequest(ctx, statusMiss)
-		t.emitCacheStatus(ctx.w, tokenMiss, "miss; detail=only-if-cached-expired")
+		t.emitCacheStatus(ctx, tokenMiss, "miss; detail=only-if-cached-expired")
 		http.Error(ctx.w, "Gateway Timeout", http.StatusGatewayTimeout)
 		return nil
 	}
@@ -221,7 +230,7 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 // 5. stateServe304: Writes HTTP 304 Not Modified directly with 0 Redis Body I/O
 func stateServe304(t *Titip, ctx *requestContext) stateFn {
 	t.recordRequest(ctx, statusHit)
-	t.emitCacheStatus(ctx.w, tokenHit, "hit")
+	t.emitCacheStatus(ctx, tokenHit, "hit")
 	t.copyProtoHeaders(ctx.w, ctx.varInfo.ResponseHeaders)
 	t.adjustESIHeaders(ctx.w, ctx.varInfo)
 	ctx.w.Header().Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
@@ -232,7 +241,7 @@ func stateServe304(t *Titip, ctx *requestContext) stateFn {
 // stateServe412 writes HTTP 412 Precondition Failed when an If-Match / If-Unmodified-Since precondition fails.
 func stateServe412(t *Titip, ctx *requestContext) stateFn {
 	t.recordRequest(ctx, statusBypass)
-	t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=precondition-failed")
+	t.emitCacheStatus(ctx, tokenBypass, "fwd=bypass; detail=precondition-failed")
 	http.Error(ctx.w, "Precondition Failed", http.StatusPreconditionFailed)
 	return nil
 }
@@ -243,14 +252,21 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	if ctx.r.Method == http.MethodHead {
 		t.recordRequest(ctx, statusHit)
 		ttlStr := strconv.FormatInt(int64(t.remainingTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)/time.Second), 10)
-		t.emitCacheStatus(ctx.w, tokenHit, "hit; ttl="+ttlStr)
+		t.emitCacheStatus(ctx, tokenHit, "hit; ttl="+ttlStr)
 		t.copyProtoHeaders(ctx.w, ctx.varInfo.ResponseHeaders)
 		t.adjustESIHeaders(ctx.w, ctx.varInfo)
 		ctx.w.WriteHeader(int(ctx.varInfo.StatusCode))
 		return nil
 	}
 
+	var t0 time.Time
+	if ctx.serverTiming {
+		t0 = time.Now()
+	}
 	varInfo, dstBuf, ok := t.loadDecompressed(ctx)
+	if ctx.serverTiming {
+		ctx.bodyDuration = time.Since(t0)
+	}
 	if !ok {
 		if dstBuf != nil {
 			putBuffer(dstBuf)
@@ -273,7 +289,7 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	t.recordRequest(ctx, statusHit)
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
 	ctx.w.Header().Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
-	t.emitCacheStatus(ctx.w, tokenHit, "hit; ttl="+ttlStr)
+	t.emitCacheStatus(ctx, tokenHit, "hit; ttl="+ttlStr)
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
 	_, _ = ctx.w.Write(dstBuf.Bytes())
 	return nil
@@ -281,7 +297,14 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 
 // 7. stateServeSWR: Serves stale cached variant and triggers background revalidation
 func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
+	var t0 time.Time
+	if ctx.serverTiming {
+		t0 = time.Now()
+	}
 	varInfo, dstBuf, ok := t.loadDecompressed(ctx)
+	if ctx.serverTiming {
+		ctx.bodyDuration = time.Since(t0)
+	}
 	if !ok {
 		if dstBuf != nil {
 			putBuffer(dstBuf)
@@ -302,7 +325,7 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	t.recordRequest(ctx, statusStaleHit)
 	t.copyProtoHeaders(ctx.w, varInfo.ResponseHeaders)
 	ctx.w.Header().Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
-	t.emitCacheStatus(ctx.w, tokenUpdating, "hit; stale; detail=swr")
+	t.emitCacheStatus(ctx, tokenUpdating, "hit; stale; detail=swr")
 	ctx.w.WriteHeader(int(varInfo.StatusCode))
 	if ctx.r.Method != http.MethodHead {
 		_, _ = ctx.w.Write(dstBuf.Bytes())
@@ -351,11 +374,14 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		ctx.next.ServeHTTP(rec, originReq)
 	}()
 	respTime := time.Now()
+	if ctx.serverTiming {
+		ctx.originDuration = respTime.Sub(reqTime)
+	}
 
 	// Origin Panic Recovery (Fail-Open)
 	if panicked {
 		t.recordRequest(ctx, statusError)
-		t.emitCacheStatus(ctx.w, tokenBypass, "fwd=bypass; detail=origin-panic")
+		t.emitCacheStatus(ctx, tokenBypass, "fwd=bypass; detail=origin-panic")
 		http.Error(ctx.w, "Internal Server Error", http.StatusInternalServerError)
 		return nil
 	}
@@ -376,7 +402,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		if t.config.cacheStatusMode == CacheStatusRFC9211 {
 			detail = "fwd=bypass; fwd-status=" + strconv.Itoa(rec.Code) + "; detail=set-cookie"
 		}
-		t.emitCacheStatus(ctx.w, tokenDynamic, detail)
+		t.emitCacheStatus(ctx, tokenDynamic, detail)
 		ctx.w.WriteHeader(rec.Code)
 		if ctx.r.Method != http.MethodHead {
 			_, _ = ctx.w.Write(bodyBytes)
@@ -387,7 +413,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	// Stream / SSE Response Detection
 	if strings.Contains(strings.ToLower(headersClone.Get(headerContentType)), contentTypeEventStream) {
 		t.recordRequest(ctx, statusBypass)
-		t.emitCacheStatus(ctx.w, tokenDynamic, "fwd=bypass; detail=sse-response")
+		t.emitCacheStatus(ctx, tokenDynamic, "fwd=bypass; detail=sse-response")
 		for k, vv := range headersClone {
 			for _, v := range vv {
 				ctx.w.Header().Add(k, v)
@@ -408,7 +434,14 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		shouldCache = false
 	}
 	if shouldCache {
+		var t0 time.Time
+		if ctx.serverTiming {
+			t0 = time.Now()
+		}
 		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
+		if ctx.serverTiming {
+			ctx.storeDuration = time.Since(t0)
+		}
 	}
 
 	// ESI Processing on Cold Miss
@@ -454,14 +487,14 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		if t.config.cacheStatusMode == CacheStatusRFC9211 {
 			detail = missReason + "; fwd-status=" + strconv.Itoa(rec.Code) + "; stored; ttl=" + strconv.Itoa(int(freshness.EffectiveTTL.Seconds()))
 		}
-		t.emitCacheStatus(ctx.w, tokenMiss, detail)
+		t.emitCacheStatus(ctx, tokenMiss, detail)
 	} else {
 		t.recordRequest(ctx, statusBypass)
 		detail := ""
 		if t.config.cacheStatusMode == CacheStatusRFC9211 {
 			detail = "fwd=bypass; fwd-status=" + strconv.Itoa(rec.Code)
 		}
-		t.emitCacheStatus(ctx.w, tokenDynamic, detail)
+		t.emitCacheStatus(ctx, tokenDynamic, detail)
 	}
 
 	// Evaluate client preconditions (cache warming: downstream gets 304 if validator matches)
@@ -497,6 +530,11 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		varCtx, varCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
 		_, staleCompBody, _ = t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 		varCancel()
+	}
+
+	var tRevalStart time.Time
+	if ctx.serverTiming {
+		tRevalStart = time.Now()
 	}
 
 	val, err, shared := t.singleflight.Do(sfKey, func() (any, error) {
@@ -659,6 +697,10 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		return nil
 	}
 
+	if ctx.serverTiming {
+		ctx.originDuration = time.Since(tRevalStart)
+	}
+
 	collapsedToken := ""
 	if shared {
 		collapsedToken = "; collapsed"
@@ -677,7 +719,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 					if t.config.cacheStatusMode == CacheStatusRFC9211 {
 						detail = "fwd=stale; fwd-status=304" + collapsedToken + "; stored; detail=304-refreshed"
 					}
-					t.emitCacheStatus(ctx.w, tokenRevalidated, detail)
+					t.emitCacheStatus(ctx, tokenRevalidated, detail)
 					t.copyProtoHeaders(ctx.w, res.fallback.varInfo.ResponseHeaders)
 					t.adjustESIHeaders(ctx.w, res.fallback.varInfo)
 					if res.fallback.meta != nil {
@@ -725,7 +767,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 				if t.config.cacheStatusMode == CacheStatusRFC9211 {
 					detail = "fwd=stale; fwd-status=304" + collapsedToken + "; stored; detail=304-refreshed"
 				}
-				t.emitCacheStatus(ctx.w, tokenRevalidated, detail)
+				t.emitCacheStatus(ctx, tokenRevalidated, detail)
 			} else {
 				fwdStatus := res.statusCode
 				if fwdStatus == 0 {
@@ -736,7 +778,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 				if t.config.cacheStatusMode == CacheStatusRFC9211 {
 					detail = "hit; stale; fwd=stale; fwd-status=" + strconv.Itoa(fwdStatus) + "; detail=stale-if-error"
 				}
-				t.emitCacheStatus(ctx.w, tokenStale, detail)
+				t.emitCacheStatus(ctx, tokenStale, detail)
 			}
 			ctx.w.WriteHeader(int(res.fallback.varInfo.StatusCode))
 			if ctx.r.Method != http.MethodHead {
@@ -775,7 +817,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		if t.config.cacheStatusMode == CacheStatusRFC9211 {
 			detail = "fwd=stale; fwd-status=" + strconv.Itoa(res.statusCode) + collapsedToken + "; stored; detail=soft-refreshed"
 		}
-		t.emitCacheStatus(ctx.w, tokenExpired, detail)
+		t.emitCacheStatus(ctx, tokenExpired, detail)
 		ctx.w.WriteHeader(res.statusCode)
 		if ctx.r.Method != http.MethodHead {
 			_, _ = ctx.w.Write(res.body)
@@ -1089,7 +1131,8 @@ func (t *Titip) remainingTTL(expiresAtUnixNano, nowNano int64) time.Duration {
 	return rem
 }
 
-func (t *Titip) emitCacheStatus(w http.ResponseWriter, simpleToken, rfc9211Detail string) {
+func (t *Titip) emitCacheStatus(ctx *requestContext, simpleToken, rfc9211Detail string) {
+	w := ctx.w
 	switch t.config.cacheStatusMode {
 	case CacheStatusRFC9211:
 		titipStatus := "titip; " + rfc9211Detail
@@ -1104,6 +1147,10 @@ func (t *Titip) emitCacheStatus(w http.ResponseWriter, simpleToken, rfc9211Detai
 		w.Header().Set(headerCacheStatus, simpleToken)
 	case CacheStatusNone:
 		// Do not emit Cache-Status header
+	}
+
+	if ctx.serverTiming {
+		t.config.serverTiming.emit(w, ctx, simpleToken)
 	}
 }
 
@@ -1188,8 +1235,8 @@ func (t *Titip) recordRequest(ctx *requestContext, status string) {
 		return
 	}
 	var dur time.Duration
-	if ctx != nil && ctx.nowNano > 0 {
-		dur = time.Duration(time.Now().UnixNano() - ctx.nowNano)
+	if ctx != nil && ctx.startNano > 0 {
+		dur = time.Duration(time.Now().UnixNano() - ctx.startNano)
 	}
 	t.metrics.recordRequest(status, dur)
 }

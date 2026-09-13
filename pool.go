@@ -198,18 +198,42 @@ func decompressLZ4(src []byte, dst *bytes.Buffer) error {
 // requestContext holds request-scoped execution state across state transitions.
 // Recycled via sync.Pool to maintain zero allocations on hot hit paths.
 type requestContext struct {
-	w            http.ResponseWriter
-	r            *http.Request
-	next         http.Handler
-	reqCC        *cacheobject.RequestCacheDirectives
-	primaryKey   string
-	variantKey   string
-	meta         *pb.CacheMetadata
-	isSoftPurged bool
-	varInfo      *pb.VariantInfo
-	freshness    freshnessInfo
-	nowNano      int64
-	isVaryMiss   bool
+	w              http.ResponseWriter
+	r              *http.Request
+	next           http.Handler
+	reqCC          *cacheobject.RequestCacheDirectives
+	primaryKey     string
+	variantKey     string
+	meta           *pb.CacheMetadata
+	isSoftPurged   bool
+	varInfo        *pb.VariantInfo
+	freshness   freshnessInfo
+	nowNano     int64 // nowNano is the timestamp evaluated during freshness check for RFC 9111 Age calculation.
+	isVaryMiss  bool
+
+	// serverTiming indicates whether Server-Timing header generation is active for this request.
+	serverTiming bool
+
+	// startNano is the immutable request arrival timestamp used for total duration calculation.
+	startNano int64
+
+	// metaDuration is the Stage 1 Redis metadata lookup duration.
+	metaDuration time.Duration
+
+	// bodyDuration is the Stage 2 Redis body retrieval and decompression duration.
+	bodyDuration time.Duration
+
+	// originDuration is the upstream backend origin fetch duration.
+	originDuration time.Duration
+
+	// storeDuration is the cache storage (LZ4 compression + Redis write) duration.
+	storeDuration time.Duration
+
+	// esiDuration is the ESI fragment fetching and assembly duration.
+	esiDuration time.Duration
+
+	// esiFragments is the count of ESI fragment tags processed in the response.
+	esiFragments int
 }
 
 // Reset clears all fields before returning the struct to the pool.
@@ -226,6 +250,14 @@ func (ctx *requestContext) Reset() {
 	ctx.freshness = freshnessInfo{}
 	ctx.nowNano = 0
 	ctx.isVaryMiss = false
+	ctx.serverTiming = false
+	ctx.startNano = 0
+	ctx.metaDuration = 0
+	ctx.bodyDuration = 0
+	ctx.originDuration = 0
+	ctx.storeDuration = 0
+	ctx.esiDuration = 0
+	ctx.esiFragments = 0
 }
 
 var requestContextPool = sync.Pool{
@@ -239,7 +271,9 @@ func acquireRequestContext(w http.ResponseWriter, r *http.Request, next http.Han
 	ctx.w = w
 	ctx.r = r
 	ctx.next = next
-	ctx.nowNano = time.Now().UnixNano()
+	now := time.Now().UnixNano()
+	ctx.startNano = now
+	ctx.nowNano = now
 	return ctx
 }
 

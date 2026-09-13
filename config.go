@@ -63,6 +63,7 @@ type config struct {
 	backgroundFetchTimeout        time.Duration
 	storageTimeout                time.Duration
 	esiOptions                    []esi.Option
+	serverTiming                  serverTimingConfig
 }
 
 // Option configures Titip middleware options.
@@ -166,6 +167,22 @@ func WithESI(opts ...esi.Option) Option {
 			c.esiOptions = make([]esi.Option, 0, len(opts))
 		}
 		c.esiOptions = append(c.esiOptions, opts...)
+	}
+}
+
+// WithServerTiming enables or disables Server-Timing header generation.
+func WithServerTiming(enabled bool) Option {
+	return func(c *config) {
+		c.serverTiming.active = enabled
+	}
+}
+
+// WithServerTimingCookie enables Server-Timing header generation gated by an exact cookie name and value match.
+func WithServerTimingCookie(name, value string) Option {
+	return func(c *config) {
+		c.serverTiming.active = true
+		c.serverTiming.cookieName = name
+		c.serverTiming.cookieValue = value
 	}
 }
 

@@ -25,6 +25,7 @@
 			block_private_ips false
 			forward_fragment_cookies true
 		}
+		server_timing
 	}
 }
 

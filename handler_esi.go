@@ -41,6 +41,10 @@ func (t *Titip) processESI(
 			defer res.Release()
 			body = res.Body()
 			t.esiProcessor.ReconcileHeaders(reconciled, res)
+			if ctx.serverTiming {
+				ctx.esiDuration = res.Duration()
+				ctx.esiFragments = len(fragments)
+			}
 			if t.config.cacheStatusMode == CacheStatusRFC9211 {
 				detail = rfc9211Detail + "; detail=\"esi-includes=" + strconv.Itoa(len(fragments)) + ";time=" + res.Duration().String() + "\""
 			}
@@ -57,7 +61,7 @@ func (t *Titip) processESI(
 		}
 	}
 
-	t.emitCacheStatus(ctx.w, statusToken, detail)
+	t.emitCacheStatus(ctx, statusToken, detail)
 	ctx.w.WriteHeader(statusCode)
 	if ctx.r.Method != http.MethodHead {
 		_, _ = ctx.w.Write(body)
