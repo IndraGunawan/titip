@@ -2,48 +2,23 @@
 
 Thank you for your interest in contributing to **Titip**!
 
-Titip is designed as a high-performance, low-allocation, RFC-7234 & RFC-9211 compliant HTTP caching middleware in Go. To maintain rock-solid reliability and sub-millisecond latency, all components adhere to strict architectural standards.
+Titip is designed as a high-performance, low-allocation, RFC-7234, RFC-9111 & RFC-9211 compliant HTTP caching middleware in Go. To maintain rock-solid reliability and sub-millisecond latency, all components adhere to strict architectural standards.
 
----
+> [!NOTE]
+> **Prerequisites**: A Go toolchain (matching the version declared in [`go.mod`](go.mod)) and **Docker** (for running the local Redis test container).
 
-## Table of Contents
+## Monorepo Architecture & `go.work`
 
-1. [Monorepo Architecture & `go.work`](#1-monorepo-architecture--gowork)
-2. [Core Principles & Prohibitions](#2-core-principles--prohibitions)
-3. [How to Implement a New Storage Driver (`storage/*`)](#3-how-to-implement-a-new-storage-driver-storage)
-   - [Storage Interface](#the-storagestorage-interface)
-   - [Contract Requirements](#storage-contract-requirements)
-   - [Caddy Storage Module Integration](#caddy-guest-storage-module-integration)
-4. [How to Implement a New Framework Adapter (`adapter/*`)](#4-how-to-implement-a-new-framework-adapter-adapter)
-   - [Adapter Architecture](#adapter-architecture)
-   - [ESI Subrequest Bridging](#esi-subrequest-bridging)
-5. [Testing & Quality Standards](#5-testing--quality-standards)
-6. [Submitting a Pull Request](#6-submitting-a-pull-request)
+Titip is organized as a multi-module monorepo using standard Go workspaces (`go.work`). The codebase is divided into distinct zones of responsibility:
 
----
-
-## 1. Monorepo Architecture & `go.work`
-
-Titip is organized as a multi-module monorepo using standard Go workspaces (`go.work`):
-
-```text
-titip/
-├── go.mod                      # Core library (Zero external deps except Protobuf & LZ4)
-├── adapter/
-│   ├── caddy/                  # Caddy v2 web server plugin
-│   └── chi/                    # Go-Chi HTTP middleware adapter
-├── storage/
-│   └── redis/                  # Redis 7+ storage driver (using rueidis)
-│       └── caddy/              # Caddy guest storage plugin for Redis
-└── examples/
-    ├── caddy-demo/             # Standalone Caddy reverse proxy demo
-    ├── chi-demo/               # Standalone Chi web server demo
-    └── frankenphp-demo/        # FrankenPHP + Caddy + Titip Docker demo
-```
+- **Core Engine (`/`)**: The root module (`github.com/indragunawan/titip`) containing the state machine, RFC-compliant HTTP caching pipeline, internal test store, and ESI processing.
+- **Framework Adapters (`adapter/<framework>/`)**: Web server and framework integrations (e.g. `adapter/caddy`). Each adapter is a standalone Go module with its own `go.mod`.
+- **Storage Drivers (`storage/<engine>/`)**: Distributed storage backend implementations (e.g. `storage/redis`). Each driver is a standalone Go module with its own `go.mod`.
+- **Internal Test Sandboxes (`examples/`)**: Integration environments maintained by core maintainers for live verification, profiling, and local testing. These are not public library modules.
 
 ### Monorepo Rules
 
-1. **Isolated `go.mod`**: Every subpackage in `adapter/*`, `storage/*`, and `examples/*` must maintain its own `go.mod`.
+1. **Isolated `go.mod`**: Every distributed submodule under `adapter/*` and `storage/*` must maintain its own `go.mod`. Do not add new directories to `examples/` without prior maintainer discussion.
 2. **Workspace Registration**: When adding a new module, register it in the root `go.work` file:
 
    ```bash
@@ -51,13 +26,17 @@ titip/
    go work sync
    ```
 
-3. **No Dependency Bleed**:
+3. **Local `replace` Directive**: When a submodule requires internal `titip` modules, declare a relative `replace` directive in its `go.mod` (enforced by CI so local `go mod tidy` and dev builds succeed):
+
+   ```go
+   replace github.com/indragunawan/titip => ../..
+   ```
+
+4. **No Dependency Bleed**:
    - `core` (`titip`) must **never** import third-party web frameworks (e.g. `chi`, `gin`, `caddy`) or database drivers (e.g. `rueidis`, `memcached`).
    - Adapters and storage modules import `github.com/indragunawan/titip`.
 
----
-
-## 2. Core Principles & Prohibitions
+## Core Principles & Prohibitions
 
 Before writing code, ensure your implementation complies with our core architectural rules:
 
@@ -65,78 +44,42 @@ Before writing code, ensure your implementation complies with our core architect
 | :--- | :--- |
 | **Fail-Open Design** | Backend timeouts, serialization errors, or storage crashes must **never** return a 500 error to end users. Always fall back gracefully to the origin handler (`fwd=bypass`). |
 | **Zero Per-Request Hashing** | Never hash URLs with SHA-256, MD5, or xxHash. Assemble normalized string keys directly using pooled string builders. |
-| **Zero Allocation Hot Paths** | Use `sync.Pool` for byte buffers and recorders. Never hold slice references after returning a buffer to the pool (`PutBuffer`). |
-| **No Read-Modify-Write Races** | For storage drivers, never read a metadata record in Go, modify a variant, and re-write the whole object. Use atomic storage operations (e.g. Redis Hashes). |
+| **Low Allocation & Buffer Pooling** | Use `sync.Pool` for byte buffers and recorders to prevent payload heap churn. Never retain slice references after returning a buffer to the pool (`PutBuffer`). |
+| **Concurrency & Race Safety** | Storage drivers must handle concurrent variant writes and purges safely, preventing lost updates using native backend mechanisms (e.g. atomic operations, CAS, or transactions). |
 | **Zero Goroutine Leaks** | Track background tasks (e.g. singleflight revalidation) with `sync.WaitGroup` and await clean termination in `Close(ctx)`. |
 
----
-
-## 3. How to Implement a New Storage Driver (`storage/*`)
+## Implementing a Storage Driver
 
 To add support for a new storage engine (e.g. Memcached, Dragonfly, Cloudflare KV, Aerospike, S3/DynamoDB):
 
-### The `storage.Storage` Interface
+### The Storage Interfaces
 
-Create your driver under `storage/<engine>/` and implement the standard interface defined in [`storage/storage.go`](file:///Users/indra/code/project/titip/storage/storage.go):
+Create your driver under `storage/<engine>/` and implement the interfaces defined in [`storage/storage.go`](storage/storage.go):
 
-```go
-package storage
+- **Required**: Implement [`storage.Storage`](storage/storage.go) (`GetMeta`, `GetVariant`, `SetVariant`, `Purge`, `PurgeByTag`, `Close`).
+- **Optional Capabilities**:
+  - Implement [`storage.PatternPurger`](storage/storage.go) if your backend supports wildcard/glob key invalidation (e.g. `/assets/*`).
+  - Implement [`storage.AllPurger`](storage/storage.go) if your backend supports total namespace wipeouts within the configured prefix.
 
-import (
-    "context"
-    "time"
-
-    pb "github.com/indragunawan/titip/proto"
-)
-
-type Storage interface {
-    // GetMetadata retrieves the compact Protobuf metadata for key.
-    // Returns nil, nil if the key does not exist.
-    GetMetadata(ctx context.Context, key string) (*pb.CacheMetadata, error)
-
-    // GetVariant retrieves the compressed variant payload bytes.
-    // Returns nil, nil if the variant does not exist.
-    GetVariant(ctx context.Context, key, variantKey string) ([]byte, error)
-
-    // SetVariant atomically persists the metadata and variant payload with a TTL.
-    SetVariant(ctx context.Context, key, variantKey string, metadata *pb.CacheMetadata, body []byte, ttl time.Duration) error
-
-    // Delete hard-deletes the metadata AND all variant body payloads for key.
-    Delete(ctx context.Context, key string) error
-
-    // SoftPurge marks all variants for key as stale as of staleTime.
-    SoftPurge(ctx context.Context, key string, staleTime time.Time) error
-
-    // PurgeByTag invalidates all cache entries associated with the tag.
-    PurgeByTag(ctx context.Context, tag string, soft bool, staleTime time.Time) error
-
-    // PurgeAll purges or soft-invalidates all cache entries across the storage engine.
-    PurgeAll(ctx context.Context, soft bool, staleTime time.Time) error
-
-    // Close gracefully flushes buffers and closes client connections.
-    Close(ctx context.Context) error
-}
-```
+> [!TIP]
+> See [`storage/redis/`](storage/redis/) as our existing reference implementation, which demonstrates atomic hash variant storage, dynamic TTL extension, and soft-purge timestamping with `rueidis`.
 
 ### Storage Contract Requirements
 
-1. **Atomic Variant Storage**:
-   - Store metadata and variant payloads atomically.
-   - For example, Redis uses `HSET <key> "meta" <meta_bytes> "v:<variantKey>" <body_bytes>`.
+1. **Concurrency & Safe Writes**:
+   - Persist metadata and variant payloads safely against concurrent writes without lost updates, using your backend's native capabilities (e.g. atomic commands, CAS, or transactions).
 2. **Dynamic TTL Extension**:
-   - When a new variant is stored on an existing key, the key's TTL must be extended to `max(existing_ttl, new_ttl)`. (e.g. Redis `EXPIRE ... GT`).
+   - When a new variant is stored on an existing key, extend the key's TTL to `max(existing_ttl, new_ttl)` where supported by the backend.
 3. **Zero Orphaned Payloads**:
-   - `Delete(ctx, key)` must delete the metadata record and all variant body payloads atomically.
-4. **Soft-Purge Timestamping**:
-   - `SoftPurge` sets `stale_after_unix = staleTime.Unix()`. Requests arriving with cached data older than this timestamp will serve stale while asynchronously revalidating in the background.
-
----
+   - Hard purges (`Purge(ctx, key, soft=false)`) must physically delete the metadata record and all associated variant body payloads. Zero orphaned keys may remain in the backend.
+4. **Soft-Purge Freshness Marker**:
+   - Soft purges (`Purge(ctx, key, soft=true)`) must mark the primary entry as soft-purged (`isSoftPurged = true` in `GetMeta`) while preserving payload data, allowing safe stale fallback while revalidating.
 
 ### Caddy Guest Storage Module Integration
 
 If your storage driver should be configurable in Caddyfiles (e.g. `storage memcached { address 127.0.0.1:11211 }`), add a Caddy guest module under `storage/<engine>/caddy/`:
 
-1. **Implement `caddy.Module` & `titipcaddy.StorageModule`**:
+1. **Implement `caddy.Module`, `caddy.Provisioner`, and `caddy.CleanerUpper`**:
 
    ```go
    package caddy
@@ -144,7 +87,6 @@ If your storage driver should be configurable in Caddyfiles (e.g. `storage memca
    import (
        "github.com/caddyserver/caddy/v2"
        "github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
-       "github.com/indragunawan/titip/adapter/caddy"
        "github.com/indragunawan/titip/storage"
        mymod "github.com/indragunawan/titip/storage/mymod"
    )
@@ -165,6 +107,7 @@ If your storage driver should be configurable in Caddyfiles (e.g. `storage memca
        }
    }
 
+   // Storage satisfies titipcaddy.StorageModule via implicit interface.
    func (s *Storage) Storage() storage.Storage {
        return s.store
    }
@@ -175,6 +118,13 @@ If your storage driver should be configurable in Caddyfiles (e.g. `storage memca
            return err
        }
        s.store = store
+       return nil
+   }
+
+   func (s *Storage) Cleanup() error {
+       if s.store != nil {
+           return s.store.Close()
+       }
        return nil
    }
 
@@ -194,87 +144,163 @@ If your storage driver should be configurable in Caddyfiles (e.g. `storage memca
    }
    ```
 
----
+> [!TIP]
+> See [`storage/redis/caddy/`](storage/redis/caddy/) as our existing reference implementation.
 
-## 4. How to Implement a New Framework Adapter (`adapter/*`)
+## Implementing a Framework Adapter
 
-To add an adapter for another web framework (e.g. **Gin**, **Echo**, **Fiber**, **Fiber/v3**, **FastHTTP**):
+Framework adapters bridge web servers or HTTP routers with Titip's core caching pipeline.
 
-### Adapter Architecture
+### The Middleware Contract
 
-1. Create a submodule under `adapter/<framework>/` with its own `go.mod`.
-2. Wrap Titip's core `*titip.Titip` instance and bridge the framework's context and response writer:
+Titip instances are initialized via `titip.New(titip.WithStorage(store), opts...)`. The engine exposes a standard execution method designed around Go HTTP primitives:
 
-   ```go
-   package ginadapter
+```go
+t.ServeHTTP(w http.ResponseWriter, r *http.Request, next http.Handler)
+```
 
-   import (
-       "net/http"
+- **Cache Hit**: Titip streams the cached headers, status code, and body directly to `w` and terminates immediately. Downstream application handlers (`next`) are **never called**.
+- **Cache Miss / Revalidation**: Titip intercepts the request, wraps `w` with an internal pooled response recorder, and executes `next.ServeHTTP(rec, r)` to invoke origin handlers. If the origin response is cacheable per `Cache-Control` rules, Titip asynchronously stores the entry and writes the response back to `w`.
+- **Background Revalidation (SWR)**: On stale-while-revalidate hits, Titip serves stale data immediately to `w` while dispatching an asynchronous background fetch to `next` tracked by `sync.WaitGroup`.
 
-       "github.com/gin-gonic/gin"
-       "github.com/indragunawan/titip"
-   )
+### Standard Middleware Pattern (e.g. Chi, `net/http`)
 
-   func Middleware(t *titip.Titip) gin.HandlerFunc {
-       return func(c *gin.Context) {
-           downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-               c.Request = r
-               c.Next()
-           })
+Adapters typically accept `*titip.Titip` directly, keeping the adapter cleanly decoupled from specific storage implementations and allowing users to configure Titip options freely. For routers using the standard Go middleware signature (`func(http.Handler) http.Handler`), wrapping Titip requires only a clean bridge:
 
-           t.ServeHTTP(c.Writer, c.Request, downstream)
-       }
-   }
-   ```
+```go
+package chiadapter
 
-### ESI Subrequest Bridging
+import (
+    "net/http"
 
-To support in-process Edge Side Includes (ESI) subrequests without loopback HTTP overhead:
+    "github.com/indragunawan/titip"
+)
 
-- Allow developers to pass their root router into `titip.WithESI(esi.WithInternalFetcher(esi.HandlerFetcher(router)))`.
-- Ensure all virtual subrequests created by Titip execute through the framework router in memory.
+// Middleware wraps Titip into a standard func(http.Handler) http.Handler middleware.
+func Middleware(t *titip.Titip) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            t.ServeHTTP(w, r, next)
+        })
+    }
+}
+```
 
----
+#### Application Usage Example
 
-## 5. Testing & Quality Standards
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "net/http"
+
+    "github.com/go-chi/chi/v5"
+    "github.com/indragunawan/titip"
+    redisstorage "github.com/indragunawan/titip/storage/redis"
+)
+
+func main() {
+    // 1. Initialize a storage driver (e.g. Redis)
+    store, err := redisstorage.New(redisstorage.Config{
+        Addresses: []string{"localhost:6379"},
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 2. Initialize the Titip instance
+    t, err := titip.New(
+        titip.WithStorage(store),
+        // ...and any optional titip.With... settings (e.g. WithESI, WithCacheStatusMode)
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer t.Close(context.Background())
+
+    // 3. Mount Titip middleware on the router
+    r := chi.NewRouter()
+    r.Use(chiadapter.Middleware(t))
+
+    r.Get("/api/products", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Cache-Control", "public, max-age=60")
+        w.Write([]byte(`{"status": "ok"}`))
+    })
+
+    http.ListenAndServe(":8080", r)
+}
+```
+
+### Adapter Responsibilities
+
+When building an adapter for any framework (e.g. Chi, Echo, Gin, Fiber):
+
+1. **Graceful Shutdown**:
+   - Always expose or document a shutdown hook: during server termination, callers must invoke `t.Close(ctx)` to drain pending asynchronous SWR revalidation goroutines.
+2. **In-Memory ESI Dispatching**:
+   - When Edge Side Includes (ESI) are enabled, allow users to pass the root router into `titip.WithESI(esi.WithInternalFetcher(esi.HandlerFetcher(router)))` so fragment includes execute in-process without network overhead.
+3. **URL Preservation**:
+   - If the framework or upstream directives perform URL rewrites (e.g. stripping path prefixes or rewriting to an index file), ensure the original request path is available for cache key assembly when route-specific caching is needed.
+
+> [!TIP]
+> For complex web server plugins requiring configuration parsing, dynamic reloads, and admin endpoints, inspect [`adapter/caddy/`](adapter/caddy/) as our primary production reference implementation.
+
+## Testing & Quality Standards
 
 Every feature, adapter, or storage driver must pass our automated quality suite before merging.
 
-### 1. Run Automated Unit & Concurrency Tests
+> [!NOTE]
+> Because Titip is a multi-module workspace (`go.work`), running `go test ./...` from the root directory only tests the root module. Use the root `Makefile` to run tasks across all workspace modules automatically, or run `go test` inside the specific submodule directory.
+
+### Running Test Redis
+
+Storage drivers (such as `storage/redis`) require a local Redis instance for integration and concurrency tests:
 
 ```bash
-go test -v ./...
+make redis-up    # Starts Redis 8 container via docker compose up -d
+make redis-down  # Stops Redis container
 ```
 
-### 2. Run Continuous Race Detection (Zero-Race Guarantee)
+### Workspace Test Commands
 
 ```bash
-go test -race -count=100 -parallel=8 ./...
+make test        # Run unit tests across all workspace modules
+make race        # Run race detection (-race -count=100 -parallel=8)
+make bench       # Run memory allocation benchmarks (-benchmem -bench=.)
+make vet         # Run go vet across all workspace modules
 ```
 
-### 3. Verify Low-Allocation Standards
+To run tests in a single submodule:
 
 ```bash
-go test -benchmem -bench=. ./...
+cd storage/redis
+go test -v -race -count=100 ./...
 ```
 
-### 4. Linting & Formatting
+### Linting & Formatting
+
+Run `golangci-lint` inside the module directory you are actively modifying:
 
 ```bash
-go vet ./...
-golangci-lint run
+golangci-lint run ./...
 ```
 
----
+## Submitting a Pull Request
 
-## 6. Submitting a Pull Request
-
-1. **Branch Naming**: Use descriptive branch names (e.g. `feat/memcached-storage`, `fix/cache-key-normalization`, `feat/gin-adapter`).
+1. **Branch Naming**: Use descriptive branch names (e.g. `feat/memcached-storage`, `fix/cache-key-normalization`, `feat/chi-adapter`).
 2. **Conventional Commits**:
-   - `feat(storage/memcached)`: Add Memcached driver
-   - `feat(adapter/gin)`: Add Gin framework adapter
-   - `fix(esi)`: Fix ESI quote parsing edge case
-   - `test(redis)`: Add race condition test for dynamic TTL extension
-   - `docs(readme)`: Update architectural diagrams
-3. **Include an Example & README**:
-   - When adding a new storage driver or adapter, include an example under `examples/<name>-demo/` with a self-contained `Makefile` and `README.md`.
+   - Use plain types without scopes (e.g. `feat:`, `fix:`, `refactor:`, `test:`, `bench:`, `chore:`, `docs:`).
+   - Examples:
+     - `feat: add Memcached storage driver`
+     - `feat: add Chi framework adapter`
+     - `fix: resolve ESI quote parsing edge case`
+     - `test: add race condition test for dynamic TTL extension`
+     - `docs: update contributing guide`
+3. **Workspace Integrity & Tidy**:
+   - Run `go mod tidy` in every submodule you created or modified.
+   - Run `go work sync` at the workspace root to ensure clean dependency graphs.
+   - Confirm there are no uncommitted diffs (`git status`). CI automatically checks `git diff --exit-code` after `go mod tidy`.
+4. **Module Documentation & Tests**:
+   - When adding a new storage driver or adapter, provide comprehensive documentation (`README.md`) and unit/concurrency tests inside the module's own directory (`adapter/<name>/` or `storage/<name>/`). Do not create new directories under `examples/` without prior discussion.

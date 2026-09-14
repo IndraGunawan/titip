@@ -25,7 +25,7 @@
 6. **Maintain Complete Key Cleanup on Hard Purges**:
    - Hard purges (URL and Tag) must atomically delete both the metadata Hash AND all associated variant body keys. Zero orphaned keys may remain in Redis.
 7. **Maintain Multi-Module Workspace (`go.work`) Integration**:
-   - Whenever a new module is added to the repository (e.g. framework adapters under `adapter/*`, storage drivers under `storage/*`, or applications under `examples/*`), it **MUST** declare its own `go.mod` and be registered in the root `go.work` file.
+   - Whenever a new distributed module is added to the repository (e.g. framework adapters under `adapter/*` or storage drivers under `storage/*`), it **MUST** declare its own `go.mod` and be registered in the root `go.work` file.
    - Always run `go work sync` to maintain clean workspace dependency resolution.
 
 ---
@@ -146,8 +146,8 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 
 ## 7. Tooling & Development Environment
 
-- **Go Compiler**: Go `1.26.1+` (utilizes `context.WithoutCancel`, `b.Loop()`, `net/http` enhanced routing).
-- **Go Multi-Module Workspace**: Managed via root `go.work`. All submodules (`adapter/*`, `storage/*`, `examples/*`) must be registered in `go.work` so cross-module imports resolve locally without manual `replace` directives.
+- **Go Compiler**: Compatible Go version as declared in [`go.mod`](go.mod) (utilizes `context.WithoutCancel`, `b.Loop()`, `net/http` enhanced routing).
+- **Go Multi-Module Workspace**: Managed via root `go.work`. All submodules (`adapter/*`, `storage/*`) declare relative `replace` directives in `go.mod` and are registered in `go.work` so cross-module imports and `go mod tidy` resolve locally. Demo apps in `examples/*` are included in `go.work` solely for local integration testing.
 - **Protobuf Generation**: `protoc-gen-go` / `buf` targeting `google.golang.org/protobuf`.
 - **Redis Testing Environment**: Real Redis 7+ instance using `github.com/redis/rueidis` (`docker compose up -d` with `redis:8-alpine` or `redis:7-alpine`). Employs native `EXPIRE ... GT` and atomic hash operations with isolated test key prefixes.
 - **Makefile Scoping Policy**:
@@ -159,10 +159,11 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 ## 8. Git Commit & Documentation Conventions
 
 - **Conventional Commits**:
-  - `feat(pool)`: New feature or pool enhancement.
-  - `feat(cachekey)`: Cache key engine improvements.
-  - `fix(fsm)`: Bug fix in state machine logic.
-  - `test(redis)`: Concurrency, race, or unit tests.
-  - `bench(cachekey)`: Performance and allocation benchmarks.
+  - `feat`: New features (e.g. `feat: add Server-Timing diagnostics`).
+  - `fix`: Bug fixes (e.g. `fix: resolve ESI quote parsing edge case`).
+  - `test`: Concurrency, race, or unit tests (e.g. `test: add race condition test for dynamic TTL`).
+  - `bench`: Performance and allocation benchmarks (e.g. `bench: add cache key benchmark`).
+  - `chore`: Maintenance, dependencies, or tooling (e.g. `chore: update dependencies`).
+  - `docs`: Documentation updates (e.g. `docs: update contributing guide`).
 - **No Binary / Temporary Artifacts**:
   - Never commit `.DS_Store`, generated test binaries, or scratch files.
