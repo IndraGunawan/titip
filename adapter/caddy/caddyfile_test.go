@@ -609,3 +609,70 @@ func TestCaddyHandler_CacheKey_SmartExcludeQueryStringInheritance(t *testing.T) 
 		}
 	})
 }
+
+func TestCaddyHandler_ServerTiming_UnmarshalCaddyfile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   string
+		validate func(t *testing.T, h *Handler)
+	}{
+		{
+			name: "server_timing simple",
+			config: `titip {
+				server_timing
+				storage test
+			}`,
+			validate: func(t *testing.T, h *Handler) {
+				if h.ServerTiming == nil || h.ServerTiming.Enabled == nil || !*h.ServerTiming.Enabled {
+					t.Fatalf("expected ServerTiming enabled, got: %v", h.ServerTiming)
+				}
+				if h.ServerTiming.CookieName != "" {
+					t.Fatalf("expected empty cookie name, got: %s", h.ServerTiming.CookieName)
+				}
+			},
+		},
+		{
+			name: "server_timing false",
+			config: `titip {
+				server_timing false
+				storage test
+			}`,
+			validate: func(t *testing.T, h *Handler) {
+				if h.ServerTiming == nil || h.ServerTiming.Enabled == nil || *h.ServerTiming.Enabled {
+					t.Fatalf("expected ServerTiming disabled, got: %v", h.ServerTiming)
+				}
+			},
+		},
+		{
+			name: "server_timing cookie",
+			config: `titip {
+				server_timing cookie debug_cookie secret_val
+				storage test
+			}`,
+			validate: func(t *testing.T, h *Handler) {
+				if h.ServerTiming == nil || h.ServerTiming.Enabled == nil || !*h.ServerTiming.Enabled {
+					t.Fatalf("expected ServerTiming enabled, got: %v", h.ServerTiming)
+				}
+				if h.ServerTiming.CookieName != "debug_cookie" {
+					t.Fatalf("expected cookie name 'debug_cookie', got: %s", h.ServerTiming.CookieName)
+				}
+				if h.ServerTiming.CookieValue != "secret_val" {
+					t.Fatalf("expected cookie value 'secret_val', got: %s", h.ServerTiming.CookieValue)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := caddyfile.NewTestDispenser(tc.config)
+			var h Handler
+			if err := h.UnmarshalCaddyfile(d); err != nil {
+				t.Fatalf("unmarshal error: %v", err)
+			}
+			tc.validate(t, &h)
+		})
+	}
+}

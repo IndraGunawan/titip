@@ -40,6 +40,7 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
             block_private_ips true
             forward_fragment_cookies true
         }
+        server_timing
     }
 }
 
@@ -113,7 +114,17 @@ Configure cache key assembly inside the `cache_key { ... }` block:
 | `preserve_etag <bool>` | `false` | When true, weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. When false (default), strips `ETag`/`Last-Modified` downstream to force dynamic fragment re-evaluation. |
 
 > [!NOTE]
-> When ESI is enabled, Caddy advertises capability to upstream origins via `Surrogate-Capability: titip="ESI/1.0"` per the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/).
+> When ESI is enabled, Caddy advertises capability to upstream origins via `Surrogate-Capability: titip="ESI/1.0"` per Edge Side Includes (ESI 1.0) specifications.
+
+### Server-Timing Directive Reference
+
+Configure `Server-Timing` header generation (disabled by default) to measure cache lookup, body decompression, origin fetch, and ESI processing directly in Chrome and browser DevTools:
+
+| Directive Syntax | Description |
+| :--- | :--- |
+| `server_timing` | Enables `Server-Timing` for all requests. |
+| `server_timing false` | Disables `Server-Timing` explicitly. |
+| `server_timing cookie <name> <value>` | Enables `Server-Timing` only when the request contains the exact cookie name and value (recommended for production debugging). |
 
 ## 3. Caddy Admin Purge API (`POST /titip/purge`)
 

@@ -124,7 +124,7 @@ If the handler returns 404, the processor falls back to outbound HTTP.
 
 ## Protocol Helpers
 
-Helpers for upstream capability negotiation and downstream response reconciliation defined in the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/) and RFC 9110:
+Helpers for upstream capability negotiation and downstream response reconciliation defined in the Edge Side Includes (ESI 1.0) specification and RFC 9110:
 
 - `proc.AddSurrogateCapability(header http.Header, deviceToken string)`: Advertises `Surrogate-Capability: <deviceToken>="ESI/1.0"` to upstream origin servers (nil-safe no-op).
 - `proc.CanProcess(header http.Header) bool`: Reports whether response headers meet ESI processing requirements based on `WithHeaderRequired`.

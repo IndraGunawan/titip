@@ -149,6 +149,8 @@ Pass any of the following functional options to `titip.New(...)`:
 | `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Structured logger instance for diagnostic events. |
 | `WithMetrics(reg)` | `prometheus.Registerer` | `nil` | Prometheus registry for cache and ESI telemetry. |
 | `WithESI(opts...)` | `...esi.Option` | `disabled` | Edge Side Includes processing configuration and options. |
+| `WithServerTiming(bool)` | `bool` | `false` | Enables `Server-Timing` header diagnostics for TTFB tracing in browser DevTools. |
+| `WithServerTimingCookie(name, val)` | `string, string` | `""` | Restricts `Server-Timing` header generation to requests matching an exact cookie name and value. |
 
 ## Cache Key & Query Parameter Normalization
 
@@ -198,6 +200,40 @@ Emits a concise single-token status header:
 
 Disables the `Cache-Status` response header completely.
 
+## Server-Timing Diagnostics
+
+Titip supports the standard `Server-Timing` header to break down latency in browser DevTools (Chrome Network Timing tab), solving black-box TTFB:
+
+```http
+Server-Timing: titip-status;desc="HIT", titip-meta;dur=1.49, titip-body;dur=3.39, titip;dur=4.95
+```
+
+### Metrics Reported
+
+| Metric | Description |
+| :--- | :--- |
+| `titip-status;desc="..."` | Cache status token (`HIT`, `MISS`, `EXPIRED`, `REVALIDATED`, `STALE`, `DYNAMIC`, `BYPASS`). |
+| `titip-meta;dur=X` | Redis Stage 1 metadata lookup duration in milliseconds. |
+| `titip-body;dur=X` | Redis Stage 2 body retrieval and LZ4 decompression duration. |
+| `titip-origin;dur=X` | Upstream backend origin fetch duration (on misses or revalidations). |
+| `titip-store;dur=X` | Cache storage duration (LZ4 compression + Redis write). |
+| `titip-esi;dur=X;desc="N fragments"` | Edge Side Includes processing duration and fragment count. |
+| `titip;dur=X` | Total Titip processing duration from request arrival. |
+
+> [!TIP]
+> Titip emits `Server-Timing` via `Header.Add`, preserving any existing application-level `Server-Timing` headers sent by upstream backends (e.g. database query timings). Browsers combine them into a unified list.
+
+### Restricting Access via Debug Cookie
+
+To prevent exposing internal infrastructure metrics to the general public, gate header generation with a cookie:
+
+```go
+cache, err := titip.New(
+    titip.WithStorage(store),
+    titip.WithServerTimingCookie("debug_timing", "secret_value"),
+)
+```
+
 ## Cache Invalidation & Purge API
 
 Titip provides a programmatic Go API for **Hierarchical Path Purging**, **Surrogate Tag Purging**, and **Namespace Invalidation**.
@@ -242,7 +278,7 @@ Cache-Control: private, no-store
 
 Titip includes an **Edge Side Includes (ESI 1.0)** engine with parallel fragment fetching, circular loop protection, and SSRF prevention.
 
-When ESI is active, Titip advertises capability to upstream origins by sending `Surrogate-Capability: titip="ESI/1.0"` per the [W3C ESI 1.0 / Edge Architecture Specification](https://www.w3.org/TR/esi-lang/). Origins can respond with `Surrogate-Control: content="ESI/1.0"` to direct ESI processing.
+When ESI is active, Titip advertises capability to upstream origins by sending `Surrogate-Capability: titip="ESI/1.0"` per Edge Side Includes (ESI 1.0) specifications. Origins can respond with `Surrogate-Control: content="ESI/1.0"` to direct ESI processing.
 
 For standalone package documentation and options reference, see [**ESI Package Guide**](esi/README.md).
 
