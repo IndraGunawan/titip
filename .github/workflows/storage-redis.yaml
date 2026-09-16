@@ -1,0 +1,83 @@
+name: Storage Redis
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'storage/redis/**'
+      - '.github/workflows/storage-redis.yaml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'storage/redis/**'
+      - '.github/workflows/storage-redis.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  cancel-in-progress: true
+  group: storage-redis-${{ github.head_ref || github.ref }}
+
+jobs:
+  test:
+    name: ${{ matrix.engine.name }}
+    runs-on: ubuntu-latest
+    env:
+      REDIS_ADDR: "127.0.0.1:6379"
+    strategy:
+      fail-fast: false
+      matrix:
+        engine:
+          - name: "Redis 7.4 (min)"
+            image: "redis:7.4-alpine"
+          - name: "Redis (latest)"
+            image: "redis:latest"
+          - name: "Valkey 9 (min)"
+            image: "valkey/valkey:9-alpine"
+          - name: "Valkey (latest)"
+            image: "valkey/valkey:latest"
+          - name: "Dragonfly v1.24.0 (min)"
+            image: "docker.dragonflydb.io/dragonflydb/dragonfly:v1.24.0"
+          - name: "Dragonfly (latest)"
+            image: "docker.dragonflydb.io/dragonflydb/dragonfly:latest"
+    services:
+      redis:
+        image: ${{ matrix.engine.image }}
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Wait for ${{ matrix.engine.name }} to be Ready
+        run: |
+          for i in {1..30}; do
+            nc -z localhost 6379 && echo "Engine is ready" && exit 0
+            sleep 1
+          done
+          echo "Engine failed to start"
+          exit 1
+
+      - name: Test storage/redis
+        working-directory: storage/redis
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Benchmark storage/redis
+        working-directory: storage/redis
+        run: go test -benchmem -bench=. -run=^$ ./...
+
+      - name: Test storage/redis/caddy
+        working-directory: storage/redis/caddy
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Benchmark storage/redis/caddy
+        working-directory: storage/redis/caddy
+        run: go test -benchmem -bench=. -run=^$ ./...
