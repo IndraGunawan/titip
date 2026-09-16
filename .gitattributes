@@ -13,5 +13,6 @@
 /buf.gen.yaml export-ignore
 /buf.yaml export-ignore
 /docker-compose.yaml export-ignore
+/examples export-ignore
 /go.work export-ignore
 /go.work.sum export-ignore
