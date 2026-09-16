@@ -24,7 +24,7 @@ func setupTestTitip(t testing.TB, opts ...Option) (*teststore.Store, storage.Sto
 		WithStorage(store),
 		WithBackgroundFetchTimeout(10 * time.Second),
 		WithStorageTimeout(10 * time.Second),
-		WithCacheStatusMode(CacheStatusRFC9211),
+		WithCacheStatus(CacheStatusRFC9211),
 	}
 	defaultOpts = append(defaultOpts, opts...)
 
@@ -295,10 +295,10 @@ func containsAny(s string, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
 }
 
-// TestCustomTagHeaderName verifies custom tag header extraction and purging
-func TestCustomTagHeaderName(t *testing.T) {
+// TestCustomTagHeader verifies custom tag header extraction and purging
+func TestCustomTagHeader(t *testing.T) {
 	t.Parallel()
-	_, store, engine := setupTestTitip(t, WithTagHeaderName("X-Custom-Tags"))
+	_, store, engine := setupTestTitip(t, WithTagHeader("X-Custom-Tags"))
 
 	handler := engine.testHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=60")

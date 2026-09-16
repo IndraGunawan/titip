@@ -13,7 +13,7 @@ import (
 
 func TestServerTiming_Disabled(t *testing.T) {
 	t.Parallel()
-	_, _, mw := setupTestTitip(t, WithServerTiming(false))
+	_, _, mw := setupTestTitip(t)
 
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerCacheControl, "public, max-age=60")
@@ -33,7 +33,7 @@ func TestServerTiming_Disabled(t *testing.T) {
 
 func TestServerTiming_AlwaysEnabled_HitAndMiss(t *testing.T) {
 	t.Parallel()
-	_, _, mw := setupTestTitip(t, WithServerTiming(true))
+	_, _, mw := setupTestTitip(t, WithServerTiming())
 
 	originCalls := 0
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +138,7 @@ func TestServerTiming_CookieGated(t *testing.T) {
 
 func TestServerTiming_Conditional304(t *testing.T) {
 	t.Parallel()
-	_, _, mw := setupTestTitip(t, WithServerTiming(true))
+	_, _, mw := setupTestTitip(t, WithServerTiming())
 
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerETag, `"etag-123"`)
@@ -192,7 +192,7 @@ func TestServerTiming_ESI(t *testing.T) {
 	})
 
 	_, _, mw := setupTestTitip(t,
-		WithServerTiming(true),
+		WithServerTiming(),
 		WithESI(esi.WithInternalFetcher(esi.HandlerFetcher(mux))),
 	)
 
@@ -216,7 +216,7 @@ func TestServerTiming_ESI(t *testing.T) {
 
 func TestServerTiming_ConcurrencyRace(t *testing.T) {
 	t.Parallel()
-	_, _, mw := setupTestTitip(t, WithServerTiming(true))
+	_, _, mw := setupTestTitip(t, WithServerTiming())
 
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerCacheControl, "public, max-age=60")
@@ -242,7 +242,7 @@ func TestServerTiming_ConcurrencyRace(t *testing.T) {
 
 func TestServerTiming_PreserveUpstreamHeader(t *testing.T) {
 	t.Parallel()
-	_, _, mw := setupTestTitip(t, WithServerTiming(true))
+	_, _, mw := setupTestTitip(t, WithServerTiming())
 
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server-Timing", `app;dur=15.2, db;dur=4.1`)
@@ -272,7 +272,7 @@ func TestServerTiming_PreserveUpstreamHeader(t *testing.T) {
 }
 
 func BenchmarkServerTiming_Active_CacheHit(b *testing.B) {
-	_, _, mw := setupTestTitip(b, WithServerTiming(true))
+	_, _, mw := setupTestTitip(b, WithServerTiming())
 
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerContentType, "application/json")

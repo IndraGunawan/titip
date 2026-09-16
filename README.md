@@ -107,7 +107,7 @@ func main() {
     // 3. Configure Titip Engine
     cache, err := titip.New(
         titip.WithStorage(store),
-        titip.WithCacheStatusMode(titip.CacheStatusRFC9211),
+        titip.WithCacheStatus(titip.CacheStatusRFC9211),
         titip.WithBackgroundFetchTimeout(125*time.Second),
     )
     if err != nil {
@@ -138,18 +138,18 @@ Pass any of the following functional options to `titip.New(...)`:
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `WithStorage(s)` | `storage.Storage` | *(Required)* | Storage backend implementation (e.g. `storage/redis`). |
-| `WithCacheStatusMode(mode)` | `CacheStatusMode` | `CacheStatusSimpleToken` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimpleToken`, or `CacheStatusNone`). |
+| `WithCacheStatus(mode)` | `CacheStatusMode` | `CacheStatusSimpleToken` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimpleToken`, or `CacheStatusNone`). |
 | `WithCacheKey(cfg)` | `CacheKey` | `{}` (standard) | Primary cache key generation rules and query parameter filtering. |
-| `WithTagHeaderName(name)` | `string` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
+| `WithTagHeader(name)` | `string` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
 | `WithBackgroundFetchTimeout(d)` | `time.Duration` | `125s` | Maximum timeout budget for background revalidations (`stale-while-revalidate`). |
 | `WithStorageTimeout(d)` | `time.Duration` | `1s` | Maximum time budget for storage reads/writes before fail-open bypass. |
-| `WithRespectClientCacheControl()` | `bool` | `false` | When enabled, honors client request `Cache-Control: no-cache` / `no-store`. |
-| `WithConvertHeadToGet(bool)` | `bool` | `true` | Converts origin `HEAD` cache misses to `GET` to prime the cache with body bytes. |
-| `WithAutoInvalidateMutatingMethods()` | `bool` | `false` | RFC 9111 §4.4: Auto-purges URI cache when mutating requests (`POST`/`PUT`/`DELETE`) succeed. |
+| `WithRespectClientCacheControl()` | - | *(disabled)* | When enabled, honors client request `Cache-Control: no-cache` / `no-store`. |
+| `WithoutConvertHeadToGet()` | - | *(enabled)* | Disables converting origin `HEAD` cache misses to `GET` to prime the cache with body bytes. |
+| `WithAutoInvalidateMutatingMethods()` | - | *(disabled)* | RFC 9111 §4.4: Auto-purges URI cache when mutating requests (`POST`/`PUT`/`DELETE`) succeed. |
 | `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Structured logger instance for diagnostic events. |
 | `WithMetrics(reg)` | `prometheus.Registerer` | `nil` | Prometheus registry for cache and ESI telemetry. |
 | `WithESI(opts...)` | `...esi.Option` | `disabled` | Edge Side Includes processing configuration and options. |
-| `WithServerTiming(bool)` | `bool` | `false` | Enables `Server-Timing` header diagnostics for TTFB tracing in browser DevTools. |
+| `WithServerTiming()` | - | *(disabled)* | Enables `Server-Timing` header diagnostics for TTFB tracing in browser DevTools. |
 | `WithServerTimingCookie(name, val)` | `string, string` | `""` | Restricts `Server-Timing` header generation to requests matching an exact cookie name and value. |
 
 ## Cache Key & Query Parameter Normalization
@@ -161,7 +161,7 @@ cache, err := titip.New(
     titip.WithStorage(store),
     titip.WithCacheKey(titip.CacheKey{
         // Strips marketing query parameters (utm_*, fbclid, gclid, mc_eid, etc.)
-        ExcludeMarketingParams: true,
+        ExcludeMarketingQueryParams: true,
         // Allowlist specific query parameters to include (or use ExcludedQueryParams for a denylist)
         IncludedQueryParams:    []string{"page", "sort", "filter"},
     }),
@@ -170,7 +170,7 @@ cache, err := titip.New(
 
 ## Cache-Status Diagnostics
 
-Titip supports three `Cache-Status` modes configured via `WithCacheStatusMode`:
+Titip supports three `Cache-Status` modes configured via `WithCacheStatus`:
 
 ### 1. `CacheStatusRFC9211` (Structured Header)
 
@@ -308,17 +308,17 @@ cache, err := titip.New(
 
 | Option Builder | Default | Description |
 | :--- | :--- | :--- |
-| `esi.WithHeaderRequired(bool)` | `false` | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
+| `esi.WithHeaderRequired()` | *(disabled)* | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
 | `esi.WithInternalFetcher(fn)` | `nil` | Custom hook for in-memory virtual subrequests (e.g. `esi.HandlerFetcher(r)`). |
 | `esi.WithMaxDepth(uint32)` | `3` | Maximum nesting depth for recursive ESI includes. |
 | `esi.WithMaxTimeout(duration)` | `30s` | Maximum time budget per fragment include fetch. |
 | `esi.WithMaxConcurrentRequests(int)` | `8` | Maximum concurrent fetch goroutines per document. |
-| `esi.WithAllowPrivateIPs(bool)` | `false` | SSRF guard: when false (default), blocks RFC 1918 / loopback / cloud metadata CIDRs. |
+| `esi.WithAllowPrivateIPs()` | *(disabled)* | SSRF guard: allows requests to private, loopback, and link-local IP addresses. |
 | `esi.WithAllowedHosts(...string)` | `[]` | List of allowed external hosts for domain includes (empty allows all public hosts). |
-| `esi.WithAllowPrivateIPsForAllowedHosts(bool)` | `false` | Permits private IPs specifically for explicitly allowed hosts. |
+| `esi.WithAllowPrivateIPsForAllowedHosts()` | *(disabled)* | Permits private IPs specifically for explicitly allowed hosts. |
 | `esi.WithMaxResponseSize(int64)` | `10MB` | Maximum allowed fragment body size in bytes. |
-| `esi.WithDisableForwardCookies(bool)` | `false` | When false (default), forwards `Set-Cookie` headers from fragments to the client. |
-| `esi.WithPreserveETag(bool)` | `false` | When true, weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. When false (default), strips `ETag`/`Last-Modified` downstream to guarantee fresh fragment execution. |
+| `esi.WithoutForwardCookies()` | *(forwarding enabled)* | Disables forwarding `Set-Cookie` headers from fragment responses to the client. |
+| `esi.WithPreserveETag()` | *(disabled)* | Weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. By default, strips `ETag`/`Last-Modified` downstream to guarantee fresh fragment execution. |
 | `esi.WithIncludeErrorMarker(string)` | `""` | HTML placeholder rendered on unhandled fetch errors. |
 
 ## Observability & Metrics

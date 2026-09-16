@@ -41,13 +41,13 @@ type CacheKey struct {
 	// When true, Host is omitted so multiple domains serving identical content share cache entries.
 	ExcludeHost bool
 
-	// ExcludeQueryString removes all query parameters from the cache key.
-	// When true, all query parameters are stripped so requests with different query strings share cache.
-	ExcludeQueryString bool
+	// ExcludeQuery removes all query parameters from the cache key.
+	// When true, the query component is stripped so requests with different query strings share cache.
+	ExcludeQuery bool
 
-	// DisableQueryStringSort preserves the original query parameter ordering from the request URL.
-	// When true, query parameter order is preserved as received from the client.
-	DisableQueryStringSort bool
+	// PreserveQueryOrder preserves the original query parameter ordering from the request URL.
+	// When true, query parameter order is preserved as received from the client instead of sorting alphabetically.
+	PreserveQueryOrder bool
 
 	// IncludedQueryParams specifies an allowlist of query parameter names to include in the cache key.
 	// If set, only these specific parameters are included in the cache key.
@@ -57,10 +57,10 @@ type CacheKey struct {
 	// If set, all query parameters except these are included in the cache key.
 	ExcludedQueryParams []string
 
-	// ExcludeMarketingParams filters out standard advertising and tracking query parameters
+	// ExcludeMarketingQueryParams filters out standard advertising and tracking query parameters
 	// (e.g. utm_source, utm_campaign, utm_medium, gclid, fbclid, ttclid).
 	// When true, marketing tracking parameters are stripped from the cache key.
-	ExcludeMarketingParams bool
+	ExcludeMarketingQueryParams bool
 
 	// IncludedHeaderNames specifies request header names whose values are appended to the primary cache key.
 	//
@@ -152,7 +152,7 @@ func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 	}
 
 	// --- qs=<query>: (optional, filtered and sorted) ---
-	if !cfg.ExcludeQueryString && r.URL != nil && r.URL.RawQuery != "" {
+	if !cfg.ExcludeQuery && r.URL != nil && r.URL.RawQuery != "" {
 		qs := buildQueryString(r, cfg)
 		if qs != "" {
 			buf.WriteString("qs=")
@@ -249,10 +249,10 @@ func resolveScheme(r *http.Request) string {
 // buildQueryString assembles a filtered and sorted query string for inclusion in the cache key.
 // The result is a raw query string that is safe to embed in the qs= label value.
 func buildQueryString(r *http.Request, cfg *CacheKey) string {
-	if cfg.ExcludeQueryString {
+	if cfg.ExcludeQuery {
 		return ""
 	}
-	if cfg.DisableQueryStringSort {
+	if cfg.PreserveQueryOrder {
 		return buildUnsortedQueryString(r, cfg)
 	}
 	return buildSortedQueryString(r, cfg)
@@ -275,7 +275,7 @@ func isQueryParamAllowed(k, v string, cfg *CacheKey) bool {
 	if slices.Contains(cfg.ExcludedQueryParams, k) {
 		return false
 	}
-	if cfg.ExcludeMarketingParams && slices.Contains(defaultMarketingQueryParams, strings.ToLower(k)) {
+	if cfg.ExcludeMarketingQueryParams && slices.Contains(defaultMarketingQueryParams, strings.ToLower(k)) {
 		return false
 	}
 	return true

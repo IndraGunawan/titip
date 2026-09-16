@@ -24,18 +24,18 @@ func TestConfig_Options(t *testing.T) {
 
 	reg := prometheus.NewRegistry()
 	opts := []Option{
-		WithHeaderRequired(true),
+		WithHeaderRequired(),
 		WithInternalFetcher(dummyFetcher),
 		WithMaxDepth(5),
 		WithMaxTimeout(10 * time.Second),
 		WithMaxConcurrentRequests(16),
-		WithAllowPrivateIPs(true),
+		WithAllowPrivateIPs(),
 		WithAllowedHosts("cdn.example.com", "*.partner.com"),
-		WithAllowPrivateIPsForAllowedHosts(true),
+		WithAllowPrivateIPsForAllowedHosts(),
 		WithMaxResponseSize(2048),
-		WithDisableForwardCookies(true),
+		WithoutForwardCookies(),
 		WithIncludeErrorMarker("<!-- error placeholder -->"),
-		WithPreserveETag(true),
+		WithPreserveETag(),
 		WithMetrics(reg),
 	}
 

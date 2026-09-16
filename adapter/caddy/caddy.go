@@ -110,17 +110,17 @@ func coalesce[T any](vals ...*T) *T {
 
 // CacheKey defines the cache key generation parameters in Caddy.
 type CacheKey struct {
-	IncludeProtocol          *bool               `json:"include_protocol,omitempty"`
-	ExcludeHost              *bool               `json:"exclude_host,omitempty"`
-	ExcludeQueryString       *bool               `json:"exclude_query_string,omitempty"`
-	DisableQueryStringSort   *bool               `json:"disable_query_string_sort,omitempty"`
-	IncludedQueryParams      []string            `json:"included_query_params,omitempty"`
-	ExcludedQueryParams      []string            `json:"excluded_query_params,omitempty"`
-	ExcludeMarketingParams   *bool               `json:"exclude_marketing_params,omitempty"`
-	IncludedHeaderNames      []string            `json:"included_header_names,omitempty"`
-	IncludedCookieNames      []string            `json:"included_cookie_names,omitempty"`
-	CaseInsensitivePath      *bool               `json:"case_insensitive_path,omitempty"`
-	IncludedQueryParamValues map[string][]string `json:"included_query_param_values,omitempty"`
+	IncludeProtocol             *bool               `json:"include_protocol,omitempty"`
+	ExcludeHost                 *bool               `json:"exclude_host,omitempty"`
+	ExcludeQuery                *bool               `json:"exclude_query,omitempty"`
+	PreserveQueryOrder          *bool               `json:"preserve_query_order,omitempty"`
+	IncludedQueryParams         []string            `json:"included_query_params,omitempty"`
+	ExcludedQueryParams         []string            `json:"excluded_query_params,omitempty"`
+	ExcludeMarketingQueryParams *bool               `json:"exclude_marketing_query_params,omitempty"`
+	IncludedHeaderNames         []string            `json:"included_header_names,omitempty"`
+	IncludedCookieNames         []string            `json:"included_cookie_names,omitempty"`
+	CaseInsensitivePath         *bool               `json:"case_insensitive_path,omitempty"`
+	IncludedQueryParamValues    map[string][]string `json:"included_query_param_values,omitempty"`
 }
 
 // ESIConfig defines ESI parameters in Caddy.
@@ -247,11 +247,11 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	cacheStatus := cmp.Or(h.CacheStatus, appCacheStatus)
 	switch strings.ToLower(cacheStatus) {
 	case "simple", "":
-		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusSimpleToken))
+		opts = append(opts, titip.WithCacheStatus(titip.CacheStatusSimpleToken))
 	case "rfc9211":
-		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusRFC9211))
+		opts = append(opts, titip.WithCacheStatus(titip.CacheStatusRFC9211))
 	case "none":
-		opts = append(opts, titip.WithCacheStatusMode(titip.CacheStatusNone))
+		opts = append(opts, titip.WithCacheStatus(titip.CacheStatusNone))
 	default:
 		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
 	}
@@ -262,8 +262,8 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if v := coalesce(h.AutoInvalidateMutatingMethods, appAutoInvalidate); v != nil && *v {
 		opts = append(opts, titip.WithAutoInvalidateMutatingMethods())
 	}
-	if v := coalesce(h.ConvertHeadToGet, appConvertHead); v != nil {
-		opts = append(opts, titip.WithConvertHeadToGet(*v))
+	if v := coalesce(h.ConvertHeadToGet, appConvertHead); v != nil && !*v {
+		opts = append(opts, titip.WithoutConvertHeadToGet())
 	}
 	if bg := cmp.Or(h.BackgroundFetchTimeout, appBgTimeout); bg != "" {
 		d, err := caddy.ParseDuration(bg)
@@ -281,7 +281,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 
 	if h.TagHeader != "" {
-		opts = append(opts, titip.WithTagHeaderName(h.TagHeader))
+		opts = append(opts, titip.WithTagHeader(h.TagHeader))
 	}
 
 	h.useRewrittenURL = false
@@ -370,12 +370,12 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 
 	if stCfg := coalesce(h.ServerTiming, appServerTiming); stCfg != nil {
-		if stCfg.Enabled != nil && !*stCfg.Enabled {
-			opts = append(opts, titip.WithServerTiming(false))
-		} else if stCfg.CookieName != "" {
-			opts = append(opts, titip.WithServerTimingCookie(stCfg.CookieName, stCfg.CookieValue))
-		} else {
-			opts = append(opts, titip.WithServerTiming(true))
+		if stCfg.Enabled == nil || *stCfg.Enabled {
+			if stCfg.CookieName != "" {
+				opts = append(opts, titip.WithServerTimingCookie(stCfg.CookieName, stCfg.CookieValue))
+			} else {
+				opts = append(opts, titip.WithServerTiming())
+			}
 		}
 	}
 
@@ -596,38 +596,38 @@ func (kc *CacheKey) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Errf("invalid boolean value for exclude_host: %v", err)
 			}
 			kc.ExcludeHost = &val
-		case "exclude_query_string":
+		case "exclude_query":
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
 			val, err := strconv.ParseBool(d.Val())
 			if err != nil {
-				return d.Errf("invalid boolean value for exclude_query_string: %v", err)
+				return d.Errf("invalid boolean value for exclude_query: %v", err)
 			}
-			kc.ExcludeQueryString = &val
-		case "disable_query_string_sort":
+			kc.ExcludeQuery = &val
+		case "preserve_query_order":
 			if !d.NextArg() {
 				return d.ArgErr()
 			}
 			val, err := strconv.ParseBool(d.Val())
 			if err != nil {
-				return d.Errf("invalid boolean value for disable_query_string_sort: %v", err)
+				return d.Errf("invalid boolean value for preserve_query_order: %v", err)
 			}
-			kc.DisableQueryStringSort = &val
+			kc.PreserveQueryOrder = &val
 		case "included_query_params":
 			kc.IncludedQueryParams = append(kc.IncludedQueryParams, d.RemainingArgs()...)
 		case "excluded_query_params":
 			kc.ExcludedQueryParams = append(kc.ExcludedQueryParams, d.RemainingArgs()...)
-		case "exclude_marketing_params":
+		case "exclude_marketing_query_params":
 			val := true
 			if d.NextArg() {
 				var err error
 				val, err = strconv.ParseBool(d.Val())
 				if err != nil {
-					return d.Errf("invalid boolean value for marketing params: %v", err)
+					return d.Errf("invalid boolean value for marketing query params: %v", err)
 				}
 			}
-			kc.ExcludeMarketingParams = &val
+			kc.ExcludeMarketingQueryParams = &val
 		case "included_header_names":
 			kc.IncludedHeaderNames = append(kc.IncludedHeaderNames, d.RemainingArgs()...)
 		case "included_cookie_names":
@@ -785,13 +785,13 @@ func applyCacheKey(target *titip.CacheKey, src *CacheKey) error {
 	if src.ExcludeHost != nil {
 		target.ExcludeHost = *src.ExcludeHost
 	}
-	if src.ExcludeQueryString != nil {
-		target.ExcludeQueryString = *src.ExcludeQueryString
+	if src.ExcludeQuery != nil {
+		target.ExcludeQuery = *src.ExcludeQuery
 	} else if len(src.IncludedQueryParams) > 0 || len(src.IncludedQueryParamValues) > 0 {
-		target.ExcludeQueryString = false
+		target.ExcludeQuery = false
 	}
-	if src.DisableQueryStringSort != nil {
-		target.DisableQueryStringSort = *src.DisableQueryStringSort
+	if src.PreserveQueryOrder != nil {
+		target.PreserveQueryOrder = *src.PreserveQueryOrder
 	}
 	if len(src.IncludedQueryParams) > 0 {
 		target.IncludedQueryParams = src.IncludedQueryParams
@@ -799,8 +799,8 @@ func applyCacheKey(target *titip.CacheKey, src *CacheKey) error {
 	if len(src.ExcludedQueryParams) > 0 {
 		target.ExcludedQueryParams = src.ExcludedQueryParams
 	}
-	if src.ExcludeMarketingParams != nil {
-		target.ExcludeMarketingParams = *src.ExcludeMarketingParams
+	if src.ExcludeMarketingQueryParams != nil {
+		target.ExcludeMarketingQueryParams = *src.ExcludeMarketingQueryParams
 	}
 	if len(src.IncludedHeaderNames) > 0 {
 		target.IncludedHeaderNames = src.IncludedHeaderNames
@@ -826,8 +826,8 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	if src == nil {
 		return nil
 	}
-	if src.HeaderRequired != nil {
-		*opts = append(*opts, esi.WithHeaderRequired(*src.HeaderRequired))
+	if src.HeaderRequired != nil && *src.HeaderRequired {
+		*opts = append(*opts, esi.WithHeaderRequired())
 	}
 	if src.MaxDepth != nil {
 		*opts = append(*opts, esi.WithMaxDepth(*src.MaxDepth))
@@ -842,14 +842,14 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	if src.MaxConcurrentRequests != nil {
 		*opts = append(*opts, esi.WithMaxConcurrentRequests(*src.MaxConcurrentRequests))
 	}
-	if src.BlockPrivateIPs != nil {
-		*opts = append(*opts, esi.WithAllowPrivateIPs(!*src.BlockPrivateIPs))
+	if src.BlockPrivateIPs != nil && !*src.BlockPrivateIPs {
+		*opts = append(*opts, esi.WithAllowPrivateIPs())
 	}
 	if len(src.AllowedHosts) > 0 {
 		*opts = append(*opts, esi.WithAllowedHosts(src.AllowedHosts...))
 	}
-	if src.AllowPrivateIPsForAllowedHosts != nil {
-		*opts = append(*opts, esi.WithAllowPrivateIPsForAllowedHosts(*src.AllowPrivateIPsForAllowedHosts))
+	if src.AllowPrivateIPsForAllowedHosts != nil && *src.AllowPrivateIPsForAllowedHosts {
+		*opts = append(*opts, esi.WithAllowPrivateIPsForAllowedHosts())
 	}
 	if src.MaxResponseSize != "" {
 		uSize, err := humanize.ParseBytes(src.MaxResponseSize)
@@ -858,11 +858,11 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 		}
 		*opts = append(*opts, esi.WithMaxResponseSize(int64(uSize)))
 	}
-	if src.ForwardFragmentCookies != nil {
-		*opts = append(*opts, esi.WithDisableForwardCookies(!*src.ForwardFragmentCookies))
+	if src.ForwardFragmentCookies != nil && !*src.ForwardFragmentCookies {
+		*opts = append(*opts, esi.WithoutForwardCookies())
 	}
-	if src.PreserveETag != nil {
-		*opts = append(*opts, esi.WithPreserveETag(*src.PreserveETag))
+	if src.PreserveETag != nil && *src.PreserveETag {
+		*opts = append(*opts, esi.WithPreserveETag())
 	}
 	if src.ErrorMarker != "" {
 		*opts = append(*opts, esi.WithIncludeErrorMarker(src.ErrorMarker))

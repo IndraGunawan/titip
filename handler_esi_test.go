@@ -864,7 +864,7 @@ func TestESI_SameHostAndExternalDomainIncludes(t *testing.T) {
 	_, _, mw := setupTestTitip(t,
 		WithESI(
 			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
-			esi.WithAllowPrivateIPs(true), // allow 127.0.0.1 httptest server
+			esi.WithAllowPrivateIPs(), // allow 127.0.0.1 httptest server
 		),
 	)
 
@@ -1051,7 +1051,7 @@ func TestESI_InternalFetcher_FallbackToOutboundHTTP_On404(t *testing.T) {
 	_, _, mw := setupTestTitip(t,
 		WithESI(
 			esi.WithInternalFetcher(localFetcher),
-			esi.WithAllowPrivateIPs(true), // allow loopback httptest.Server
+			esi.WithAllowPrivateIPs(), // allow loopback httptest.Server
 			esi.WithMaxTimeout(5*time.Second),
 		),
 	)
@@ -1102,7 +1102,7 @@ func TestESI_InternalFetcher_Non404Error_DoesNotFallback(t *testing.T) {
 	_, _, mw := setupTestTitip(t,
 		WithESI(
 			esi.WithInternalFetcher(errFetcher),
-			esi.WithAllowPrivateIPs(true),
+			esi.WithAllowPrivateIPs(),
 			esi.WithMaxTimeout(5*time.Second),
 		),
 	)
@@ -1161,7 +1161,7 @@ func TestESI_ESIHandlerFetcher_404_FallbackToOutbound(t *testing.T) {
 	_, _, mw := setupTestTitip(t,
 		WithESI(
 			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
-			esi.WithAllowPrivateIPs(true),
+			esi.WithAllowPrivateIPs(),
 			esi.WithMaxTimeout(5*time.Second),
 		),
 	)
@@ -1230,7 +1230,7 @@ func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T)
 	_, _, mw := setupTestTitip(t,
 		WithESI(
 			esi.WithInternalFetcher(esi.HandlerFetcher(parentMux)),
-			esi.WithAllowPrivateIPs(true),
+			esi.WithAllowPrivateIPs(),
 			esi.WithMaxTimeout(10*time.Second),
 		),
 	)
@@ -1274,7 +1274,7 @@ func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T)
 func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
 	_, _, mw := setupTestTitip(t,
 		WithESI(
-			esi.WithHeaderRequired(true),
+			esi.WithHeaderRequired(),
 		),
 	)
 
@@ -1286,7 +1286,7 @@ func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
 		t.Errorf("expected CanProcess to be true with Surrogate-Control")
 	}
 	if mw.esiProcessor.CanProcess(http.Header{}) {
-		t.Errorf("expected CanProcess to be false without Surrogate-Control when WithHeaderRequired(true)")
+		t.Errorf("expected CanProcess to be false without Surrogate-Control when WithHeaderRequired")
 	}
 	if mw.esiProcessor.ShouldPreserveETag() {
 		t.Errorf("expected default ShouldPreserveETag=false, got true")
@@ -1405,7 +1405,7 @@ func TestESI_PreserveETag_True_WeakensETagAndAllows304(t *testing.T) {
 		WithESI(
 			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
 			esi.WithMaxTimeout(5*time.Second),
-			esi.WithPreserveETag(true),
+			esi.WithPreserveETag(),
 		),
 	)
 
@@ -1599,7 +1599,7 @@ func TestESI_MaxResponseSize_InProcessAndOutbound(t *testing.T) {
 		_, _, mw := setupTestTitip(t,
 			WithESI(
 				esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
-				esi.WithAllowPrivateIPs(true),
+				esi.WithAllowPrivateIPs(),
 				esi.WithMaxResponseSize(10),
 			),
 		)
@@ -1626,7 +1626,7 @@ func TestESI_MaxResponseSize_InProcessAndOutbound(t *testing.T) {
 		_, _, mw := setupTestTitip(t,
 			WithESI(
 				esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
-				esi.WithAllowPrivateIPs(true),
+				esi.WithAllowPrivateIPs(),
 				esi.WithMaxResponseSize(0),
 			),
 		)
@@ -1947,7 +1947,7 @@ func TestESI_OriginLowerCaseWireHeaders_EndToEnd(t *testing.T) {
 		_, _, mw := setupTestTitip(t,
 			WithESI(
 				esi.WithInternalFetcher(esi.HandlerFetcher(fragMux)),
-				esi.WithPreserveETag(true),
+				esi.WithPreserveETag(),
 			),
 		)
 		handler := mw.testHandler(originProxy)
@@ -1995,7 +1995,7 @@ func TestESI_HeaderRequired_EndToEnd(t *testing.T) {
 
 	_, _, mw := setupTestTitip(t,
 		WithESI(
-			esi.WithHeaderRequired(true),
+			esi.WithHeaderRequired(),
 			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
 		),
 	)

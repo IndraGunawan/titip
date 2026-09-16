@@ -314,7 +314,7 @@ func TestFreshnessAndKeyGenConcurrency(t *testing.T) {
 
 			req, _ := http.NewRequest(http.MethodGet, "https://example.com/api/v1/items?id=42&sort=asc", nil)
 			req.Header.Set("Accept-Encoding", "gzip")
-			cfg := &CacheKey{ExcludeMarketingParams: true}
+			cfg := &CacheKey{ExcludeMarketingQueryParams: true}
 
 			for range iterations {
 				_ = generatePrimaryKey(req, cfg)

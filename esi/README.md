@@ -107,17 +107,17 @@ If the handler returns 404, the processor falls back to outbound HTTP.
 | Option | Default | Description |
 | :--- | :--- | :--- |
 | `WithInternalFetcher(fn)` | `nil` | In-process subrequest handler. Use `esi.HandlerFetcher(router)` to adapt an `http.Handler`. |
-| `WithHeaderRequired(bool)` | `false` | When true, documents are only processed if `Surrogate-Control` contains `ESI/1.0`. |
+| `WithHeaderRequired()` | *(disabled)* | Documents are only processed if origin response `Surrogate-Control` contains `ESI/1.0`. |
 | `WithMaxDepth(uint32)` | `3` | Maximum nesting depth for recursive includes. |
 | `WithMaxTimeout(time.Duration)` | `30s` | Timeout per fragment request. |
 | `WithMaxConcurrentRequests(int)` | `8` | Maximum concurrent fragment requests per document. |
 | `WithMaxResponseSize(int64)` | `10MB` | Maximum fragment response size in bytes. |
-| `WithAllowPrivateIPs(bool)` | `false` | When true, allows requests to private, loopback, and link-local IP addresses. |
+| `WithAllowPrivateIPs()` | *(disabled)* | Allows requests to private, loopback, and link-local IP addresses. |
 | `WithAllowedHosts(...string)` | `[]` | Allowed hostnames for outbound requests (empty allows any public host). |
-| `WithAllowPrivateIPsForAllowedHosts(bool)` | `false` | Allows private IPs for explicitly allowed hosts. |
-| `WithDisableForwardCookies(bool)` | `false` | Prevents forwarding `Set-Cookie` headers from fragment responses. |
+| `WithAllowPrivateIPsForAllowedHosts()` | *(disabled)* | Allows private IPs specifically for explicitly allowed hosts. |
+| `WithoutForwardCookies()` | *(forwarding enabled)* | Disables forwarding `Set-Cookie` headers from fragment responses. |
 | `WithIncludeErrorMarker(string)` | `""` | HTML placeholder rendered when an include fails without fallback. |
-| `WithPreserveETag(bool)` | `false` | Preserves downstream `ETag` (weakened) and `Last-Modified` headers. |
+| `WithPreserveETag()` | *(disabled)* | Preserves downstream `ETag` (weakened) and `Last-Modified` headers. |
 | `WithMetrics(reg)` | `nil` | Prometheus registerer for fragment metrics. |
 | `WithLogger(logger)` | `slog.Default()` | Logger instance (`*slog.Logger`). |
 | `WithHTTPClient(client)` | SSRF-safe client | Custom `*http.Client` for outbound requests. |

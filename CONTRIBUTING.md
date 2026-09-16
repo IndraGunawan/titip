@@ -213,7 +213,7 @@ func main() {
     // 2. Initialize the Titip instance
     t, err := titip.New(
         titip.WithStorage(store),
-        // ...and any optional titip.With... settings (e.g. WithESI, WithCacheStatusMode)
+        // ...and any optional titip.With... settings (e.g. WithESI, WithCacheStatus)
     )
     if err != nil {
         log.Fatal(err)
