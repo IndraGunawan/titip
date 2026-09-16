@@ -107,7 +107,7 @@ func main() {
     // 3. Configure Titip Engine
     cache, err := titip.New(
         titip.WithStorage(store),
-        titip.WithCacheStatusMode(titip.CacheStatusRFC9211),
+        titip.WithCacheStatus(titip.CacheStatusRFC9211),
         titip.WithBackgroundFetchTimeout(125*time.Second),
     )
     if err != nil {
@@ -138,18 +138,18 @@ Pass any of the following functional options to `titip.New(...)`:
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `WithStorage(s)` | `storage.Storage` | *(Required)* | Storage backend implementation (e.g. `storage/redis`). |
-| `WithCacheStatusMode(mode)` | `CacheStatusMode` | `CacheStatusSimpleToken` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimpleToken`, or `CacheStatusNone`). |
+| `WithCacheStatus(mode)` | `CacheStatusMode` | `CacheStatusSimpleToken` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimpleToken`, or `CacheStatusNone`). |
 | `WithCacheKey(cfg)` | `CacheKey` | `{}` (standard) | Primary cache key generation rules and query parameter filtering. |
-| `WithTagHeaderName(name)` | `string` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
+| `WithTagHeader(name)` | `string` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
 | `WithBackgroundFetchTimeout(d)` | `time.Duration` | `125s` | Maximum timeout budget for background revalidations (`stale-while-revalidate`). |
 | `WithStorageTimeout(d)` | `time.Duration` | `1s` | Maximum time budget for storage reads/writes before fail-open bypass. |
-| `WithRespectClientCacheControl()` | `bool` | `false` | When enabled, honors client request `Cache-Control: no-cache` / `no-store`. |
-| `WithConvertHeadToGet(bool)` | `bool` | `true` | Converts origin `HEAD` cache misses to `GET` to prime the cache with body bytes. |
-| `WithAutoInvalidateMutatingMethods()` | `bool` | `false` | RFC 9111 §4.4: Auto-purges URI cache when mutating requests (`POST`/`PUT`/`DELETE`) succeed. |
+| `WithRespectClientCacheControl()` | - | *(disabled)* | When enabled, honors client request `Cache-Control: no-cache` / `no-store`. |
+| `WithoutConvertHeadToGet()` | - | *(enabled)* | Disables converting origin `HEAD` cache misses to `GET` to prime the cache with body bytes. |
+| `WithAutoInvalidateMutatingMethods()` | - | *(disabled)* | RFC 9111 §4.4: Auto-purges URI cache when mutating requests (`POST`/`PUT`/`DELETE`) succeed. |
 | `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Structured logger instance for diagnostic events. |
 | `WithMetrics(reg)` | `prometheus.Registerer` | `nil` | Prometheus registry for cache and ESI telemetry. |
 | `WithESI(opts...)` | `...esi.Option` | `disabled` | Edge Side Includes processing configuration and options. |
-| `WithServerTiming(bool)` | `bool` | `false` | Enables `Server-Timing` header diagnostics for TTFB tracing in browser DevTools. |
+| `WithServerTiming()` | - | *(disabled)* | Enables `Server-Timing` header diagnostics for TTFB tracing in browser DevTools. |
 | `WithServerTimingCookie(name, val)` | `string, string` | `""` | Restricts `Server-Timing` header generation to requests matching an exact cookie name and value. |
 
 ## Cache Key & Query Parameter Normalization
@@ -161,7 +161,7 @@ cache, err := titip.New(
     titip.WithStorage(store),
     titip.WithCacheKey(titip.CacheKey{
         // Strips marketing query parameters (utm_*, fbclid, gclid, mc_eid, etc.)
-        ExcludeMarketingParams: true,
+        ExcludeMarketingQueryParams: true,
         // Allowlist specific query parameters to include (or use ExcludedQueryParams for a denylist)
         IncludedQueryParams:    []string{"page", "sort", "filter"},
     }),
@@ -170,7 +170,7 @@ cache, err := titip.New(
 
 ## Cache-Status Diagnostics
 
-Titip supports three `Cache-Status` modes configured via `WithCacheStatusMode`:
+Titip supports three `Cache-Status` modes configured via `WithCacheStatus`:
 
 ### 1. `CacheStatusRFC9211` (Structured Header)
 

@@ -424,28 +424,28 @@ func TestGeneratePrimaryKey_Query(t *testing.T) {
 		{
 			name:     "marketing params stripped",
 			url:      "http://example.com/shoes?utm_campaign=summer&utm_source=google&gclid=999&size=10&color=blue",
-			cfg:      &CacheKey{ExcludeMarketingParams: true},
+			cfg:      &CacheKey{ExcludeMarketingQueryParams: true},
 			mustHave: []string{"size=10", "color=blue"},
 			mustNot:  []string{"utm_campaign", "utm_source", "gclid"},
 		},
 		{
 			name:     "marketing params case-insensitive stripping",
 			url:      "http://example.com/shoes?UTM_CAMPAIGN=summer&Utm_Source=google&GCLID=999&FBCLID=123&size=10&color=blue",
-			cfg:      &CacheKey{ExcludeMarketingParams: true},
+			cfg:      &CacheKey{ExcludeMarketingQueryParams: true},
 			mustHave: []string{"size=10", "color=blue"},
 			mustNot:  []string{"UTM_CAMPAIGN", "Utm_Source", "GCLID", "FBCLID"},
 		},
 		{
 			name:     "exclude all query string",
 			url:      "http://example.com/articles?id=99&debug=true",
-			cfg:      &CacheKey{ExcludeQueryString: true},
+			cfg:      &CacheKey{ExcludeQuery: true},
 			exactKey: "p=/articles:h=example.com:m=GET:",
 			mustNot:  []string{":qs="},
 		},
 		{
 			name:    "empty query after all params filtered",
 			url:     "http://example.com/page?utm_source=google",
-			cfg:     &CacheKey{ExcludeMarketingParams: true},
+			cfg:     &CacheKey{ExcludeMarketingQueryParams: true},
 			mustNot: []string{":qs="},
 		},
 		{
@@ -489,7 +489,7 @@ func TestGeneratePrimaryKey_Query(t *testing.T) {
 
 	t.Run("unsorted preserves original order", func(t *testing.T) {
 		req := makeReq("http://example.com/search?z=3&a=1&m=2")
-		key := generatePrimaryKey(req, &CacheKey{DisableQueryStringSort: true})
+		key := generatePrimaryKey(req, &CacheKey{PreserveQueryOrder: true})
 		qsStart := indexOf(key, ":qs=")
 		if qsStart == -1 {
 			t.Fatalf("qs= label missing: %s", key)
@@ -829,9 +829,9 @@ func TestGeneratePrimaryKey_Golden(t *testing.T) {
 			expected: "p=/assets/style.css:m=GET:",
 		},
 		{
-			name:     "ExcludeQueryString",
+			name:     "ExcludeQuery",
 			setup:    func() *http.Request { return makeReq("http://example.com/articles?id=99&debug=true") },
-			cfg:      CacheKey{ExcludeQueryString: true},
+			cfg:      CacheKey{ExcludeQuery: true},
 			expected: "p=/articles:h=example.com:m=GET:",
 		},
 		{
@@ -1021,10 +1021,10 @@ func BenchmarkGeneratePrimaryKey_AllOptions(b *testing.B) {
 	req.AddCookie(&http.Cookie{Name: "ab_group", Value: "control"})
 
 	cfg := &CacheKey{
-		IncludeProtocol:        true,
-		ExcludeMarketingParams: true,
-		IncludedHeaderNames:    []string{"X-Region"},
-		IncludedCookieNames:    []string{"ab_group"},
+		IncludeProtocol:             true,
+		ExcludeMarketingQueryParams: true,
+		IncludedHeaderNames:         []string{"X-Region"},
+		IncludedCookieNames:         []string{"ab_group"},
 	}
 
 	for b.Loop() {

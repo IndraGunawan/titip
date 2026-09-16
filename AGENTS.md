@@ -62,7 +62,7 @@
 | **Origin Age Handling** | RFC 9111 / RFC-7234 Section 4.2.3 algorithm (apparent age, corrected initial age, resident time, effective TTL). Max TTL clamped to 1 year. |
 | **Cache Status Headers** | RFC-9211 structured field (`Cache-Status: titip; hit; ...`), Simple Token (`HIT`, `MISS`), or Disabled. |
 | **Status Codes** | Standard cacheable status codes (`200, 203, 204, 206, 300, 301, 302, 307, 308, 400, 403, 404, 405, 410, 451, 500, 501, 502, 503, 504`) when origin has `Cache-Control`. |
-| **Tag Headers** | Default `Cache-Tag`, customizable via `WithTagHeaderName(name)`. |
+| **Tag Headers** | Default `Cache-Tag`, customizable via `WithTagHeader(name)`. |
 
 ---
 

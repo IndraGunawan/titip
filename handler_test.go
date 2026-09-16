@@ -152,10 +152,10 @@ func TestColdHead_ThenGet_Success(t *testing.T) {
 	}
 }
 
-// TestColdHead_OptOut_ConvertHeadToGetFalse validates that disabling ConvertHeadToGet prevents 0-byte caching
-func TestColdHead_OptOut_ConvertHeadToGetFalse(t *testing.T) {
+// TestColdHead_OptOut_WithoutConvertHeadToGet validates that disabling ConvertHeadToGet prevents 0-byte caching
+func TestColdHead_OptOut_WithoutConvertHeadToGet(t *testing.T) {
 	t.Parallel()
-	_, _, mw := setupTestTitip(t, WithConvertHeadToGet(false))
+	_, _, mw := setupTestTitip(t, WithoutConvertHeadToGet())
 
 	expectedBody := "hello world payload"
 	originCalls := int32(0)
@@ -173,7 +173,7 @@ func TestColdHead_OptOut_ConvertHeadToGetFalse(t *testing.T) {
 
 	handler := mw.testHandler(originHandler)
 
-	// 1. Cold HEAD request with ConvertHeadToGet=false
+	// 1. Cold HEAD request with WithoutConvertHeadToGet
 	doHead(t, handler, "http://example.com/api/test-head-optout").
 		assertStatus(http.StatusOK).
 		assertEmptyBody().

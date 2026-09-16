@@ -30,7 +30,7 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
         cache_status rfc9211
         background_fetch_timeout 125s
         cache_key {
-            exclude_marketing_params true
+            exclude_marketing_query_params true
         }
         esi {
             enabled true
@@ -67,7 +67,7 @@ You can also configure `titip` locally or override specific settings per route:
             cache_status rfc9211
             cache_key {
                 included_query_params id format page
-                exclude_marketing_params true
+                exclude_marketing_query_params true
             }
         }
         reverse_proxy localhost:9000
@@ -89,11 +89,11 @@ Configure cache key assembly inside the `cache_key { ... }` block:
 | :--- | :--- | :--- |
 | `include_protocol <bool>` | `false` | Include scheme (`http://` vs `https://`) in the cache key. |
 | `exclude_host <bool>` | `false` | Exclude hostname from the cache key. |
-| `exclude_query_string <bool>` | `false` | Ignore all query parameters entirely. |
-| `disable_query_string_sort <bool>` | `false` | Preserve raw query string order instead of sorting alphabetically. |
+| `exclude_query <bool>` | `false` | Ignore all query parameters entirely. |
+| `preserve_query_order <bool>` | `false` | Preserve raw query string order instead of sorting alphabetically. |
 | `included_query_params <names...>` | `(all)` | Allowlist of query parameters to keep in the cache key. |
 | `excluded_query_params <names...>` | `(none)` | Denylist of query parameters to exclude from the cache key. |
-| `exclude_marketing_params <bool>` | `false` | Strip common tracking parameters (`utm_*`, `fbclid`, `gclid`, etc.). |
+| `exclude_marketing_query_params <bool>` | `false` | Strip common tracking parameters (`utm_*`, `fbclid`, `gclid`, etc.). |
 | `included_query_param_values <param> <vals...>` | `(none)` | Allowlist specific accepted values for a query parameter. |
 | `included_header_names <names...>` | `(none)` | Include specific request header values in the primary key. |
 | `included_cookie_names <names...>` | `(none)` | Include specific cookie values in the primary key. |

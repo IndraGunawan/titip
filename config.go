@@ -69,12 +69,12 @@ type config struct {
 // Option configures Titip middleware options.
 type Option func(*config)
 
-// WithConvertHeadToGet configures whether HEAD cache misses and revalidations are converted to GET
-// when fetching from the upstream origin to prime the cache (defaults to true).
-// When false, HEAD misses query the origin as HEAD and are not saved to cache.
-func WithConvertHeadToGet(enable bool) Option {
+// WithoutConvertHeadToGet disables converting origin HEAD cache misses and revalidations to GET.
+// By default, HEAD misses are converted to GET to prime the cache with body bytes.
+// When disabled, HEAD misses query the origin as HEAD and are not saved to cache.
+func WithoutConvertHeadToGet() Option {
 	return func(c *config) {
-		c.convertHeadToGet = enable
+		c.convertHeadToGet = false
 	}
 }
 
@@ -116,8 +116,8 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithCacheStatusMode configures Cache-Status header mode.
-func WithCacheStatusMode(mode CacheStatusMode) Option {
+// WithCacheStatus configures the Cache-Status header emission mode.
+func WithCacheStatus(mode CacheStatusMode) Option {
 	return func(c *config) {
 		c.cacheStatusMode = mode
 	}
@@ -143,8 +143,8 @@ func WithCacheKey(k CacheKey) Option {
 	}
 }
 
-// WithTagHeaderName configures the response header inspected for cache tags (defaults to "Cache-Tag").
-func WithTagHeaderName(name string) Option {
+// WithTagHeader configures the response header inspected for cache tags (defaults to "Cache-Tag").
+func WithTagHeader(name string) Option {
 	return func(c *config) {
 		c.tagHeaderName = name
 	}
@@ -170,10 +170,10 @@ func WithESI(opts ...esi.Option) Option {
 	}
 }
 
-// WithServerTiming enables or disables Server-Timing header generation.
-func WithServerTiming(enabled bool) Option {
+// WithServerTiming enables Server-Timing header diagnostics for TTFB tracing in browser DevTools.
+func WithServerTiming() Option {
 	return func(c *config) {
-		c.serverTiming.active = enabled
+		c.serverTiming.active = true
 	}
 }
 

@@ -16,11 +16,11 @@ import (
 func TestCacheStatusModes(t *testing.T) {
 	t.Parallel()
 	// Mode 1: RFC-9211
-	_, _, mw1 := setupTestTitip(t, WithCacheStatusMode(CacheStatusRFC9211))
+	_, _, mw1 := setupTestTitip(t, WithCacheStatus(CacheStatusRFC9211))
 	// Mode 2: Simple Token
-	_, _, mw2 := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+	_, _, mw2 := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
 	// Mode 3: None
-	_, _, mw3 := setupTestTitip(t, WithCacheStatusMode(CacheStatusNone))
+	_, _, mw3 := setupTestTitip(t, WithCacheStatus(CacheStatusNone))
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=60")
@@ -269,7 +269,7 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("MissAndHit", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/cacheable").
@@ -281,7 +281,7 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("Bypass", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken), WithRespectClientCacheControl())
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken), WithRespectClientCacheControl())
 		handler := mw.testHandler(originHandler)
 
 		doPost(t, handler, "http://example.com/api/simple/cacheable", `{}`).
@@ -293,7 +293,7 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("Dynamic", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/dynamic").
@@ -302,7 +302,7 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("Updating", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/swr")
@@ -313,7 +313,7 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("Revalidated", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/reval")
@@ -324,7 +324,7 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("Expired", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/expired")
@@ -335,7 +335,7 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("Stale", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/failover")
@@ -931,7 +931,7 @@ func TestRFC9211_MultiCacheChaining_AppendsHeader(t *testing.T) {
 	// 1. RFC 9211 Mode: Appends to existing upstream Cache-Status
 	t.Run("RFC9211_Appends_Upstream", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusRFC9211))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusRFC9211))
 
 		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "public, max-age=300")
@@ -961,7 +961,7 @@ func TestRFC9211_MultiCacheChaining_AppendsHeader(t *testing.T) {
 	// 2. SimpleToken Mode: Overwrites upstream Cache-Status with single token
 	t.Run("SimpleToken_Overwrites_Upstream", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatusMode(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
 
 		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "public, max-age=300")
