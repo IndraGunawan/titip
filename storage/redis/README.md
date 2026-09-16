@@ -2,10 +2,17 @@
 
 Redis storage backend for the `titip` HTTP caching middleware, powered by [`rueidis`](https://github.com/redis/rueidis).
 
-## Requirements
+## Requirements & Compatibility
 
-- **Redis 7.4+** (utilizes native Hash field expiration `HEXPIRE` and dynamic TTL extension `EXPIRE ... GT`)
-- **Go 1.22+**
+Titip Redis Storage requires Hash field-level expiration (`HEXPIRE`) and dynamic TTL extension (`EXPIRE ... GT`). It is verified and continuously tested against:
+
+| Engine | Minimum Supported | Tested Versions |
+| :--- | :--- | :--- |
+| **Redis** | $\ge$ `7.4` | `7.4`, `latest` |
+| **Valkey** | $\ge$ `9.0` | `9.0`, `latest` |
+| **DragonflyDB** | $\ge$ `1.24.0` | `1.24.0`, `latest` |
+
+- **Go**: 1.22+
 
 ## Key Layout
 
