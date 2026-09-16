@@ -26,39 +26,20 @@ type Storage interface {
 	// Returns the number of primary entries purged (1 if found, 0 if not found).
 	Purge(ctx context.Context, primaryKey string, soft bool) (int64, error)
 
-	// PurgeByTag invalidates all primary metadata and all associated body keys matching a given tag.
-	// Returns the total number of primary entries invalidated.
-	PurgeByTag(ctx context.Context, tag string, soft bool) (int64, error)
-
-	// Close cleanly terminates storage connections.
-	Close() error
-}
-
-// PatternPurger is an optional capability interface implemented by storage engines that
-// support glob/pattern-based key invalidation (e.g. Redis SCAN + UNLINK / soft purge).
-//
-// The pattern syntax follows the backend's native glob syntax:
-//   - Redis: https://redis.io/docs/manual/patterns/
-//   - "*" matches any sequence of characters
-//   - "?" matches any single character
-//
-// Implementations must guarantee that only keys belonging to the engine's configured
-// namespace prefix are matched — never keys outside the prefix.
-type PatternPurger interface {
 	// PurgeByPattern invalidates all keys matching the given glob pattern within the storage namespace.
 	// If soft is true, marks all matched entries as stale.
 	// If soft is false (hard purge), physically deletes all matched metadata and associated body keys.
 	// Returns the number of matching primary metadata entries invalidated.
 	PurgeByPattern(ctx context.Context, pattern string, soft bool) (int64, error)
-}
 
-// AllPurger is an optional capability interface implemented by storage engines that
-// support a total namespace wipeout (e.g. Redis SCAN prefix* + UNLINK).
-//
-// Only keys within the engine's configured namespace prefix are affected.
-// All other keys in the same backend instance are preserved.
-type AllPurger interface {
+	// PurgeByTag invalidates all primary metadata and all associated body keys matching a given tag.
+	// Returns the total number of primary entries invalidated.
+	PurgeByTag(ctx context.Context, tag string, soft bool) (int64, error)
+
 	// PurgeAll deletes every key in the storage engine's configured namespace prefix.
 	// Returns the number of primary metadata entries deleted.
 	PurgeAll(ctx context.Context) (int64, error)
+
+	// Close cleanly terminates storage connections.
+	Close() error
 }

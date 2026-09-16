@@ -15,9 +15,7 @@ import (
 )
 
 var (
-	_ storage.Storage       = (*Store)(nil)
-	_ storage.PatternPurger = (*Store)(nil)
-	_ storage.AllPurger     = (*Store)(nil)
+	_ storage.Storage = (*Store)(nil)
 
 	// ErrClosed is returned when operations are attempted on a closed Store.
 	ErrClosed = errors.New("teststore: store is closed")
@@ -416,22 +414,24 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// matchGlob performs Redis-style glob pattern matching (* matches any sequence including /, ? matches single char).
+// matchGlob performs Redis-style glob pattern matching (* matches any sequence including /, ? matches single char, \ escapes).
 func matchGlob(pattern, s string) bool {
 	var sb strings.Builder
 	sb.WriteString("^")
 	for i := 0; i < len(pattern); i++ {
 		c := pattern[i]
+		if c == '\\' && i+1 < len(pattern) {
+			i++
+			sb.WriteString(regexp.QuoteMeta(string(pattern[i])))
+			continue
+		}
 		switch c {
 		case '*':
 			sb.WriteString(".*")
 		case '?':
 			sb.WriteString(".")
-		case '.', '+', '(', ')', '{', '}', '^', '$', '|', '\\', '[', ']':
-			sb.WriteString(`\`)
-			sb.WriteByte(c)
 		default:
-			sb.WriteByte(c)
+			sb.WriteString(regexp.QuoteMeta(string(c)))
 		}
 	}
 	sb.WriteString("$")

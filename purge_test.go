@@ -4,436 +4,348 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/indragunawan/titip/internal/teststore"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// parsePurgeTarget
+// buildPurgeOperation Exhaustive Table Test
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestParsePurgeTarget_Empty(t *testing.T) {
-	pt, err := parsePurgeTarget("", nil)
+func TestBuildPurgeOperation_Table(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		target          string
+		cfg             CacheKey
+		expectedExact   bool
+		expectedKeys    []string
+		sampleCachedURL string // must match via exact equality or matchGlob == true
+		unrelatedURL    string // must NOT match via matchGlob
+	}{
+		{
+			name:            "PathOnly_DefaultConfig",
+			target:          "/api/products",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:*"},
+			sampleCachedURL: "http://example.com/api/products?id=42",
+			unrelatedURL:    "http://example.com/api/products_other?id=42",
+		},
+		{
+			name:            "PathOnly_ExcludeHost",
+			target:          "/api/products",
+			cfg:             CacheKey{ExcludeHost: true},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:*"},
+			sampleCachedURL: "http://example.com/api/products",
+			unrelatedURL:    "http://example.com/api/v2",
+		},
+		{
+			name:            "PathOnly_IncludeProtocol_NoSchemeInTarget",
+			target:          "/api/products",
+			cfg:             CacheKey{IncludeProtocol: true},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:*"},
+			sampleCachedURL: "https://example.com/api/products",
+			unrelatedURL:    "https://example.com/api/orders",
+		},
+		{
+			name:            "PathOnly_HostScoped_DefaultProtocol",
+			target:          "https://example.com/api/products",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:h=example.com:*"},
+			sampleCachedURL: "http://example.com/api/products?id=1",
+			unrelatedURL:    "http://other.com/api/products?id=1",
+		},
+		{
+			name:            "PathOnly_HostScoped_IncludeProtocol_HTTPS",
+			target:          "https://example.com/api/products",
+			cfg:             CacheKey{IncludeProtocol: true},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:h=example.com:s=https:*"},
+			sampleCachedURL: "https://example.com/api/products",
+			unrelatedURL:    "http://example.com/api/products", // http must NOT match https
+		},
+		{
+			name:            "PathOnly_HostScoped_IncludeProtocol_HTTP",
+			target:          "http://example.com/api/products",
+			cfg:             CacheKey{IncludeProtocol: true},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:h=example.com:s=http:*"},
+			sampleCachedURL: "http://example.com/api/products",
+			unrelatedURL:    "https://example.com/api/products", // https must NOT match http
+		},
+		{
+			name:            "PathOnly_CaseInsensitivePath",
+			target:          "/API/Products",
+			cfg:             CacheKey{CaseInsensitivePath: true},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:*"},
+			sampleCachedURL: "http://example.com/api/products",
+			unrelatedURL:    "http://example.com/api/other",
+		},
+		{
+			name:            "ColonInPath_Supported",
+			target:          "/api/users/id:123",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/users/id:123:*"},
+			sampleCachedURL: "http://example.com/api/users/id:123?page=1",
+			unrelatedURL:    "http://example.com/api/users/id:124?page=1",
+		},
+		{
+			name:            "FullURL_ExactQuery_O1Purge",
+			target:          "https://example.com/api/products?id=42",
+			cfg:             CacheKey{},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/api/products:h=example.com:qs=id=42:m=GET:"},
+			sampleCachedURL: "https://example.com/api/products?id=42",
+			unrelatedURL:    "https://example.com/api/products?id=420",
+		},
+		{
+			name:            "PathWithQuery_ExcludeHost_ExactPurge",
+			target:          "/api/products?id=42",
+			cfg:             CacheKey{ExcludeHost: true},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/api/products:qs=id=42:m=GET:"},
+			sampleCachedURL: "http://example.com/api/products?id=42",
+			unrelatedURL:    "http://example.com/api/products?id=43",
+		},
+		{
+			name:            "PathWithQuery_NoHost_PatternPurge",
+			target:          "/api/products?id=42",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:h=*:qs=id=42:*"},
+			sampleCachedURL: "http://anydomain.com/api/products?id=42",
+			unrelatedURL:    "http://anydomain.com/api/products?id=420", // must NOT match id=420
+		},
+		{
+			name:            "QuerySorting_Default_Sorted",
+			target:          "https://example.com/api?b=2&a=1",
+			cfg:             CacheKey{},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/api:h=example.com:qs=a=1&b=2:m=GET:"},
+			sampleCachedURL: "https://example.com/api?a=1&b=2",
+			unrelatedURL:    "https://example.com/api?a=1&b=3",
+		},
+		{
+			name:            "QuerySorting_DisableSort_PreservesOrder",
+			target:          "https://example.com/api?b=2&a=1",
+			cfg:             CacheKey{DisableQueryStringSort: true},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/api:h=example.com:qs=b=2&a=1:m=GET:"},
+			sampleCachedURL: "https://example.com/api?b=2&a=1",
+			unrelatedURL:    "https://example.com/api?a=1&b=2",
+		},
+		{
+			name:            "ColonInQuery_PercentEncodedSafely",
+			target:          "https://example.com/api?time=12:30:00",
+			cfg:             CacheKey{},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/api:h=example.com:qs=time=12%3A30%3A00:m=GET:"},
+			sampleCachedURL: "https://example.com/api?time=12:30:00",
+			unrelatedURL:    "https://example.com/api?time=12:30:01",
+		},
+		{
+			name:            "ExcludeQueryString_IgnoresQuery",
+			target:          "/api/products?id=42",
+			cfg:             CacheKey{ExcludeQueryString: true},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:*"},
+			sampleCachedURL: "http://example.com/api/products",
+			unrelatedURL:    "http://example.com/api/categories",
+		},
+		{
+			name:            "ExcludeMarketingParams_Stripped",
+			target:          "/api/products?id=42&utm_source=twitter",
+			cfg:             CacheKey{ExcludeMarketingParams: true},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api/products:h=*:qs=id=42:*"},
+			sampleCachedURL: "http://example.com/api/products?id=42&utm_source=twitter",
+			unrelatedURL:    "http://example.com/api/products?id=43",
+		},
+		{
+			name:            "URLWithPort_CustomPortPreserved",
+			target:          "http://example.com:8080/api",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api:h=example.com:8080:*"},
+			sampleCachedURL: "http://example.com:8080/api?page=1",
+			unrelatedURL:    "http://example.com/api?page=1", // without port must not match
+		},
+		{
+			name:            "URLWithPort_DefaultPort80Stripped",
+			target:          "http://example.com:80/api",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api:h=example.com:*"},
+			sampleCachedURL: "http://example.com/api",
+			unrelatedURL:    "http://other.com/api",
+		},
+		{
+			name:            "URLWithPort_DefaultPort443Stripped",
+			target:          "https://example.com:443/api",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/api:h=example.com:*"},
+			sampleCachedURL: "https://example.com/api",
+			unrelatedURL:    "https://other.com/api",
+		},
+		{
+			name:            "Homepage_Only",
+			target:          "/",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/:*"},
+			sampleCachedURL: "http://example.com/",
+			unrelatedURL:    "http://example.com/api", // must NOT match /api
+		},
+		{
+			name:            "LiteralAsteriskInPath_PercentEncoded",
+			target:          "/math/2*2",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/math/2%2A2:*"},
+			sampleCachedURL: "http://example.com/math/2*2?id=1",
+			unrelatedURL:    "http://example.com/math/2lesson2?id=1", // must NOT match /math/2lesson2
+		},
+		{
+			name:            "LiteralBracketInPath_PercentEncoded",
+			target:          "/search/item[1]",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/search/item%5B1%5D:*"},
+			sampleCachedURL: "http://example.com/search/item[1]?id=1",
+			unrelatedURL:    "http://example.com/search/item1?id=1", // must NOT match /search/item1
+		},
+		{
+			name:            "NonASCII_ChinesePath_PatternPurge",
+			target:          "/你好/世界?id=42",
+			cfg:             CacheKey{},
+			expectedExact:   false,
+			expectedKeys:    []string{"p=/%E4%BD%A0%E5%A5%BD/%E4%B8%96%E7%95%8C:h=*:qs=id=42:*"},
+			sampleCachedURL: "http://example.com/你好/世界?id=42",
+			unrelatedURL:    "http://example.com/你好/世界?id=43",
+		},
+		{
+			name:            "NonASCII_ChinesePath_ExactPurge",
+			target:          "http://example.com/你好/世界?id=42",
+			cfg:             CacheKey{},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/%E4%BD%A0%E5%A5%BD/%E4%B8%96%E7%95%8C:h=example.com:qs=id=42:m=GET:"},
+			sampleCachedURL: "http://example.com/你好/世界?id=42",
+			unrelatedURL:    "http://example.com/你好/世界?id=43",
+		},
+		{
+			name:            "PathWithSpaces_ExactPurge",
+			target:          "http://example.com/hello world/profile?id=42",
+			cfg:             CacheKey{},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/hello%20world/profile:h=example.com:qs=id=42:m=GET:"},
+			sampleCachedURL: "http://example.com/hello world/profile?id=42",
+			unrelatedURL:    "http://example.com/hello world/profile?id=43",
+		},
+		{
+			name:            "PathWithPreEscapedPercent_ExactPurge",
+			target:          "http://example.com/deal/50%25off?id=42",
+			cfg:             CacheKey{},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/deal/50%25off:h=example.com:qs=id=42:m=GET:"},
+			sampleCachedURL: "http://example.com/deal/50%25off?id=42",
+			unrelatedURL:    "http://example.com/deal/50%25off?id=43",
+		},
+		{
+			name:            "PathWithEmoji_ExactPurge",
+			target:          "http://example.com/shop/🎉/item?id=42",
+			cfg:             CacheKey{},
+			expectedExact:   true,
+			expectedKeys:    []string{"p=/shop/%F0%9F%8E%89/item:h=example.com:qs=id=42:m=GET:"},
+			sampleCachedURL: "http://example.com/shop/🎉/item?id=42",
+			unrelatedURL:    "http://example.com/shop/🎉/item?id=43",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isExact, keys, err := buildPurgeOperation(tt.target, &tt.cfg)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if isExact != tt.expectedExact {
+				t.Errorf("isExact = %v, want %v", isExact, tt.expectedExact)
+			}
+			if !slices.Equal(keys, tt.expectedKeys) {
+				t.Errorf("keys mismatch:\n got:  %v\n want: %v", keys, tt.expectedKeys)
+			}
+
+			// Sample request verification
+			sampleU, _ := url.Parse(tt.sampleCachedURL)
+			sampleReq := &http.Request{
+				Method: http.MethodGet,
+				Host:   sampleU.Host,
+				URL:    sampleU,
+			}
+			if sampleU.Scheme == "https" {
+				sampleReq.Header = http.Header{"X-Forwarded-Proto": []string{"https"}}
+			}
+			primaryKey := generatePrimaryKey(sampleReq, &tt.cfg)
+
+			if isExact {
+				// Exact match must equal primaryKey 100% identically!
+				if keys[0] != primaryKey {
+					t.Errorf("exact key parity mismatch:\n exact key:  %q\n primaryKey: %q", keys[0], primaryKey)
+				}
+			} else {
+				// Pattern match must match sampleKey via Redis glob matching!
+				matched := false
+				for _, p := range keys {
+					if matchGlob(p, primaryKey) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					t.Errorf("pattern failed to match primaryKey:\n patterns:   %v\n primaryKey: %q", keys, primaryKey)
+				}
+
+				// Pattern must NOT match unrelated key
+				unrelatedU, _ := url.Parse(tt.unrelatedURL)
+				unrelatedReq := &http.Request{
+					Method: http.MethodGet,
+					Host:   unrelatedU.Host,
+					URL:    unrelatedU,
+				}
+				if unrelatedU.Scheme == "https" {
+					unrelatedReq.Header = http.Header{"X-Forwarded-Proto": []string{"https"}}
+				}
+				unrelatedKey := generatePrimaryKey(unrelatedReq, &tt.cfg)
+				for _, p := range keys {
+					if matchGlob(p, unrelatedKey) && tt.target != "/" {
+						t.Errorf("pattern over-matched unrelatedKey:\n pattern:      %q\n unrelatedKey: %q", p, unrelatedKey)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPurgeOperation_EmptyTarget(t *testing.T) {
+	isExact, keys, err := buildPurgeOperation("", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if pt != nil {
-		t.Fatalf("expected nil target for empty string, got: %+v", pt)
-	}
-}
-
-func TestParsePurgeTarget_PathOnly(t *testing.T) {
-	pt, err := parsePurgeTarget("/api/products", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.mode != purgeModePathAllVariants {
-		t.Errorf("expected PathAllVariants mode, got: %v", pt.mode)
-	}
-	if pt.path != "/api/products" {
-		t.Errorf("expected path /api/products, got: %s", pt.path)
-	}
-	if pt.host != "" {
-		t.Errorf("expected empty host, got: %s", pt.host)
-	}
-}
-
-func TestParsePurgeTarget_PathWithQuery_ExactMode(t *testing.T) {
-	pt, err := parsePurgeTarget("/api/products?id=42&page=1", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.mode != purgeModeExact {
-		t.Errorf("expected Exact mode, got: %v", pt.mode)
-	}
-	if pt.path != "/api/products" {
-		t.Errorf("expected path /api/products, got: %s", pt.path)
-	}
-	if pt.query == "" {
-		t.Error("expected non-empty query, got empty")
-	}
-}
-
-func TestParsePurgeTarget_WildcardSuffix(t *testing.T) {
-	pt, err := parsePurgeTarget("/assets/*", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.mode != purgeModeWildcard {
-		t.Errorf("expected Wildcard mode, got: %v", pt.mode)
-	}
-	if pt.path != "/assets" {
-		t.Errorf("expected path /assets, got: %s", pt.path)
-	}
-}
-
-func TestParsePurgeTarget_WildcardDeepPath(t *testing.T) {
-	pt, err := parsePurgeTarget("/images/product/thumbnail/*", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.mode != purgeModeWildcard {
-		t.Errorf("expected Wildcard mode, got: %v", pt.mode)
-	}
-	if pt.path != "/images/product/thumbnail" {
-		t.Errorf("expected stripped path, got: %s", pt.path)
-	}
-}
-
-func TestParsePurgeTarget_FullHTTPSURL_HostScoped(t *testing.T) {
-	pt, err := parsePurgeTarget("https://example.com/api/products", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.mode != purgeModePathAllVariants {
-		t.Errorf("expected PathAllVariants, got: %v", pt.mode)
-	}
-	if pt.host != "example.com" {
-		t.Errorf("expected host example.com, got: %s", pt.host)
-	}
-	if pt.scheme != "https" {
-		t.Errorf("expected scheme https, got: %s", pt.scheme)
-	}
-	if pt.path != "/api/products" {
-		t.Errorf("expected path /api/products, got: %s", pt.path)
-	}
-}
-
-func TestParsePurgeTarget_FullHTTPURL_HostScoped(t *testing.T) {
-	pt, err := parsePurgeTarget("http://cdn.example.com/assets/style.css", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.scheme != "http" {
-		t.Errorf("expected scheme http, got: %s", pt.scheme)
-	}
-	if pt.host != "cdn.example.com" {
-		t.Errorf("expected host cdn.example.com, got: %s", pt.host)
-	}
-}
-
-func TestParsePurgeTarget_HostSchemeAmbiguous(t *testing.T) {
-	// No scheme prefix → scheme is empty (ambiguous).
-	pt, err := parsePurgeTarget("example.com/api/items", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.scheme != "" {
-		t.Errorf("expected empty scheme for ambiguous target, got: %s", pt.scheme)
-	}
-	if pt.host != "example.com" {
-		t.Errorf("expected host example.com, got: %s", pt.host)
-	}
-}
-
-func TestParsePurgeTarget_HostWithDefaultPortStripped(t *testing.T) {
-	pt, err := parsePurgeTarget("https://example.com:443/api", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.host != "example.com" {
-		t.Errorf("expected :443 stripped, got host: %s", pt.host)
-	}
-}
-
-func TestParsePurgeTarget_HostWithNonDefaultPortPreserved(t *testing.T) {
-	pt, err := parsePurgeTarget("http://example.com:8080/api", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.host != "example.com:8080" {
-		t.Errorf("expected :8080 preserved, got host: %s", pt.host)
-	}
-}
-
-func TestParsePurgeTarget_TrailingSlashIsWildcard(t *testing.T) {
-	// Root "/" is treated as wildcard.
-	pt, err := parsePurgeTarget("/", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.mode != purgeModeWildcard {
-		t.Errorf("expected Wildcard mode for '/', got: %v", pt.mode)
-	}
-}
-
-func TestParsePurgeTarget_DotSegmentsInPath(t *testing.T) {
-	pt, err := parsePurgeTarget("/a/b/../c", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt.path != "/a/c" {
-		t.Errorf("expected dot segments cleaned, got: %s", pt.path)
-	}
-}
-
-func TestParsePurgeTarget_QuerySortedForExactMatch(t *testing.T) {
-	// Query params must be sorted to match the canonical key format.
-	pt1, _ := parsePurgeTarget("/items?b=2&a=1", nil)
-	pt2, _ := parsePurgeTarget("/items?a=1&b=2", nil)
-	if pt1.query != pt2.query {
-		t.Errorf("query must be sorted regardless of input order:\n pt1=%s\n pt2=%s", pt1.query, pt2.query)
-	}
-}
-
-func TestParsePurgeTarget_RespectsCacheKey(t *testing.T) {
-	// 1. ExcludeQueryString turns URL with query into PathAllVariants.
-	cfgNoQuery := &CacheKey{ExcludeQueryString: true}
-	pt1, err := parsePurgeTarget("/items?id=100&page=2", cfgNoQuery)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt1.mode != purgeModePathAllVariants {
-		t.Errorf("expected PathAllVariants when query is excluded, got: %v", pt1.mode)
-	}
-	if pt1.query != "" {
-		t.Errorf("expected empty query, got: %s", pt1.query)
-	}
-
-	// 2. IncludedQueryParams allowlist filtering.
-	cfgAllowlist := &CacheKey{IncludedQueryParams: []string{"id"}}
-	pt2, err := parsePurgeTarget("/items?id=100&page=2&utm_source=fb", cfgAllowlist)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt2.mode != purgeModeExact {
-		t.Errorf("expected Exact mode, got: %v", pt2.mode)
-	}
-	if pt2.query != "id=100" {
-		t.Errorf("expected allowed id=100 query only, got: %s", pt2.query)
-	}
-
-	// 3. Trailing slash preserved on path.
-	pt3, err := parsePurgeTarget("/docs/", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pt3.path != "/docs/" {
-		t.Errorf("expected trailing slash preserved to /docs/, got: %s", pt3.path)
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// buildPurgePatterns
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestBuildPurgePatterns_ExactMode_NoHost(t *testing.T) {
-	pt := &purgeTarget{
-		mode:  purgeModeExact,
-		path:  "/api/products",
-		query: "id=42",
-	}
-	cfg := &CacheKey{}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 1 {
-		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
-	}
-	expected := "p=/api/products:h=*:m=*:qs=id=42*"
-	if patterns[0] != expected {
-		t.Errorf("expected pattern %q\n got %q", expected, patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_ExactMode_NoHost_ExcludeHostConfig(t *testing.T) {
-	pt := &purgeTarget{
-		mode:  purgeModeExact,
-		path:  "/api/products",
-		query: "id=42",
-	}
-	cfg := &CacheKey{ExcludeHost: true}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 1 {
-		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
-	}
-	expected := "p=/api/products:m=GET:qs=id=42"
-	if patterns[0] != expected {
-		t.Errorf("expected pattern %q\n got %q", expected, patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_ExactMode_WithHost(t *testing.T) {
-	pt := &purgeTarget{
-		mode:  purgeModeExact,
-		path:  "/api/products",
-		host:  "example.com",
-		query: "id=42",
-	}
-	cfg := &CacheKey{}
-	patterns := buildPurgePatterns(pt, cfg)
-	expected := "p=/api/products:h=example.com:m=GET:qs=id=42"
-	if patterns[0] != expected {
-		t.Errorf("expected %q\n got %q", expected, patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_ExactMode_WithScheme(t *testing.T) {
-	pt := &purgeTarget{
-		mode:   purgeModeExact,
-		path:   "/api/products",
-		host:   "example.com",
-		scheme: "https",
-		query:  "id=42",
-	}
-	cfg := &CacheKey{IncludeProtocol: true}
-	patterns := buildPurgePatterns(pt, cfg)
-	expected := "p=/api/products:h=example.com:m=GET:s=https:qs=id=42"
-	if patterns[0] != expected {
-		t.Errorf("expected %q\n got %q", expected, patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_PathAllVariants_NoHost(t *testing.T) {
-	pt := &purgeTarget{
-		mode: purgeModePathAllVariants,
-		path: "/api/products",
-	}
-	cfg := &CacheKey{}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 1 {
-		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
-	}
-	expected := "p=/api/products:h=*:m=*"
-	if patterns[0] != expected {
-		t.Errorf("expected %q\n got %q", expected, patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_PathAllVariants_NoHost_ExcludeHostConfig(t *testing.T) {
-	pt := &purgeTarget{
-		mode: purgeModePathAllVariants,
-		path: "/api/products",
-	}
-	cfg := &CacheKey{ExcludeHost: true}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 1 {
-		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
-	}
-	expected := "p=/api/products:m=*"
-	if patterns[0] != expected {
-		t.Errorf("expected %q\n got %q", expected, patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_PathAllVariants_WithHost(t *testing.T) {
-	pt := &purgeTarget{
-		mode: purgeModePathAllVariants,
-		path: "/api/products",
-		host: "example.com",
-	}
-	cfg := &CacheKey{}
-	patterns := buildPurgePatterns(pt, cfg)
-	expected := "p=/api/products:h=example.com:m=*"
-	if patterns[0] != expected {
-		t.Errorf("expected %q\n got %q", expected, patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_PathAllVariants_DualProtocol(t *testing.T) {
-	// When IncludeProtocol=true and no scheme specified → two patterns (http + https).
-	pt := &purgeTarget{
-		mode: purgeModePathAllVariants,
-		path: "/api/products",
-		host: "example.com",
-	}
-	cfg := &CacheKey{IncludeProtocol: true}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 2 {
-		t.Fatalf("expected 2 patterns for dual-protocol, got %d: %v", len(patterns), patterns)
-	}
-	httpFound, httpsFound := false, false
-	for _, p := range patterns {
-		if containsStr(p, ":s=http*") {
-			httpFound = true
-		}
-		if containsStr(p, ":s=https*") {
-			httpsFound = true
-		}
-	}
-	if !httpFound || !httpsFound {
-		t.Errorf("expected both http and https patterns, got: %v", patterns)
-	}
-}
-
-func TestBuildPurgePatterns_PathAllVariants_SingleScheme(t *testing.T) {
-	// When IncludeProtocol=true and explicit scheme → single pattern.
-	pt := &purgeTarget{
-		mode:   purgeModePathAllVariants,
-		path:   "/api/products",
-		host:   "example.com",
-		scheme: "https",
-	}
-	cfg := &CacheKey{IncludeProtocol: true}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 1 {
-		t.Fatalf("expected 1 pattern for known scheme, got %d: %v", len(patterns), patterns)
-	}
-	if !containsStr(patterns[0], ":s=https*") {
-		t.Errorf("expected s=https* in pattern, got: %s", patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_Wildcard_NoHost(t *testing.T) {
-	pt := &purgeTarget{
-		mode: purgeModeWildcard,
-		path: "/assets",
-	}
-	cfg := &CacheKey{}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 1 {
-		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
-	}
-	expected := "p=/assets/*"
-	if patterns[0] != expected {
-		t.Errorf("expected %q\n got %q", expected, patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_Wildcard_WithHost(t *testing.T) {
-	pt := &purgeTarget{
-		mode: purgeModeWildcard,
-		path: "/assets",
-		host: "cdn.example.com",
-	}
-	cfg := &CacheKey{}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 1 {
-		t.Fatalf("expected 1 pattern, got %d: %v", len(patterns), patterns)
-	}
-	if !containsStr(patterns[0], "/assets/") || !containsStr(patterns[0], ":h=cdn.example.com") {
-		t.Errorf("expected path prefix and host scope, got: %s", patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_Wildcard_DualProtocol(t *testing.T) {
-	pt := &purgeTarget{
-		mode: purgeModeWildcard,
-		path: "/assets",
-		host: "cdn.example.com",
-	}
-	cfg := &CacheKey{IncludeProtocol: true}
-	patterns := buildPurgePatterns(pt, cfg)
-	if len(patterns) != 2 {
-		t.Fatalf("expected 2 patterns for dual-protocol wildcard, got %d: %v", len(patterns), patterns)
-	}
-}
-
-func TestBuildPurgePatterns_Wildcard_RootPath(t *testing.T) {
-	pt := &purgeTarget{
-		mode: purgeModeWildcard,
-		path: "/",
-	}
-	cfg := &CacheKey{}
-	patterns := buildPurgePatterns(pt, cfg)
-	// Root wildcard must match everything.
-	if !containsStr(patterns[0], "p=/*") {
-		t.Errorf("expected root wildcard pattern, got: %s", patterns[0])
-	}
-}
-
-func TestBuildPurgePatterns_Nil(t *testing.T) {
-	patterns := buildPurgePatterns(nil, &CacheKey{})
-	if len(patterns) != 0 {
-		t.Errorf("expected empty patterns for nil target, got: %v", patterns)
+	if isExact || len(keys) != 0 {
+		t.Errorf("expected false, empty for empty target, got: isExact=%v, keys=%v", isExact, keys)
 	}
 }
 
@@ -462,17 +374,32 @@ func TestNormalizeHost(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-func containsStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
+// matchGlob performs Redis-style glob pattern matching (* matches any sequence including /, ? matches single char, \ escapes).
+func matchGlob(pattern, s string) bool {
+	var sb strings.Builder
+	sb.WriteString("^")
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		if c == '\\' && i+1 < len(pattern) {
+			i++
+			sb.WriteString(regexp.QuoteMeta(string(pattern[i])))
+			continue
+		}
+		switch c {
+		case '*':
+			sb.WriteString(".*")
+		case '?':
+			sb.WriteString(".")
+		default:
+			sb.WriteString(regexp.QuoteMeta(string(c)))
 		}
 	}
-	return false
+	sb.WriteString("$")
+	re, err := regexp.Compile(sb.String())
+	if err != nil {
+		return false
+	}
+	return re.MatchString(s)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -521,14 +448,14 @@ func TestPurge_EndToEnd_MatrixOfTargets(t *testing.T) {
 			keyCfg:        CacheKey{ExcludeMarketingParams: true},
 		},
 		{
-			name:          "WildcardDirectory_PurgesDeepChildren",
-			cachedURL:     "http://localhost:8080/assets/css/theme/dark.css",
-			purgeTarget:   "/assets/*",
+			name:          "LiteralAsteriskPath_PurgesExactPath",
+			cachedURL:     "http://localhost:8080/math/2*2",
+			purgeTarget:   "/math/2*2",
 			expectDeleted: true,
 		},
 		{
-			name:          "RootWildcard_PurgesEntireNamespace",
-			cachedURL:     "http://localhost:8080/deep/nested/page",
+			name:          "RootPathOnly_PurgesRootURL",
+			cachedURL:     "http://localhost:8080/",
 			purgeTarget:   "/",
 			expectDeleted: true,
 		},
@@ -598,42 +525,376 @@ func TestPurgeTarget_CaseInsensitivePath(t *testing.T) {
 	cfg := &CacheKey{CaseInsensitivePath: true}
 
 	// 1. Exact mode
-	ptExact, err := parsePurgeTarget("http://example.com/Products/Shoes/Running?token=123", cfg)
+	isExact, keys, err := buildPurgeOperation("http://example.com/Products/Shoes/Running?token=123", cfg)
 	if err != nil {
-		t.Fatalf("parsePurgeTarget failed: %v", err)
+		t.Fatalf("buildPurgeOperation failed: %v", err)
 	}
-	if ptExact.path != "/products/shoes/running" {
-		t.Errorf("expected lowercase path /products/shoes/running, got %s", ptExact.path)
+	if !isExact {
+		t.Errorf("expected isExact = true")
 	}
-	exactPatterns := buildPurgePatterns(ptExact, cfg)
-	expectedKey := "p=/products/shoes/running:h=example.com:m=GET:qs=token=123"
-	if len(exactPatterns) != 1 || exactPatterns[0] != expectedKey {
-		t.Errorf("expected exact pattern %q, got %v", expectedKey, exactPatterns)
+	expectedKey := "p=/products/shoes/running:h=example.com:qs=token=123:m=GET:"
+	if len(keys) != 1 || keys[0] != expectedKey {
+		t.Errorf("expected exact key %q, got %v", expectedKey, keys)
 	}
 
 	// 2. Path all-variants mode
-	ptAllVariants, err := parsePurgeTarget("http://example.com/Products/Shoes/Running", cfg)
+	isExact, keys, err = buildPurgeOperation("http://example.com/Products/Shoes/Running", cfg)
 	if err != nil {
-		t.Fatalf("parsePurgeTarget failed: %v", err)
+		t.Fatalf("buildPurgeOperation failed: %v", err)
 	}
-	if ptAllVariants.path != "/products/shoes/running" {
-		t.Errorf("expected lowercase path /products/shoes/running, got %s", ptAllVariants.path)
+	if isExact {
+		t.Errorf("expected isExact = false")
 	}
-	allVariantsPatterns := buildPurgePatterns(ptAllVariants, cfg)
-	if len(allVariantsPatterns) != 1 || allVariantsPatterns[0] != "p=/products/shoes/running:h=example.com:m=*" {
-		t.Errorf("expected all-variants pattern %q, got %v", "p=/products/shoes/running:h=example.com:m=*", allVariantsPatterns)
+	expectedPattern := "p=/products/shoes/running:h=example.com:*"
+	if len(keys) != 1 || keys[0] != expectedPattern {
+		t.Errorf("expected pattern %q, got %v", expectedPattern, keys)
 	}
 
-	// 3. Wildcard mode
-	ptWildcard, err := parsePurgeTarget("http://example.com/Products/*", cfg)
+	// 3. Literal asterisk in Purge is escaped
+	isExact, keys, err = buildPurgeOperation("http://example.com/Products/*", cfg)
 	if err != nil {
-		t.Fatalf("parsePurgeTarget failed: %v", err)
+		t.Fatalf("buildPurgeOperation failed: %v", err)
 	}
-	if ptWildcard.path != "/products" {
-		t.Errorf("expected lowercase wildcard dir /products, got %s", ptWildcard.path)
+	if isExact {
+		t.Errorf("expected isExact = false")
 	}
-	wildcardPatterns := buildPurgePatterns(ptWildcard, cfg)
-	if len(wildcardPatterns) != 1 || wildcardPatterns[0] != "p=/products/*:h=example.com:m=*" {
-		t.Errorf("expected wildcard pattern %q, got %v", "p=/products/*:h=example.com:m=*", wildcardPatterns)
+	expectedEscaped := "p=/products/%2A:h=example.com:*"
+	if len(keys) != 1 || keys[0] != expectedEscaped {
+		t.Errorf("expected literal asterisk escaped %q, got %v", expectedEscaped, keys)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildPurgePrefixOperation Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestBuildPurgePrefixOperation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		prefix       string
+		cfg          CacheKey
+		expectedKeys []string
+		expectErr    bool
+	}{
+		{
+			name:      "EmptyPrefix_Error",
+			prefix:    "",
+			expectErr: true,
+		},
+		{
+			name:         "RootPrefix_WipesEntireNamespace",
+			prefix:       "/",
+			expectedKeys: []string{"p=/*"},
+		},
+		{
+			name:         "DirectoryPrefix_WithTrailingSlash",
+			prefix:       "/assets/",
+			expectedKeys: []string{"p=/assets/*"},
+		},
+		{
+			name:         "RawStringPrefix_WithoutTrailingSlash",
+			prefix:       "/assets",
+			expectedKeys: []string{"p=/assets*"},
+		},
+		{
+			name:         "HostScopedPrefix_WithoutProtocol",
+			prefix:       "http://example.com/assets/",
+			expectedKeys: []string{"p=/assets/*:h=example.com:*"},
+		},
+		{
+			name:         "HostScopedPrefix_WithProtocol",
+			prefix:       "https://example.com/assets/",
+			cfg:          CacheKey{IncludeProtocol: true},
+			expectedKeys: []string{"p=/assets/*:h=example.com:s=https:*"},
+		},
+		{
+			name:         "CaseInsensitive_Prefix",
+			prefix:       "/Assets/Images/",
+			cfg:          CacheKey{CaseInsensitivePath: true},
+			expectedKeys: []string{"p=/assets/images/*"},
+		},
+		{
+			name:         "ExcludeHost_PrefixIgnoresHost",
+			prefix:       "https://example.com/assets/",
+			cfg:          CacheKey{ExcludeHost: true},
+			expectedKeys: []string{"p=/assets/*"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keys, err := buildPurgePrefixOperation(tt.prefix, &tt.cfg)
+			if tt.expectErr {
+				if err == nil {
+					t.Errorf("expected error for prefix %q, got nil", tt.prefix)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for prefix %q: %v", tt.prefix, err)
+			}
+			if !slices.Equal(keys, tt.expectedKeys) {
+				t.Errorf("keys mismatch:\n got:  %v\n want: %v", keys, tt.expectedKeys)
+			}
+		})
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PurgePrefix Integration Test with Titip
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestTitip_PurgePrefix_Integration(t *testing.T) {
+	t.Parallel()
+
+	// Step 1: Initialize Titip with teststore
+	store := teststore.New()
+	titipInst, err := New(
+		WithStorage(store),
+		WithCacheKey(CacheKey{}),
+	)
+	if err != nil {
+		t.Fatalf("failed to initialize Titip: %v", err)
+	}
+	defer func() { _ = titipInst.Close(context.Background()) }()
+
+	originCalls := atomic.Int64{}
+	handler := titipInst.testHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write([]byte("origin body: " + r.URL.Path))
+	}))
+
+	seedURL := func(urlStr string) {
+		req := httptest.NewRequest(http.MethodGet, urlStr, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+
+	isCached := func(urlStr string) bool {
+		callsBefore := originCalls.Load()
+		req := httptest.NewRequest(http.MethodGet, urlStr, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return originCalls.Load() == callsBefore // no origin call = cache HIT
+	}
+
+	// Seed multiple URLs
+	seedURL("http://example.com/assets/css/style.css")
+	seedURL("http://example.com/assets/img/logo.png")
+	seedURL("http://example.com/assets-v2/app.js")
+	seedURL("http://example.com/api/products")
+
+	// Verify all 4 are cached
+	if !isCached("http://example.com/assets/css/style.css") ||
+		!isCached("http://example.com/assets/img/logo.png") ||
+		!isCached("http://example.com/assets-v2/app.js") ||
+		!isCached("http://example.com/api/products") {
+		t.Fatalf("failed to prime cache")
+	}
+
+	// Step 2: Purge with trailing slash "/assets/"
+	// Must purge /assets/css/style.css and /assets/img/logo.png
+	// Must NOT purge /assets-v2/app.js or /api/products
+	n, err := titipInst.PurgePrefix(context.Background(), "/assets/")
+	if err != nil {
+		t.Fatalf("PurgePrefix(/assets/) failed: %v", err)
+	}
+	if n < 2 {
+		t.Errorf("expected at least 2 purged items, got %d", n)
+	}
+
+	if isCached("http://example.com/assets/css/style.css") {
+		t.Errorf("/assets/css/style.css should have been purged")
+	}
+	if isCached("http://example.com/assets/img/logo.png") {
+		t.Errorf("/assets/img/logo.png should have been purged")
+	}
+	if !isCached("http://example.com/assets-v2/app.js") {
+		t.Errorf("/assets-v2/app.js should NOT have been purged by /assets/")
+	}
+	if !isCached("http://example.com/api/products") {
+		t.Errorf("/api/products should NOT have been purged")
+	}
+
+	// Step 3: Purge without trailing slash "/assets"
+	// Must purge /assets-v2/app.js (Cloudflare-style raw string prefix)
+	n, err = titipInst.PurgePrefix(context.Background(), "/assets")
+	if err != nil {
+		t.Fatalf("PurgePrefix(/assets) failed: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("expected at least 1 purged item, got %d", n)
+	}
+	if isCached("http://example.com/assets-v2/app.js") {
+		t.Errorf("/assets-v2/app.js should have been purged by raw prefix /assets")
+	}
+
+	// Step 4: Global soft-purge with "/"
+	// Re-seed /api/products
+	seedURL("http://example.com/api/products")
+	if !isCached("http://example.com/api/products") {
+		t.Fatalf("failed to re-prime /api/products")
+	}
+
+	n, err = titipInst.PurgePrefix(context.Background(), "/", WithSoftPurge())
+	if err != nil {
+		t.Fatalf("PurgePrefix(/, WithSoftPurge) failed: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("expected at least 1 soft-purged item, got %d", n)
+	}
+}
+
+func TestTitip_Purge_LiteralAsterisk_DoesNotPurgeSiblings(t *testing.T) {
+	t.Parallel()
+
+	store := teststore.New()
+	titipInst, err := New(
+		WithStorage(store),
+		WithCacheKey(CacheKey{}),
+	)
+	if err != nil {
+		t.Fatalf("failed to initialize Titip: %v", err)
+	}
+	defer func() { _ = titipInst.Close(context.Background()) }()
+
+	originCalls := atomic.Int64{}
+	handler := titipInst.testHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write([]byte("origin body: " + r.URL.Path))
+	}))
+
+	seedURL := func(urlStr string) {
+		req := httptest.NewRequest(http.MethodGet, urlStr, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+
+	isCached := func(urlStr string) bool {
+		callsBefore := originCalls.Load()
+		req := httptest.NewRequest(http.MethodGet, urlStr, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return originCalls.Load() == callsBefore
+	}
+
+	seedURL("http://example.com/math/2*2")
+	seedURL("http://example.com/math/2times2")
+	seedURL("http://example.com/math/2lesson2")
+
+	if !isCached("http://example.com/math/2*2") ||
+		!isCached("http://example.com/math/2times2") ||
+		!isCached("http://example.com/math/2lesson2") {
+		t.Fatalf("failed to prime cache")
+	}
+
+	// Purge exact /math/2*2 - must NOT match 2times2 or 2lesson2 because * is quoted as \*
+	n, err := titipInst.Purge(context.Background(), "/math/2*2")
+	if err != nil {
+		t.Fatalf("Purge(/math/2*2) failed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected exactly 1 purged item, got %d", n)
+	}
+
+	if isCached("http://example.com/math/2*2") {
+		t.Errorf("/math/2*2 should have been purged")
+	}
+	if !isCached("http://example.com/math/2times2") {
+		t.Errorf("/math/2times2 was accidentally purged by literal asterisk!")
+	}
+	if !isCached("http://example.com/math/2lesson2") {
+		t.Errorf("/math/2lesson2 was accidentally purged by literal asterisk!")
+	}
+}
+
+func TestTitip_PurgePrefix_Multilingual(t *testing.T) {
+	t.Parallel()
+
+	store := teststore.New()
+	titipInst, err := New(
+		WithStorage(store),
+		WithCacheKey(CacheKey{}),
+	)
+	if err != nil {
+		t.Fatalf("failed to initialize Titip: %v", err)
+	}
+	defer func() { _ = titipInst.Close(context.Background()) }()
+
+	originCalls := atomic.Int64{}
+	handler := titipInst.testHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write([]byte("origin body: " + r.URL.Path))
+	}))
+
+	seedURL := func(urlStr string) {
+		req := httptest.NewRequest(http.MethodGet, urlStr, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+
+	isCached := func(urlStr string) bool {
+		callsBefore := originCalls.Load()
+		req := httptest.NewRequest(http.MethodGet, urlStr, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return originCalls.Load() == callsBefore
+	}
+
+	seedURL("http://example.com/你好/世界")
+	seedURL("http://example.com/你好/朋友")
+	seedURL("http://example.com/欢迎/世界")
+
+	if !isCached("http://example.com/你好/世界") ||
+		!isCached("http://example.com/你好/朋友") ||
+		!isCached("http://example.com/欢迎/世界") {
+		t.Fatalf("failed to prime multilingual cache")
+	}
+
+	// PurgePrefix on /你好/ directory
+	n, err := titipInst.PurgePrefix(context.Background(), "/你好/")
+	if err != nil {
+		t.Fatalf("PurgePrefix(/你好/) failed: %v", err)
+	}
+	if n < 2 {
+		t.Errorf("expected at least 2 purged multilingual items, got %d", n)
+	}
+
+	if isCached("http://example.com/你好/世界") {
+		t.Errorf("/你好/世界 should have been purged")
+	}
+	if isCached("http://example.com/你好/朋友") {
+		t.Errorf("/你好/朋友 should have been purged")
+	}
+	if !isCached("http://example.com/欢迎/世界") {
+		t.Errorf("/欢迎/世界 should NOT have been purged")
+	}
+}
+
+func TestTitip_PurgePrefix_Errors(t *testing.T) {
+	t.Parallel()
+
+	store := teststore.New()
+	titipInst, err := New(WithStorage(store))
+	if err != nil {
+		t.Fatalf("failed to initialize Titip: %v", err)
+	}
+	defer func() { _ = titipInst.Close(context.Background()) }()
+
+	// Empty prefix must return error
+	_, err = titipInst.PurgePrefix(context.Background(), "")
+	if err == nil {
+		t.Errorf("expected error on empty prefix, got nil")
+	}
+
+	// Invalid URL scheme must return error
+	_, err = titipInst.PurgePrefix(context.Background(), "://invalid-prefix")
+	if err == nil {
+		t.Errorf("expected error on invalid prefix, got nil")
 	}
 }

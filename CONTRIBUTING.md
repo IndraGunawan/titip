@@ -56,10 +56,10 @@ To add support for a new storage engine (e.g. Memcached, Dragonfly, Cloudflare K
 
 Create your driver under `storage/<engine>/` and implement the interfaces defined in [`storage/storage.go`](storage/storage.go):
 
-- **Required**: Implement [`storage.Storage`](storage/storage.go) (`GetMeta`, `GetVariant`, `SetVariant`, `Purge`, `PurgeByTag`, `Close`).
-- **Optional Capabilities**:
-  - Implement [`storage.PatternPurger`](storage/storage.go) if your backend supports wildcard/glob key invalidation (e.g. `/assets/*`).
-  - Implement [`storage.AllPurger`](storage/storage.go) if your backend supports total namespace wipeouts within the configured prefix.
+- **Required**: Implement [`storage.Storage`](storage/storage.go) interface:
+  - `GetMeta`, `GetVariant`, `SetVariant` (reading & writing variants)
+  - `Purge`, `PurgeByPattern`, `PurgeByTag`, `PurgeAll` (complete invalidation lifecycle)
+  - `Close` (clean shutdown)
 
 > [!TIP]
 > See [`storage/redis/`](storage/redis/) as our existing reference implementation, which demonstrates atomic hash variant storage, dynamic TTL extension, and soft-purge timestamping with `rueidis`.
@@ -259,17 +259,20 @@ Every feature, adapter, or storage driver must pass our automated quality suite 
 Storage drivers (such as `storage/redis`) require a local Redis instance for integration and concurrency tests:
 
 ```bash
-make redis-up    # Starts Redis 8 container via docker compose up -d
-make redis-down  # Stops Redis container
+docker compose up -d    # Starts Redis 8 container
+docker compose down     # Stops Redis container
 ```
 
-### Workspace Test Commands
+### Workspace Quality Commands
 
 ```bash
 make test        # Run unit tests across all workspace modules
 make race        # Run race detection (-race -count=100 -parallel=8)
 make bench       # Run memory allocation benchmarks (-benchmem -bench=.)
 make vet         # Run go vet across all workspace modules
+make fmt         # Format and simplify Go code across workspace
+make lint        # Run golangci-lint across all workspace modules
+make fix         # Run go fix across all workspace modules
 ```
 
 To run tests in a single submodule:
@@ -289,18 +292,9 @@ golangci-lint run ./...
 
 ## Submitting a Pull Request
 
-1. **Branch Naming**: Use descriptive branch names (e.g. `feat/memcached-storage`, `fix/cache-key-normalization`, `feat/chi-adapter`).
-2. **Conventional Commits**:
-   - Use plain types without scopes (e.g. `feat:`, `fix:`, `refactor:`, `test:`, `bench:`, `chore:`, `docs:`).
-   - Examples:
-     - `feat: add Memcached storage driver`
-     - `feat: add Chi framework adapter`
-     - `fix: resolve ESI quote parsing edge case`
-     - `test: add race condition test for dynamic TTL extension`
-     - `docs: update contributing guide`
-3. **Workspace Integrity & Tidy**:
+1. **Workspace Integrity & Tidy**:
    - Run `go mod tidy` in every submodule you created or modified.
    - Run `go work sync` at the workspace root to ensure clean dependency graphs.
    - Confirm there are no uncommitted diffs (`git status`). CI automatically checks `git diff --exit-code` after `go mod tidy`.
-4. **Module Documentation & Tests**:
+1. **Module Documentation & Tests**:
    - When adding a new storage driver or adapter, provide comprehensive documentation (`README.md`) and unit/concurrency tests inside the module's own directory (`adapter/<name>/` or `storage/<name>/`). Do not create new directories under `examples/` without prior discussion.

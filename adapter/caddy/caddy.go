@@ -148,14 +148,14 @@ type ServerTimingConfig struct {
 
 // Handler implements the Caddy HTTP middleware for Titip caching.
 type Handler struct {
-	StorageRaw                    json.RawMessage `json:"storage,omitempty" caddy:"namespace=titip.storage inline_key=name"`
-	CacheStatus                   string          `json:"cache_status,omitempty"`
-	RespectClientCacheControl     *bool           `json:"respect_client_cache_control,omitempty"`
-	AutoInvalidateMutatingMethods *bool           `json:"auto_invalidate_mutating_methods,omitempty"`
-	ConvertHeadToGet              *bool           `json:"convert_head_to_get,omitempty"`
-	BackgroundFetchTimeout        string          `json:"background_fetch_timeout,omitempty"`
-	StorageTimeout                string          `json:"storage_timeout,omitempty"`
-	TagHeader                     string          `json:"tag_header,omitempty"`
+	StorageRaw                    json.RawMessage     `json:"storage,omitempty" caddy:"namespace=titip.storage inline_key=name"`
+	CacheStatus                   string              `json:"cache_status,omitempty"`
+	RespectClientCacheControl     *bool               `json:"respect_client_cache_control,omitempty"`
+	AutoInvalidateMutatingMethods *bool               `json:"auto_invalidate_mutating_methods,omitempty"`
+	ConvertHeadToGet              *bool               `json:"convert_head_to_get,omitempty"`
+	BackgroundFetchTimeout        string              `json:"background_fetch_timeout,omitempty"`
+	StorageTimeout                string              `json:"storage_timeout,omitempty"`
+	TagHeader                     string              `json:"tag_header,omitempty"`
 	CacheKey                      *CacheKey           `json:"cache_key,omitempty"`
 	ESI                           *ESIConfig          `json:"esi,omitempty"`
 	UseRewrittenURL               *bool               `json:"use_rewritten_url,omitempty"`

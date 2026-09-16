@@ -1,107 +1,60 @@
 package titip
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 )
 
-// purgeMode identifies how a purge target should be executed.
-type purgeMode int
-
-const (
-	// purgeModeExact: exact primary key match (path + specific query string).
-	purgeModeExact purgeMode = iota
-
-	// purgeModePathAllVariants: pattern match — purge a path and ALL its query variations.
-	purgeModePathAllVariants
-
-	// purgeModeWildcard: pattern match — purge all paths under a directory prefix.
-	purgeModeWildcard
-)
-
-// purgeTarget holds a parsed purge request.
-type purgeTarget struct {
-	mode   purgeMode
-	path   string // cleaned path (e.g. "/api/products")
-	host   string // optional host scope (lowercased, default port stripped)
-	scheme string // optional scheme scope ("http" or "https"); empty = all
-	query  string // percent-encoded sorted query string for exact mode (e.g. "id%3D42%26page%3D1")
-}
-
-// parsePurgeTarget parses a raw purge target string into a structured purgeTarget.
+// buildPurgeOperation parses a purge target URL/path and returns whether the target
+// represents an exact O(1) primary key or pattern(s) for cache invalidation.
 //
-// Supported formats:
-//   - "/api/products"              → path purge (all query variants)
-//   - "/api/products?id=42"        → exact match (specific query variant only)
-//   - "/assets/*"                  → wildcard directory purge
-//   - "https://example.com/api"    → host-scoped path purge (all query variants)
-//
-// parsePurgeTarget parses a raw purge target string into a structured purgeTarget,
-// respecting the active CacheKey rules (query filters, sorting, trailing slashes, host exclusion).
-func parsePurgeTarget(target string, cfg *CacheKey) (*purgeTarget, error) {
+// Target formats:
+//   - "/api/products"                   → isExact=false, keys=["p=/api/products:*"]
+//   - "https://example.com/api/products"→ isExact=false, keys=["p=/api/products:h=example.com:*"] (or with scheme if IncludeProtocol)
+//   - "https://example.com/api?id=42"   → isExact=true,  keys=["p=/api:h=example.com:qs=id=42:m=GET:"]
+//   - "/api?id=42" (ExcludeHost: true)  → isExact=true,  keys=["p=/api:qs=id=42:m=GET:"]
+//   - "/api?id=42" (ExcludeHost: false) → isExact=false, keys=["p=/api:h=*:qs=id=42:*"]
+//   - "/"                               → isExact=false, keys=["p=/:*"] (homepage only)
+func buildPurgeOperation(target string, cfg *CacheKey) (isExact bool, keys []string, err error) {
 	if target == "" {
-		return nil, nil
+		return false, nil, nil
 	}
 	if cfg == nil {
 		cfg = &CacheKey{}
 	}
 
-	pt := &purgeTarget{}
-
-	// Detect wildcard directory purge before URL parsing (the "/*" suffix).
-	isWildcard := strings.HasSuffix(target, "/*") || target == "/"
-
-	// Attempt URL parsing.
+	// Parse URL
 	var parsed *url.URL
-	var err error
+	var scheme string
 	if strings.HasPrefix(target, "/") {
-		// Pure path (possibly with query or wildcard).
 		parsed, err = url.Parse(target)
 		if err != nil {
-			return nil, err
+			return false, nil, err
 		}
 	} else {
-		// May have a host or scheme. Try adding a scheme if missing.
-		if !strings.Contains(target, "://") {
-			parsed, err = url.Parse("http://" + target)
-		} else {
-			parsed, err = url.Parse(target)
-		}
-		if err != nil {
-			return nil, err
-		}
-		// Only capture scheme when it was explicitly provided in original target.
 		if strings.HasPrefix(target, "https://") {
-			pt.scheme = "https"
+			scheme = "https"
 		} else if strings.HasPrefix(target, "http://") {
-			pt.scheme = "http"
+			scheme = "http"
 		}
-		pt.host = normalizeHost(parsed.Host, pt.scheme)
+		rawTarget := target
+		if !strings.Contains(target, "://") {
+			rawTarget = "http://" + target
+		}
+		parsed, err = url.Parse(rawTarget)
+		if err != nil {
+			return false, nil, err
+		}
 	}
 
-	// Clean the path.
-	rawPath := parsed.EscapedPath()
+	// Clean path using parsed.Path (raw unescaped) to avoid double-escaping
+	rawPath := parsed.Path
 	if rawPath == "" {
 		rawPath = "/"
 	}
-
-	if isWildcard {
-		// Strip trailing "/*" or "/" to get the directory prefix.
-		dir := strings.TrimSuffix(rawPath, "/*")
-		dir = strings.TrimSuffix(dir, "/")
-		if dir == "" {
-			dir = "/"
-		}
-		if cfg.CaseInsensitivePath {
-			dir = strings.ToLower(dir)
-		}
-		pt.path = path.Clean(dir)
-		pt.mode = purgeModeWildcard
-		return pt, nil
-	}
-
 	cleanedPath := path.Clean(rawPath)
 	if cleanedPath == "." {
 		cleanedPath = "/"
@@ -111,10 +64,18 @@ func parsePurgeTarget(target string, cfg *CacheKey) (*purgeTarget, error) {
 	if cfg.CaseInsensitivePath {
 		cleanedPath = strings.ToLower(cleanedPath)
 	}
-	pt.path = cleanedPath
 
-	if !cfg.ExcludeQueryString && parsed.RawQuery != "" {
-		// Exact query variant — build filtered/sorted query string matching CacheKey.
+	host := normalizeHost(parsed.Host, scheme)
+
+	buf := getBuffer()
+	defer putBuffer(buf)
+
+	buf.WriteString("p=")
+	writeEscapedPath(buf, cleanedPath)
+
+	// 1. Query String handling
+	hasQuery := !cfg.ExcludeQueryString && parsed.RawQuery != ""
+	if hasQuery {
 		fakeURL, _ := url.Parse("http://x?" + parsed.RawQuery)
 		fakeReq := &http.Request{
 			Method: http.MethodGet,
@@ -123,130 +84,141 @@ func parsePurgeTarget(target string, cfg *CacheKey) (*purgeTarget, error) {
 		}
 		qs := buildQueryString(fakeReq, cfg)
 		if qs != "" {
-			pt.query = qs
-			pt.mode = purgeModeExact
-			return pt, nil
-		}
-	}
+			buf.WriteByte(':')
+			// If host is known OR ExcludeHost is true, it is an exact primary key!
+			if cfg.ExcludeHost || host != "" {
+				if !cfg.ExcludeHost && host != "" {
+					buf.WriteString("h=")
+					buf.WriteString(host)
+					buf.WriteByte(':')
+				}
+				if cfg.IncludeProtocol && scheme != "" {
+					buf.WriteString("s=")
+					buf.WriteString(scheme)
+					buf.WriteByte(':')
+				}
+				buf.WriteString("qs=")
+				buf.WriteString(qs)
 
-	// No query (or empty after filtering/exclusion) → match all variants for this path.
-	pt.mode = purgeModePathAllVariants
-	return pt, nil
-}
+				if len(cfg.IncludedHeaderNames) == 0 && len(cfg.IncludedCookieNames) == 0 {
+					buf.WriteString(":m=GET:")
+					return true, []string{buf.String()}, nil
+				}
 
-// buildPurgePatterns generates the Redis glob patterns for a purge target.
-//
-// Pattern rules:
-//   - Exact mode:            full primary key string (used for direct delete/soft-purge)
-//   - PathAllVariants mode:  "meta:p=<path>[:h=<host>]:m=*"  (optionally with scheme suffix)
-//   - Wildcard mode:         "meta:p=<path>/*"                (prefix match on path segment)
-//
-// When IncludeProtocol is true and no scheme is specified, two patterns are returned
-// (one for http, one for https) to honour the dual-protocol rule.
-func buildPurgePatterns(pt *purgeTarget, cfg *CacheKey) []string {
-	if pt == nil {
-		return nil
-	}
-
-	switch pt.mode {
-	case purgeModeExact:
-		if !cfg.ExcludeHost && pt.host == "" {
-			return buildAllVariantsPurgePatterns(pt, cfg)
-		}
-		return []string{buildExactKey(pt, cfg)}
-
-	case purgeModePathAllVariants:
-		return buildAllVariantsPurgePatterns(pt, cfg)
-
-	case purgeModeWildcard:
-		return buildWildcardPatterns(pt, cfg)
-	}
-	return nil
-}
-
-// buildExactKey constructs the full primary key string for exact-match purging.
-// This matches what generatePrimaryKey would produce for the same request.
-func buildExactKey(pt *purgeTarget, cfg *CacheKey) string {
-	var sb strings.Builder
-	sb.WriteString("p=")
-	sb.WriteString(pt.path)
-	if !cfg.ExcludeHost && pt.host != "" {
-		sb.WriteString(":h=")
-		sb.WriteString(pt.host)
-	}
-	sb.WriteString(":m=GET")
-	if cfg.IncludeProtocol && pt.scheme != "" {
-		sb.WriteString(":s=")
-		sb.WriteString(pt.scheme)
-	}
-	if pt.query != "" {
-		sb.WriteString(":qs=")
-		sb.WriteString(pt.query)
-	}
-	return sb.String()
-}
-
-// buildAllVariantsPurgePatterns returns patterns that match a path and ALL its query/method/scheme variants.
-func buildAllVariantsPurgePatterns(pt *purgeTarget, cfg *CacheKey) []string {
-	base := buildPathHostBase(pt, cfg)
-	qsSuffix := ""
-	if pt.query != "" {
-		qsSuffix = ":qs=" + pt.query + "*"
-	}
-
-	if cfg.IncludeProtocol && pt.scheme == "" {
-		// Dual-protocol rule: emit patterns for both http and https.
-		return []string{
-			base + ":m=*:s=http*" + qsSuffix,
-			base + ":m=*:s=https*" + qsSuffix,
-		}
-	}
-
-	if cfg.IncludeProtocol && pt.scheme != "" {
-		return []string{base + ":m=*:s=" + pt.scheme + "*" + qsSuffix}
-	}
-
-	// Protocol not included in key — wildcard covers method + optional qs/he/ck suffixes.
-	return []string{base + ":m=*" + qsSuffix}
-}
-
-// buildWildcardPatterns returns patterns that match all cached paths under a directory prefix.
-func buildWildcardPatterns(pt *purgeTarget, cfg *CacheKey) []string {
-	prefix := "p=" + pt.path
-	if pt.path != "/" {
-		prefix += "/"
-	}
-
-	if !cfg.ExcludeHost && pt.host != "" {
-		// Host-scoped wildcard.
-		if cfg.IncludeProtocol && pt.scheme == "" {
-			return []string{
-				prefix + "*:h=" + pt.host + ":m=*:s=http*",
-				prefix + "*:h=" + pt.host + ":m=*:s=https*",
+				// If headers or cookies are part of cache key, pattern-match across those variants.
+				buf.WriteString(":*")
+				return false, []string{buf.String()}, nil
 			}
+
+			// Host is unknown and !cfg.ExcludeHost → pattern match across all hosts.
+			// New order: p -> h -> s -> qs -> m
+			buf.WriteString("h=*:")
+			if cfg.IncludeProtocol && scheme != "" {
+				buf.WriteString("s=")
+				buf.WriteString(scheme)
+				buf.WriteByte(':')
+			}
+			buf.WriteString("qs=")
+			buf.WriteString(qs)
+			buf.WriteString(":*")
+			return false, []string{buf.String()}, nil
 		}
-		if cfg.IncludeProtocol && pt.scheme != "" {
-			return []string{prefix + "*:h=" + pt.host + ":m=*:s=" + pt.scheme + "*"}
-		}
-		return []string{prefix + "*:h=" + pt.host + ":m=*"}
 	}
 
-	// No host scope — match all hosts under this path prefix.
-	return []string{prefix + "*"}
+	// 2. Path All Variants (no query or query stripped)
+	buf.WriteByte(':')
+	if !cfg.ExcludeHost && host != "" {
+		buf.WriteString("h=")
+		buf.WriteString(host)
+		buf.WriteByte(':')
+		if cfg.IncludeProtocol && scheme != "" {
+			buf.WriteString("s=")
+			buf.WriteString(scheme)
+			buf.WriteByte(':')
+		}
+		buf.WriteString("*")
+		return false, []string{buf.String()}, nil
+	}
+
+	// Single pattern for all hosts/schemes/methods
+	buf.WriteString("*")
+	return false, []string{buf.String()}, nil
 }
 
-// buildPathHostBase builds the "p=<path>[:h=<host>]" prefix for all-variants patterns.
-func buildPathHostBase(pt *purgeTarget, cfg *CacheKey) string {
-	var sb strings.Builder
-	sb.WriteString("p=")
-	sb.WriteString(pt.path)
-	if !cfg.ExcludeHost {
-		if pt.host != "" {
-			sb.WriteString(":h=")
-			sb.WriteString(pt.host)
-		} else {
-			sb.WriteString(":h=*")
+// buildPurgePrefixOperation parses a path/URL prefix and generates a Cloudflare-style prefix pattern.
+//
+// Prefix behavior:
+//   - "/assets/" (with trailing slash)    → matches "p=/assets/*" (directory only, does not match "/assets-v2")
+//   - "/assets"  (without trailing slash) → matches "p=/assets*"  (raw string prefix, matches "/assets", "/assets/...", and "/assets-v2")
+//   - "/"                                 → matches "p=/*"        (matches entire cache; supports both hard & soft purge)
+//   - ""                                  → error: empty prefix not allowed
+func buildPurgePrefixOperation(prefix string, cfg *CacheKey) ([]string, error) {
+	if prefix == "" {
+		return nil, fmt.Errorf("titip: PurgePrefix does not accept empty prefix")
+	}
+	if cfg == nil {
+		cfg = &CacheKey{}
+	}
+
+	var parsed *url.URL
+	var scheme string
+	var err error
+	if strings.HasPrefix(prefix, "/") {
+		parsed, err = url.Parse(prefix)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if strings.HasPrefix(prefix, "https://") {
+			scheme = "https"
+		} else if strings.HasPrefix(prefix, "http://") {
+			scheme = "http"
+		}
+		rawPrefix := prefix
+		if !strings.Contains(prefix, "://") {
+			rawPrefix = "http://" + prefix
+		}
+		parsed, err = url.Parse(rawPrefix)
+		if err != nil {
+			return nil, err
 		}
 	}
-	return sb.String()
+
+	rawPath := parsed.Path
+	if rawPath == "" {
+		rawPath = "/"
+	}
+	cleanedPath := path.Clean(rawPath)
+	if cleanedPath == "." {
+		cleanedPath = "/"
+	} else if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(cleanedPath, "/") {
+		cleanedPath += "/"
+	}
+	if cfg.CaseInsensitivePath {
+		cleanedPath = strings.ToLower(cleanedPath)
+	}
+
+	host := normalizeHost(parsed.Host, scheme)
+
+	buf := getBuffer()
+	defer putBuffer(buf)
+
+	buf.WriteString("p=")
+	writeEscapedPath(buf, cleanedPath)
+	buf.WriteString("*")
+
+	if !cfg.ExcludeHost && host != "" {
+		buf.WriteString(":h=")
+		buf.WriteString(host)
+		buf.WriteByte(':')
+		if cfg.IncludeProtocol && scheme != "" {
+			buf.WriteString("s=")
+			buf.WriteString(scheme)
+			buf.WriteByte(':')
+		}
+		buf.WriteString("*")
+		return []string{buf.String()}, nil
+	}
+
+	return []string{buf.String()}, nil
 }

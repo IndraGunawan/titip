@@ -198,18 +198,18 @@ func decompressLZ4(src []byte, dst *bytes.Buffer) error {
 // requestContext holds request-scoped execution state across state transitions.
 // Recycled via sync.Pool to maintain zero allocations on hot hit paths.
 type requestContext struct {
-	w              http.ResponseWriter
-	r              *http.Request
-	next           http.Handler
-	reqCC          *cacheobject.RequestCacheDirectives
-	primaryKey     string
-	variantKey     string
-	meta           *pb.CacheMetadata
-	isSoftPurged   bool
-	varInfo        *pb.VariantInfo
-	freshness   freshnessInfo
-	nowNano     int64 // nowNano is the timestamp evaluated during freshness check for RFC 9111 Age calculation.
-	isVaryMiss  bool
+	w            http.ResponseWriter
+	r            *http.Request
+	next         http.Handler
+	reqCC        *cacheobject.RequestCacheDirectives
+	primaryKey   string
+	variantKey   string
+	meta         *pb.CacheMetadata
+	isSoftPurged bool
+	varInfo      *pb.VariantInfo
+	freshness    freshnessInfo
+	nowNano      int64 // nowNano is the timestamp evaluated during freshness check for RFC 9111 Age calculation.
+	isVaryMiss   bool
 
 	// serverTiming indicates whether Server-Timing header generation is active for this request.
 	serverTiming bool
