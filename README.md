@@ -308,17 +308,17 @@ cache, err := titip.New(
 
 | Option Builder | Default | Description |
 | :--- | :--- | :--- |
-| `esi.WithHeaderRequired(bool)` | `false` | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
+| `esi.WithHeaderRequired()` | *(disabled)* | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
 | `esi.WithInternalFetcher(fn)` | `nil` | Custom hook for in-memory virtual subrequests (e.g. `esi.HandlerFetcher(r)`). |
 | `esi.WithMaxDepth(uint32)` | `3` | Maximum nesting depth for recursive ESI includes. |
 | `esi.WithMaxTimeout(duration)` | `30s` | Maximum time budget per fragment include fetch. |
 | `esi.WithMaxConcurrentRequests(int)` | `8` | Maximum concurrent fetch goroutines per document. |
-| `esi.WithAllowPrivateIPs(bool)` | `false` | SSRF guard: when false (default), blocks RFC 1918 / loopback / cloud metadata CIDRs. |
+| `esi.WithAllowPrivateIPs()` | *(disabled)* | SSRF guard: allows requests to private, loopback, and link-local IP addresses. |
 | `esi.WithAllowedHosts(...string)` | `[]` | List of allowed external hosts for domain includes (empty allows all public hosts). |
-| `esi.WithAllowPrivateIPsForAllowedHosts(bool)` | `false` | Permits private IPs specifically for explicitly allowed hosts. |
+| `esi.WithAllowPrivateIPsForAllowedHosts()` | *(disabled)* | Permits private IPs specifically for explicitly allowed hosts. |
 | `esi.WithMaxResponseSize(int64)` | `10MB` | Maximum allowed fragment body size in bytes. |
-| `esi.WithDisableForwardCookies(bool)` | `false` | When false (default), forwards `Set-Cookie` headers from fragments to the client. |
-| `esi.WithPreserveETag(bool)` | `false` | When true, weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. When false (default), strips `ETag`/`Last-Modified` downstream to guarantee fresh fragment execution. |
+| `esi.WithoutForwardCookies()` | *(forwarding enabled)* | Disables forwarding `Set-Cookie` headers from fragment responses to the client. |
+| `esi.WithPreserveETag()` | *(disabled)* | Weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. By default, strips `ETag`/`Last-Modified` downstream to guarantee fresh fragment execution. |
 | `esi.WithIncludeErrorMarker(string)` | `""` | HTML placeholder rendered on unhandled fetch errors. |
 
 ## Observability & Metrics

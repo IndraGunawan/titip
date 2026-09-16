@@ -45,10 +45,12 @@ type config struct {
 // Option configures ESI processor parameters.
 type Option func(*config)
 
-// WithHeaderRequired configures whether ESI is processed only when Surrogate-Control is present.
-func WithHeaderRequired(required bool) Option {
+// WithHeaderRequired requires origin responses to explicitly advertise ESI capability
+// via Surrogate-Control: content="ESI/1.0" before fragment tags are processed.
+// By default, ESI tags are processed unconditionally.
+func WithHeaderRequired() Option {
 	return func(c *config) {
-		c.headerRequired = required
+		c.headerRequired = true
 	}
 }
 
@@ -86,10 +88,11 @@ func WithMaxConcurrentRequests(limit int) Option {
 	}
 }
 
-// WithAllowPrivateIPs configures whether SSRF blocking permits dials to private/loopback CIDRs (default: false = blocked).
-func WithAllowPrivateIPs(allow bool) Option {
+// WithAllowPrivateIPs permits external include fetches to dial private, loopback, and link-local CIDRs.
+// By default, SSRF guards block all private network addresses.
+func WithAllowPrivateIPs() Option {
 	return func(c *config) {
-		c.allowPrivateIPs = allow
+		c.allowPrivateIPs = true
 	}
 }
 
@@ -101,9 +104,9 @@ func WithAllowedHosts(hosts ...string) Option {
 }
 
 // WithAllowPrivateIPsForAllowedHosts permits private IPs specifically for explicitly allowed hosts.
-func WithAllowPrivateIPsForAllowedHosts(allow bool) Option {
+func WithAllowPrivateIPsForAllowedHosts() Option {
 	return func(c *config) {
-		c.allowPrivateIPsForAllowedHosts = allow
+		c.allowPrivateIPsForAllowedHosts = true
 	}
 }
 
@@ -116,10 +119,11 @@ func WithMaxResponseSize(size int64) Option {
 	}
 }
 
-// WithDisableForwardCookies configures whether Set-Cookie headers from subrequests are forwarded to the client (default: false = forwarded).
-func WithDisableForwardCookies(disable bool) Option {
+// WithoutForwardCookies disables forwarding Set-Cookie headers from fragment subrequests to downstream clients.
+// By default, fragment cookies are forwarded.
+func WithoutForwardCookies() Option {
 	return func(c *config) {
-		c.disableForwardCookies = disable
+		c.disableForwardCookies = true
 	}
 }
 
@@ -130,11 +134,11 @@ func WithIncludeErrorMarker(marker string) Option {
 	}
 }
 
-// WithPreserveETag configures whether downstream ETag (weakened) and Last-Modified are preserved on ESI documents
-// (default: false = headers stripped, downstream 304 bypassed).
-func WithPreserveETag(preserve bool) Option {
+// WithPreserveETag preserves downstream ETag (weakened to W/"...") and Last-Modified on ESI documents.
+// By default, ETag and Last-Modified are stripped to guarantee fresh dynamic fragment evaluation.
+func WithPreserveETag() Option {
 	return func(c *config) {
-		c.preserveETag = preserve
+		c.preserveETag = true
 	}
 }
 

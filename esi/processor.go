@@ -254,7 +254,7 @@ func (p *Processor) AddSurrogateCapability(h http.Header, deviceToken string) {
 }
 
 // CanProcess reports whether the response headers satisfy ESI processing criteria.
-// When WithHeaderRequired is false (default), it returns true; otherwise it verifies
+// By default, it returns true; when WithHeaderRequired() is configured, it verifies
 // that Surrogate-Control contains "ESI/1.0".
 func (p *Processor) CanProcess(h http.Header) bool {
 	if !p.config.headerRequired {

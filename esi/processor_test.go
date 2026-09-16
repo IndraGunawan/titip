@@ -66,7 +66,7 @@ func runDualFetcher(t *testing.T, mux *http.ServeMux, fn func(t *testing.T, proc
 		defer ts.Close()
 		proc := NewProcessor(
 			WithMaxTimeout(5*time.Second),
-			WithAllowPrivateIPs(true),
+			WithAllowPrivateIPs(),
 		)
 		fn(t, proc, ts.URL)
 	})
@@ -136,7 +136,7 @@ func TestProcessor_OutboundHTTP(t *testing.T) {
 
 	proc := NewProcessor(
 		WithMaxTimeout(5*time.Second),
-		WithAllowPrivateIPs(true), // test server runs on loopback
+		WithAllowPrivateIPs(), // test server runs on loopback
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/page", nil)
@@ -174,7 +174,7 @@ func TestProcessor_OutboundHTTP_RelativePath(t *testing.T) {
 		}
 
 		proc := NewProcessor(
-			WithAllowPrivateIPs(true), // test server runs on loopback
+			WithAllowPrivateIPs(), // test server runs on loopback
 			WithMaxTimeout(5*time.Second),
 		)
 
@@ -224,7 +224,7 @@ func TestProcessor_OutboundHTTP_RelativePath(t *testing.T) {
 
 		procTLS := NewProcessor(
 			WithHTTPClient(tsTLS.Client()),
-			WithAllowPrivateIPs(true),
+			WithAllowPrivateIPs(),
 			WithMaxTimeout(5*time.Second),
 		)
 
@@ -298,8 +298,7 @@ func TestProcessor_MaxRecursionDepth(t *testing.T) {
 
 func TestProcessor_SSRFBlocked(t *testing.T) {
 	proc := NewProcessor(
-		WithAllowPrivateIPs(false), // SSRF protection active
-		WithMaxTimeout(1*time.Second),
+		WithMaxTimeout(1 * time.Second),
 	)
 
 	got, _ := processHTML(t, proc, `<div><esi:include src="http://127.0.0.1:9999/secret" onerror="continue" /></div>`, "http://example.com/")
@@ -334,7 +333,7 @@ func TestProcessor_FallbackToOutboundHTTPOn404(t *testing.T) {
 	emptyMux := http.NewServeMux()
 
 	proc := NewProcessor(
-		WithAllowPrivateIPs(true),
+		WithAllowPrivateIPs(),
 		WithInternalFetcher(HandlerFetcher(emptyMux)),
 	)
 
@@ -487,7 +486,7 @@ func TestProcessor_CanProcess(t *testing.T) {
 	}
 
 	procDefault := NewProcessor()
-	procRequired := NewProcessor(WithHeaderRequired(true))
+	procRequired := NewProcessor(WithHeaderRequired())
 
 	for _, tt := range tests {
 		if !procDefault.CanProcess(tt.header) {
@@ -586,7 +585,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 	})
 
 	t.Run("PreserveETag true weakens strong ETag and keeps weak and LastModified", func(t *testing.T) {
-		p := NewProcessor(WithPreserveETag(true))
+		p := NewProcessor(WithPreserveETag())
 
 		h1 := newHeader("ESI/1.0", `"strong-456"`, "Wed, 21 Oct 2015 07:28:00 GMT")
 		p.ReconcileHeaders(h1, nil)
@@ -674,7 +673,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 
 		// 2. PreserveETag = true
 		resp2 := parseWire()
-		NewProcessor(WithPreserveETag(true)).ReconcileHeaders(resp2.Header, res)
+		NewProcessor(WithPreserveETag()).ReconcileHeaders(resp2.Header, res)
 		if got := resp2.Header.Get("ETag"); got != `W/"origin-wire-etag"` {
 			t.Errorf("expected weakened ETag, got %q", got)
 		}

@@ -826,8 +826,8 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	if src == nil {
 		return nil
 	}
-	if src.HeaderRequired != nil {
-		*opts = append(*opts, esi.WithHeaderRequired(*src.HeaderRequired))
+	if src.HeaderRequired != nil && *src.HeaderRequired {
+		*opts = append(*opts, esi.WithHeaderRequired())
 	}
 	if src.MaxDepth != nil {
 		*opts = append(*opts, esi.WithMaxDepth(*src.MaxDepth))
@@ -842,14 +842,14 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	if src.MaxConcurrentRequests != nil {
 		*opts = append(*opts, esi.WithMaxConcurrentRequests(*src.MaxConcurrentRequests))
 	}
-	if src.BlockPrivateIPs != nil {
-		*opts = append(*opts, esi.WithAllowPrivateIPs(!*src.BlockPrivateIPs))
+	if src.BlockPrivateIPs != nil && !*src.BlockPrivateIPs {
+		*opts = append(*opts, esi.WithAllowPrivateIPs())
 	}
 	if len(src.AllowedHosts) > 0 {
 		*opts = append(*opts, esi.WithAllowedHosts(src.AllowedHosts...))
 	}
-	if src.AllowPrivateIPsForAllowedHosts != nil {
-		*opts = append(*opts, esi.WithAllowPrivateIPsForAllowedHosts(*src.AllowPrivateIPsForAllowedHosts))
+	if src.AllowPrivateIPsForAllowedHosts != nil && *src.AllowPrivateIPsForAllowedHosts {
+		*opts = append(*opts, esi.WithAllowPrivateIPsForAllowedHosts())
 	}
 	if src.MaxResponseSize != "" {
 		uSize, err := humanize.ParseBytes(src.MaxResponseSize)
@@ -858,11 +858,11 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 		}
 		*opts = append(*opts, esi.WithMaxResponseSize(int64(uSize)))
 	}
-	if src.ForwardFragmentCookies != nil {
-		*opts = append(*opts, esi.WithDisableForwardCookies(!*src.ForwardFragmentCookies))
+	if src.ForwardFragmentCookies != nil && !*src.ForwardFragmentCookies {
+		*opts = append(*opts, esi.WithoutForwardCookies())
 	}
-	if src.PreserveETag != nil {
-		*opts = append(*opts, esi.WithPreserveETag(*src.PreserveETag))
+	if src.PreserveETag != nil && *src.PreserveETag {
+		*opts = append(*opts, esi.WithPreserveETag())
 	}
 	if src.ErrorMarker != "" {
 		*opts = append(*opts, esi.WithIncludeErrorMarker(src.ErrorMarker))
