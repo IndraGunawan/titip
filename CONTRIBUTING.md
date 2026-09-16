@@ -197,15 +197,24 @@ import (
     "net/http"
 
     "github.com/go-chi/chi/v5"
+    "github.com/redis/rueidis"
+
     "github.com/indragunawan/titip"
+    chiadapter "github.com/indragunawan/titip/adapter/chi"
     redisstorage "github.com/indragunawan/titip/storage/redis"
 )
 
 func main() {
     // 1. Initialize a storage driver (e.g. Redis)
-    store, err := redisstorage.New(redisstorage.Config{
-        Addresses: []string{"localhost:6379"},
+    client, err := rueidis.NewClient(rueidis.ClientOption{
+        InitAddress: []string{"localhost:6379"},
     })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    store, err := redisstorage.New(client)
     if err != nil {
         log.Fatal(err)
     }
