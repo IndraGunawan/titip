@@ -1,6 +1,7 @@
 package titip
 
 import (
+	"bytes"
 	"net/http"
 	"net/url"
 	"path"
@@ -93,9 +94,11 @@ type CacheKey struct {
 
 // generatePrimaryKey constructs a canonical, zero-hash primary cache key for a request.
 //
-// Format: meta:p=<path>:h=<host>:m=<method>[:s=<scheme>][:qs=<query>][:he=<headers>][:ck=<cookies>]
+// Format: p=<path>:h=<host>:[s=<scheme>:][qs=<query>:]m=<method>:[he=<headers>:][ck=<cookies>:]
 //
-// Component ordering is fixed: path → host → method → scheme → query → headers → cookies.
+// Every component ends with a colon (:), providing strict segment boundaries for exact
+// matches and collision-free pattern invalidation.
+// Component ordering is fixed: path → host → scheme → query → method → headers → cookies.
 // All component values are percent-encoded where they contain delimiter characters (:, =).
 func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 	if cfg == nil {
@@ -105,13 +108,10 @@ func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 	buf := getBuffer()
 	defer putBuffer(buf)
 
-	// --- p=<path> (always first) ---
+	// --- p=<path>: (always first) ---
 	rawPath := "/"
 	if r.URL != nil && r.URL.Path != "" {
-		rawPath = r.URL.EscapedPath()
-		if rawPath == "" {
-			rawPath = r.URL.Path
-		}
+		rawPath = r.URL.Path
 	}
 	// Clean the path (resolves ../, ./, double-slashes while preserving trailing slash).
 	cleanedPath := path.Clean(rawPath)
@@ -125,9 +125,10 @@ func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 	}
 
 	buf.WriteString("p=")
-	buf.WriteString(cleanedPath)
+	writeEscapedPath(buf, cleanedPath)
+	buf.WriteByte(':')
 
-	// --- h=<host> (always second, unless excluded) ---
+	// --- h=<host>: (always second, unless excluded) ---
 	if !cfg.ExcludeHost {
 		host := r.Host
 		if host == "" && r.URL != nil {
@@ -136,36 +137,40 @@ func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 		if host != "" {
 			host = normalizeHost(host, resolveScheme(r))
 			if host != "" {
-				buf.WriteString(":h=")
+				buf.WriteString("h=")
 				buf.WriteString(host)
+				buf.WriteByte(':')
 			}
 		}
 	}
 
-	// --- m=<method> (always present; HEAD normalises to GET) ---
+	// --- s=<scheme>: (optional, only when IncludeProtocol == true) ---
+	if cfg.IncludeProtocol {
+		buf.WriteString("s=")
+		buf.WriteString(resolveScheme(r))
+		buf.WriteByte(':')
+	}
+
+	// --- qs=<query>: (optional, filtered and sorted) ---
+	if !cfg.ExcludeQueryString && r.URL != nil && r.URL.RawQuery != "" {
+		qs := buildQueryString(r, cfg)
+		if qs != "" {
+			buf.WriteString("qs=")
+			buf.WriteString(qs)
+			buf.WriteByte(':')
+		}
+	}
+
+	// --- m=<method>: (always present; HEAD normalises to GET) ---
 	method := r.Method
 	if method == http.MethodHead || method == "" {
 		method = http.MethodGet
 	}
-	buf.WriteString(":m=")
+	buf.WriteString("m=")
 	buf.WriteString(method)
+	buf.WriteByte(':')
 
-	// --- s=<scheme> (optional, only when IncludeProtocol == true) ---
-	if cfg.IncludeProtocol {
-		buf.WriteString(":s=")
-		buf.WriteString(resolveScheme(r))
-	}
-
-	// --- qs=<query> (optional, filtered and sorted) ---
-	if !cfg.ExcludeQueryString && r.URL != nil && r.URL.RawQuery != "" {
-		qs := buildQueryString(r, cfg)
-		if qs != "" {
-			buf.WriteString(":qs=")
-			buf.WriteString(qs)
-		}
-	}
-
-	// --- he=<headers> (optional, percent-encoded values to prevent delimiter injection) ---
+	// --- he=<headers>: (optional, percent-encoded values to prevent delimiter injection) ---
 	if len(cfg.IncludedHeaderNames) > 0 {
 		headers := slices.Clone(cfg.IncludedHeaderNames)
 		slices.Sort(headers)
@@ -175,7 +180,7 @@ func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 			if len(vals) == 0 {
 				continue
 			}
-			buf.WriteString(":he=")
+			buf.WriteString("he=")
 			buf.WriteString(hLower)
 			buf.WriteByte('~')
 			for i, v := range vals {
@@ -185,10 +190,11 @@ func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 				// Percent-encode values to prevent : and = from colliding with key delimiters.
 				buf.WriteString(url.QueryEscape(strings.TrimSpace(v)))
 			}
+			buf.WriteByte(':')
 		}
 	}
 
-	// --- ck=<cookies> (optional, percent-encoded values) ---
+	// --- ck=<cookies>: (optional, percent-encoded values) ---
 	if len(cfg.IncludedCookieNames) > 0 {
 		cookieNames := slices.Clone(cfg.IncludedCookieNames)
 		slices.Sort(cookieNames)
@@ -197,14 +203,33 @@ func generatePrimaryKey(r *http.Request, cfg *CacheKey) string {
 			if err != nil || cookie == nil || cookie.Value == "" {
 				continue
 			}
-			buf.WriteString(":ck=")
+			buf.WriteString("ck=")
 			buf.WriteString(name)
 			buf.WriteByte('~')
 			buf.WriteString(url.QueryEscape(cookie.Value))
+			buf.WriteByte(':')
 		}
 	}
 
 	return buf.String()
+}
+
+// writeEscapedPath streams a cleaned path into buf, escaping each segment with
+// url.PathEscape while preserving '/' hierarchy and trailing slashes.
+// It guarantees that characters like '*' are percent-encoded as '%2A',
+// ensuring no raw glob metacharacters exist in cache keys.
+func writeEscapedPath(buf *bytes.Buffer, p string) {
+	trimmed := strings.TrimPrefix(p, "/")
+	if trimmed == "" {
+		buf.WriteByte('/')
+		return
+	}
+	for part := range strings.SplitSeq(trimmed, "/") {
+		buf.WriteByte('/')
+		if part != "" {
+			buf.WriteString(url.PathEscape(part))
+		}
+	}
 }
 
 // resolveScheme determines the effective request scheme from TLS state and forwarded headers.

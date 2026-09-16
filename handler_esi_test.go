@@ -2034,4 +2034,3 @@ func TestESI_HeaderRequired_EndToEnd(t *testing.T) {
 		t.Errorf("expected Surrogate-Control to be stripped from client response, got %q", sc)
 	}
 }
-

@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -53,7 +54,7 @@ func TestGeneratePrimaryKey_LabeledFormat(t *testing.T) {
 
 	t.Run("basic and nil config", func(t *testing.T) {
 		req := makeReq("http://example.com/api/items")
-		expected := "p=/api/items:h=example.com:m=GET"
+		expected := "p=/api/items:h=example.com:m=GET:"
 
 		if got := generatePrimaryKey(req, &CacheKey{}); got != expected {
 			t.Errorf("expected %q, got %q", expected, got)
@@ -85,7 +86,7 @@ func TestGeneratePrimaryKey_LabeledFormat(t *testing.T) {
 			t.Fatalf("key must start with 'p=', got: %s", key)
 		}
 
-		labels := []string{"p=", ":h=", ":m=", ":s=", ":qs=", ":he=", ":ck="}
+		labels := []string{"p=", ":h=", ":s=", ":qs=", ":m=", ":he=", ":ck="}
 		prev := 0
 		for _, lbl := range labels {
 			idx := indexOf(key, lbl)
@@ -215,7 +216,7 @@ func TestGeneratePrimaryKey_Path(t *testing.T) {
 		kUpper := generatePrimaryKey(reqUpper, cfg)
 		kLower := generatePrimaryKey(reqLower, cfg)
 
-		expected := "p=/products/shoes/running:h=example.com:m=GET:qs=token=AbC123"
+		expected := "p=/products/shoes/running:h=example.com:qs=token=AbC123:m=GET:"
 		if kUpper != expected {
 			t.Errorf("expected %q, got %q", expected, kUpper)
 		}
@@ -245,13 +246,13 @@ func TestGeneratePrimaryKey_Host(t *testing.T) {
 			name:     "host lowercased",
 			req:      makeReq("http://Example.COM/api"),
 			cfg:      &CacheKey{},
-			expected: "p=/api:h=example.com:m=GET",
+			expected: "p=/api:h=example.com:m=GET:",
 		},
 		{
 			name:     "default HTTP port 80 stripped",
 			req:      makeReq("http://example.com:80/api"),
 			cfg:      &CacheKey{},
-			expected: "p=/api:h=example.com:m=GET",
+			expected: "p=/api:h=example.com:m=GET:",
 		},
 		{
 			name: "default HTTPS port 443 stripped",
@@ -263,19 +264,19 @@ func TestGeneratePrimaryKey_Host(t *testing.T) {
 				Header: http.Header{},
 			},
 			cfg:      &CacheKey{},
-			expected: "p=/api:h=secure.example.com:m=GET",
+			expected: "p=/api:h=secure.example.com:m=GET:",
 		},
 		{
 			name:     "non-default port preserved",
 			req:      makeReq("http://example.com:8080/api"),
 			cfg:      &CacheKey{},
-			expected: "p=/api:h=example.com:8080:m=GET",
+			expected: "p=/api:h=example.com:8080:m=GET:",
 		},
 		{
 			name:     "exclude host",
 			req:      makeReq("http://cdn.example.com/assets/style.css"),
 			cfg:      &CacheKey{ExcludeHost: true},
-			expected: "p=/assets/style.css:m=GET",
+			expected: "p=/assets/style.css:m=GET:",
 		},
 		{
 			name: "fallback to URL.Host when req.Host empty",
@@ -286,7 +287,7 @@ func TestGeneratePrimaryKey_Host(t *testing.T) {
 				Header: http.Header{},
 			},
 			cfg:      &CacheKey{},
-			expected: "p=/path:h=fallback.example.com:m=GET",
+			expected: "p=/path:h=fallback.example.com:m=GET:",
 		},
 	}
 
@@ -438,7 +439,7 @@ func TestGeneratePrimaryKey_Query(t *testing.T) {
 			name:     "exclude all query string",
 			url:      "http://example.com/articles?id=99&debug=true",
 			cfg:      &CacheKey{ExcludeQueryString: true},
-			exactKey: "p=/articles:h=example.com:m=GET",
+			exactKey: "p=/articles:h=example.com:m=GET:",
 			mustNot:  []string{":qs="},
 		},
 		{
@@ -570,6 +571,7 @@ func TestGeneratePrimaryKey_DelimiterInjection(t *testing.T) {
 				if next := indexOf(tail, ":ck="); next != -1 {
 					tail = tail[:next]
 				}
+				tail = strings.TrimSuffix(tail, ":")
 				if contains(tail, ":") || contains(tail, "=") {
 					t.Errorf("raw colon or equals in header value must be encoded: %s", tail)
 				}
@@ -589,6 +591,7 @@ func TestGeneratePrimaryKey_DelimiterInjection(t *testing.T) {
 					t.Fatalf("ck= label missing: %s", key)
 				}
 				tail := key[ckIdx+len(":ck=session~"):]
+				tail = strings.TrimSuffix(tail, ":")
 				if contains(tail, ":") || contains(tail, "=") {
 					t.Errorf("raw colon or equals in cookie value must be encoded: %s", tail)
 				}
@@ -614,6 +617,131 @@ func TestGeneratePrimaryKey_DelimiterInjection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			key := generatePrimaryKey(tc.setupReq(), tc.cfg)
 			tc.check(t, key)
+		})
+	}
+}
+
+func TestGeneratePrimaryKey_ColonsInPathAndQuery(t *testing.T) {
+	t.Parallel()
+
+	t.Run("colon in path segment", func(t *testing.T) {
+		req := makeReq("http://example.com/api/users/id:123")
+		expected := "p=/api/users/id:123:h=example.com:m=GET:"
+		if got := generatePrimaryKey(req, &CacheKey{}); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("colon in query value percent-encoded", func(t *testing.T) {
+		req := makeReq("http://example.com/api?time=12:30:00")
+		expected := "p=/api:h=example.com:qs=time=12%3A30%3A00:m=GET:"
+		if got := generatePrimaryKey(req, &CacheKey{}); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+
+	t.Run("colons in both path and query", func(t *testing.T) {
+		req := makeReq("http://example.com/api/users/id:123?time=12:30:00")
+		expected := "p=/api/users/id:123:h=example.com:qs=time=12%3A30%3A00:m=GET:"
+		if got := generatePrimaryKey(req, &CacheKey{}); got != expected {
+			t.Errorf("expected %q, got %q", expected, got)
+		}
+	})
+}
+
+func TestGeneratePrimaryKey_NonASCII_Multilingual(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		rawURL     string
+		escapedURL string
+		wantKey    string
+	}{
+		{
+			name:       "Chinese path",
+			rawURL:     "http://example.com/你好/世界?lang=中文",
+			escapedURL: "http://example.com/%E4%BD%A0%E5%A5%BD/%E4%B8%96%E7%95%8C?lang=%E4%B8%AD%E6%96%87",
+			wantKey:    "p=/%E4%BD%A0%E5%A5%BD/%E4%B8%96%E7%95%8C:h=example.com:qs=lang=%E4%B8%AD%E6%96%87:m=GET:",
+		},
+		{
+			name:       "Thai path",
+			rawURL:     "http://example.com/สวัสดี/โลก",
+			escapedURL: "http://example.com/%E0%B8%AA%E0%B8%A7%E0%B8%B1%E0%B8%AA%E0%B8%94%E0%B8%B5/%E0%B9%82%E0%B8%A5%E0%B8%81",
+		},
+		{
+			name:   "Arabic path",
+			rawURL: "http://example.com/مرحبا/عالم",
+		},
+		{
+			name:   "Emoji path",
+			rawURL: "http://example.com/product/🎉?id=42",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqRaw := makeReq(tt.rawURL)
+			keyRaw := generatePrimaryKey(reqRaw, &CacheKey{})
+
+			// Must not contain raw non-ASCII runes in the primary key!
+			for i := 0; i < len(keyRaw); i++ {
+				if keyRaw[i] > 127 {
+					t.Fatalf("primary key contains non-ASCII byte 0x%x: %s", keyRaw[i], keyRaw)
+				}
+			}
+
+			if tt.wantKey != "" && keyRaw != tt.wantKey {
+				t.Errorf("expected %q, got %q", tt.wantKey, keyRaw)
+			}
+
+			// If client sends pre-escaped URL, it must produce the exact same primary key
+			uEscaped, err := url.Parse(reqRaw.URL.String())
+			if err == nil {
+				reqEscaped := &http.Request{
+					Method: http.MethodGet,
+					Host:   uEscaped.Host,
+					URL:    uEscaped,
+					Header: http.Header{},
+				}
+				keyEscaped := generatePrimaryKey(reqEscaped, &CacheKey{})
+				if keyRaw != keyEscaped {
+					t.Errorf("raw URL and escaped URL produced different keys:\n raw:     %s\n escaped: %s", keyRaw, keyEscaped)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteEscapedPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", "/"},
+		{"/", "/"},
+		{"/api/v1/users", "/api/v1/users"},
+		{"/math/2*2", "/math/2%2A2"},
+		{"/search/item[1]", "/search/item%5B1%5D"},
+		{"/hello world/test", "/hello%20world/test"},
+		{"/assets/", "/assets/"},
+		{"/a/b/c/", "/a/b/c/"},
+		{"/deal/50%off", "/deal/50%25off"},
+		{"/user@domain/file+name", "/user@domain/file+name"},
+		{"/你好/世界", "/%E4%BD%A0%E5%A5%BD/%E4%B8%96%E7%95%8C"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			buf := getBuffer()
+			defer putBuffer(buf)
+			writeEscapedPath(buf, tt.input)
+			got := buf.String()
+			if got != tt.expected {
+				t.Errorf("writeEscapedPath(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
 		})
 	}
 }
@@ -683,7 +811,7 @@ func TestGeneratePrimaryKey_Golden(t *testing.T) {
 			name:     "default zero-value config with sorted query",
 			setup:    func() *http.Request { return makeReq("http://Example.COM/api/items/?sort=desc&page=2&id=100") },
 			cfg:      CacheKey{},
-			expected: "p=/api/items/:h=example.com:m=GET:qs=id=100&page=2&sort=desc",
+			expected: "p=/api/items/:h=example.com:qs=id=100&page=2&sort=desc:m=GET:",
 		},
 		{
 			name: "TLS with protocol included",
@@ -692,19 +820,19 @@ func TestGeneratePrimaryKey_Golden(t *testing.T) {
 				return &http.Request{Method: "GET", Host: "secure.example.com", URL: u, Header: http.Header{}, TLS: &tls.ConnectionState{}}
 			},
 			cfg:      CacheKey{IncludeProtocol: true},
-			expected: "p=/user/profile:h=secure.example.com:m=GET:s=https",
+			expected: "p=/user/profile:h=secure.example.com:s=https:m=GET:",
 		},
 		{
 			name:     "ExcludeHost",
 			setup:    func() *http.Request { return makeReq("http://cdn.example.com/assets/style.css") },
 			cfg:      CacheKey{ExcludeHost: true},
-			expected: "p=/assets/style.css:m=GET",
+			expected: "p=/assets/style.css:m=GET:",
 		},
 		{
 			name:     "ExcludeQueryString",
 			setup:    func() *http.Request { return makeReq("http://example.com/articles?id=99&debug=true") },
 			cfg:      CacheKey{ExcludeQueryString: true},
-			expected: "p=/articles:h=example.com:m=GET",
+			expected: "p=/articles:h=example.com:m=GET:",
 		},
 		{
 			name: "headers and cookies with special chars",
@@ -716,7 +844,7 @@ func TestGeneratePrimaryKey_Golden(t *testing.T) {
 				return req
 			},
 			cfg:      CacheKey{IncludedHeaderNames: []string{"X-Region"}, IncludedCookieNames: []string{"currency"}},
-			expected: "p=/store:h=example.com:m=GET:he=x-region~US-WEST:ck=currency~USD",
+			expected: "p=/store:h=example.com:m=GET:he=x-region~US-WEST:ck=currency~USD:",
 		},
 	}
 

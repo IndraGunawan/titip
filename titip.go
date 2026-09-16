@@ -78,13 +78,17 @@ func New(opts ...Option) (*Titip, error) {
 	return t, nil
 }
 
-// Purge invalidates cache entries matching the specified path, URL, exact query variant, or wildcard.
+// Purge invalidates cache entries matching the specified path or URL (and its query variations).
 //
-// The target supports four formats:
-//   - "/api/products"           — purges the path and ALL query string variations
-//   - "/api/products?id=42"     — purges only this exact query variant
-//   - "/assets/*"               — wipes all cached paths under /assets/ (wildcard)
-//   - "https://example.com/api" — host-scoped path purge (include domain in target to scope by host)
+// The target supports the following formats:
+//   - "/api/products"                    — purges the path and ALL query string variations
+//   - "https://example.com/api/products" — host-scoped path purge (include domain in target to scope by host)
+//   - "https://example.com/api?id=42"    — exact query variant (O(1) exact delete)
+//   - "/api/products?id=42"              — exact query variant (exact delete if ExcludeHost=true, or across all hosts)
+//   - "/"                                — purges the homepage only
+//
+// Note: Purge treats any asterisks in the path literally (not as a wildcard).
+// To purge a path hierarchy or directory prefix, use PurgePrefix().
 //
 // By default, purge is a hard-delete (immediate physical eviction). Use WithSoftPurge()
 // to mark entries as stale instead for safe thundering-herd protection.
@@ -98,60 +102,97 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 
 	mode := purgeModeString(cfg.soft)
 
-	pt, err := parsePurgeTarget(target, &t.config.cacheKey)
+	isExact, keys, err := buildPurgeOperation(target, &t.config.cacheKey)
 	if err != nil {
 		t.metrics.recordPurge("url", mode, "error", 0)
 		return 0, fmt.Errorf("titip: purge parse error: %w", err)
 	}
-	if pt == nil {
+	if len(keys) == 0 {
 		return 0, nil
 	}
-
-	patterns := buildPurgePatterns(pt, &t.config.cacheKey)
 
 	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
 		t.logger.DebugContext(ctx, "purge path",
 			slog.String("target", target),
 			slog.Bool("soft", cfg.soft),
-			slog.Any("patterns", patterns),
+			slog.Bool("exact", isExact),
+			slog.Any("keys", keys),
 		)
 	}
 
+	if isExact {
+		n, err := t.storage.Purge(ctx, keys[0], cfg.soft)
+		if err != nil {
+			t.metrics.recordPurge("url", mode, "error", 0)
+			return 0, fmt.Errorf("titip: purge path: %w", err)
+		}
+		t.metrics.recordPurge("url", mode, "success", n)
+		return n, nil
+	}
+
 	var totalCount int64
-	for _, pattern := range patterns {
-		count, err := t.executePurge(ctx, pt, pattern, cfg.soft)
+	for _, pattern := range keys {
+		n, err := t.storage.PurgeByPattern(ctx, pattern, cfg.soft)
 		if err != nil {
 			t.metrics.recordPurge("url", mode, "error", totalCount)
-			return totalCount, err
+			return totalCount, fmt.Errorf("titip: purge path pattern: %w", err)
 		}
-		totalCount += count
+		totalCount += n
 	}
 
 	t.metrics.recordPurge("url", mode, "success", totalCount)
 	return totalCount, nil
 }
 
-// executePurge dispatches a single pattern to the appropriate storage operation.
-func (t *Titip) executePurge(ctx context.Context, pt *purgeTarget, pattern string, soft bool) (int64, error) {
-	if pt.mode == purgeModeExact && (t.config.cacheKey.ExcludeHost || pt.host != "") {
-		// pattern is a full exact primary key — use direct Purge.
-		n, err := t.storage.Purge(ctx, pattern, soft)
-		if err != nil {
-			return 0, fmt.Errorf("titip: purge path: %w", err)
-		}
-		return n, nil
+// PurgePrefix invalidates cache entries matching the specified path or URL prefix (Cloudflare-style).
+//
+// Behavior:
+//   - "/assets/" (with trailing slash)    — directory prefix: purges all child paths under /assets/ (does not touch /assets-v2)
+//   - "/assets"  (without trailing slash) — raw string prefix: purges /assets, /assets/*, AND /assets-v2
+//   - "/"                                 — purges the entire cache namespace (supports WithSoftPurge())
+//   - "https://example.com/assets/"       — host-scoped prefix purge
+//
+// By default, purge is a hard-delete (immediate physical eviction). Use WithSoftPurge()
+// to mark entries as stale instead for safe thundering-herd protection.
+//
+// Returns the total number of logical cache entries invalidated.
+func (t *Titip) PurgePrefix(ctx context.Context, prefix string, opts ...PurgeOption) (int64, error) {
+	cfg := &purgeConfig{}
+	for _, opt := range opts {
+		opt(cfg)
 	}
 
-	// Pattern-based purge requires PatternPurger capability.
-	pp, ok := t.storage.(storage.PatternPurger)
-	if !ok {
-		return 0, fmt.Errorf("titip: purge path: storage does not implement PatternPurger for pattern-based purges")
-	}
-	n, err := pp.PurgeByPattern(ctx, pattern, soft)
+	mode := purgeModeString(cfg.soft)
+
+	keys, err := buildPurgePrefixOperation(prefix, &t.config.cacheKey)
 	if err != nil {
-		return 0, fmt.Errorf("titip: purge path pattern: %w", err)
+		t.metrics.recordPurge("prefix", mode, "error", 0)
+		return 0, fmt.Errorf("titip: purge prefix error: %w", err)
 	}
-	return n, nil
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	if t.logger != nil && t.logger.Enabled(ctx, slog.LevelDebug) {
+		t.logger.DebugContext(ctx, "purge prefix",
+			slog.String("prefix", prefix),
+			slog.Bool("soft", cfg.soft),
+			slog.Any("keys", keys),
+		)
+	}
+
+	var totalCount int64
+	for _, pattern := range keys {
+		n, err := t.storage.PurgeByPattern(ctx, pattern, cfg.soft)
+		if err != nil {
+			t.metrics.recordPurge("prefix", mode, "error", totalCount)
+			return totalCount, fmt.Errorf("titip: purge prefix pattern: %w", err)
+		}
+		totalCount += n
+	}
+
+	t.metrics.recordPurge("prefix", mode, "success", totalCount)
+	return totalCount, nil
 }
 
 // PurgeTag invalidates all cache entries tagged with the specified tag.
@@ -180,29 +221,13 @@ func (t *Titip) PurgeAll(ctx context.Context) (int64, error) {
 		t.logger.DebugContext(ctx, "purge all")
 	}
 
-	// Prefer AllPurger (most efficient — single SCAN * loop).
-	if ap, ok := t.storage.(storage.AllPurger); ok {
-		n, err := ap.PurgeAll(ctx)
-		if err != nil {
-			t.metrics.recordPurge("all", "hard", "error", 0)
-			return 0, fmt.Errorf("titip: purge all: %w", err)
-		}
-		t.metrics.recordPurge("all", "hard", "success", n)
-		return n, nil
+	n, err := t.storage.PurgeAll(ctx)
+	if err != nil {
+		t.metrics.recordPurge("all", "hard", "error", 0)
+		return 0, fmt.Errorf("titip: purge all: %w", err)
 	}
-
-	// Fallback: use PatternPurger with wildcard.
-	if pp, ok := t.storage.(storage.PatternPurger); ok {
-		n, err := pp.PurgeByPattern(ctx, "*", false)
-		if err != nil {
-			t.metrics.recordPurge("all", "hard", "error", 0)
-			return 0, fmt.Errorf("titip: purge all via pattern: %w", err)
-		}
-		t.metrics.recordPurge("all", "hard", "success", n)
-		return n, nil
-	}
-	t.metrics.recordPurge("all", "hard", "error", 0)
-	return 0, fmt.Errorf("titip: purge all: storage does not implement AllPurger or PatternDeleter")
+	t.metrics.recordPurge("all", "hard", "success", n)
+	return n, nil
 }
 
 func purgeModeString(soft bool) string {
