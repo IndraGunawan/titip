@@ -59,7 +59,7 @@ Create your driver under `storage/<engine>/` and implement the interfaces define
 - **Required**: Implement [`storage.Storage`](storage/storage.go) interface:
   - `GetMeta`, `GetVariant`, `SetVariant` (reading & writing variants)
   - `Purge`, `PurgeByPattern`, `PurgeByTag`, `PurgeAll` (complete invalidation lifecycle)
-  - `Close` (clean shutdown)
+- **Optional Teardown**: Storage backends managing internal resources (goroutines, file handles, flush timers) may optionally implement [`storage.Closer`](storage/storage.go) (`Close(ctx context.Context) error`) or standard library `io.Closer` (`Close() error`). Drivers that wrap externally injected clients (like `storage/redis`) should not implement `Close` to respect caller ownership.
 
 > [!TIP]
 > See [`storage/redis/`](storage/redis/) as our existing reference implementation, which demonstrates atomic hash variant storage, dynamic TTL extension, and soft-purge timestamping with `rueidis`.
@@ -97,6 +97,7 @@ If your storage driver should be configurable in Caddyfiles (e.g. `storage memca
 
    type Storage struct {
        Address string `json:"address,omitempty"`
+       client  *mymod.Client
        store   storage.Storage
    }
 
@@ -113,17 +114,25 @@ If your storage driver should be configurable in Caddyfiles (e.g. `storage memca
    }
 
    func (s *Storage) Provision(ctx caddy.Context) error {
-       store, err := mymod.New(mymod.Config{Address: s.Address})
+       client, err := mymod.NewClient(s.Address)
        if err != nil {
+           return err
+       }
+       s.client = client
+
+       store, err := mymod.New(client)
+       if err != nil {
+           client.Close()
            return err
        }
        s.store = store
        return nil
    }
 
+   // Cleanup closes the client connection provisioned by this module.
    func (s *Storage) Cleanup() error {
-       if s.store != nil {
-           return s.store.Close()
+       if s.client != nil {
+           return s.client.Close()
        }
        return nil
    }
@@ -145,7 +154,11 @@ If your storage driver should be configurable in Caddyfiles (e.g. `storage memca
    ```
 
 > [!TIP]
-> See [`storage/redis/caddy/`](storage/redis/caddy/) as our existing reference implementation.
+> In `Cleanup()`, only call the single teardown method specific to what your module manages:
+> - If your module provisions a connection pool or client (like `s.client`), close that client directly.
+> - If your storage backend manages its own lifecycle and implements `storage.Closer` or `io.Closer`, call its close method directly (e.g. `s.store.Close(ctx)`).
+>
+> You do not need to implement multiple fallback checks—only invoke the one close method required for your storage backend. See [`storage/redis/caddy/`](storage/redis/caddy/) as our reference implementation.
 
 ## Implementing a Framework Adapter
 

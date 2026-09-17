@@ -585,9 +585,3 @@ func (s *RedisStorage) PurgeAll(ctx context.Context) (int64, error) {
 	}
 	return int64(primaryDeleted), nil
 }
-
-// Close terminates Redis connections cleanly.
-func (s *RedisStorage) Close() error {
-	s.client.Close()
-	return nil
-}

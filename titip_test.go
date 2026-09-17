@@ -3,6 +3,7 @@ package titip
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -644,4 +645,104 @@ func TestBackgroundFetchTimeout_Configuration(t *testing.T) {
 	if mwDisabled.config.backgroundFetchTimeout != 0 {
 		t.Errorf("expected 0, got %v", mwDisabled.config.backgroundFetchTimeout)
 	}
+}
+
+type contextCloserStore struct {
+	*teststore.Store
+	closedWithCtx context.Context
+	closeErr      error
+}
+
+func (c *contextCloserStore) Close(ctx context.Context) error {
+	c.closedWithCtx = ctx
+	return c.closeErr
+}
+
+type ioCloserStore struct {
+	*teststore.Store
+	closed   bool
+	closeErr error
+}
+
+func (c *ioCloserStore) Close() error {
+	c.closed = true
+	return c.closeErr
+}
+
+type noCloserStore struct {
+	storage.Storage
+}
+
+func TestTitip_Close_StorageLifecycle(t *testing.T) {
+	t.Run("storage.Closer context-aware teardown", func(t *testing.T) {
+		baseStore := teststore.New()
+		ctxStore := &contextCloserStore{Store: baseStore}
+		mw, err := New(WithStorage(ctxStore))
+		if err != nil {
+			t.Fatalf("failed to create mw: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		if err := mw.Close(ctx); err != nil {
+			t.Fatalf("unexpected Close error: %v", err)
+		}
+		if ctxStore.closedWithCtx != ctx {
+			t.Errorf("expected storage.Closer to receive the exact context")
+		}
+	})
+
+	t.Run("io.Closer teardown", func(t *testing.T) {
+		baseStore := teststore.New()
+		ioStore := &ioCloserStore{Store: baseStore}
+		mw, err := New(WithStorage(ioStore))
+		if err != nil {
+			t.Fatalf("failed to create mw: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		if err := mw.Close(ctx); err != nil {
+			t.Fatalf("unexpected Close error: %v", err)
+		}
+		if !ioStore.closed {
+			t.Errorf("expected io.Closer to be closed")
+		}
+	})
+
+	t.Run("no closer storage is safe no-op", func(t *testing.T) {
+		baseStore := teststore.New()
+		// noCloserStore wraps Storage without exposing any Close method
+		mw, err := New(WithStorage(noCloserStore{Storage: baseStore}))
+		if err != nil {
+			t.Fatalf("failed to create mw: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		if err := mw.Close(ctx); err != nil {
+			t.Fatalf("expected Close on uncloseable storage to succeed, got %v", err)
+		}
+	})
+
+	t.Run("storage close error propagation", func(t *testing.T) {
+		baseStore := teststore.New()
+		expectedErr := errors.New("simulated flush error")
+		ctxStore := &contextCloserStore{Store: baseStore, closeErr: expectedErr}
+		mw, err := New(WithStorage(ctxStore))
+		if err != nil {
+			t.Fatalf("failed to create mw: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		err = mw.Close(ctx)
+		if err == nil || !errors.Is(err, expectedErr) {
+			t.Fatalf("expected error wrapping %v, got %v", expectedErr, err)
+		}
+	})
 }

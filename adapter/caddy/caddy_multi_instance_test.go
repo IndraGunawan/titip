@@ -71,11 +71,6 @@ func setupMultiInstanceCaddy(t testing.TB, route1Caddyfile, route2Caddyfile stri
 	cleanup := func() {
 		_ = h1.Cleanup()
 		_ = h2.Cleanup()
-		if appIface, err := ctx.App("titip"); err == nil && appIface != nil {
-			if a, ok := appIface.(*App); ok && a != nil {
-				_ = a.Cleanup()
-			}
-		}
 	}
 
 	return &h1, &h2, cleanup

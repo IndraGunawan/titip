@@ -39,7 +39,11 @@ type Storage interface {
 	// PurgeAll deletes every key in the storage engine's configured namespace prefix.
 	// Returns the number of primary metadata entries deleted.
 	PurgeAll(ctx context.Context) (int64, error)
+}
 
-	// Close cleanly terminates storage connections.
-	Close() error
+// Closer is an optional interface that storage backends may implement
+// to receive graceful shutdown notifications with a context deadline.
+// Alternatively, storage backends may implement the standard library io.Closer interface.
+type Closer interface {
+	Close(ctx context.Context) error
 }

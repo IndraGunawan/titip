@@ -52,7 +52,6 @@ func setupTestRedis(t testing.TB) (rueidis.Client, *RedisStorage, string) {
 			}
 			client.DoMulti(ctx, delCmds...)
 		}
-		_ = store.Close()
 		client.Close()
 	})
 
