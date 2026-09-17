@@ -12,20 +12,24 @@ const hitDuration = new Trend('titip_hit_duration', true);
 const missDuration = new Trend('titip_miss_duration', true);
 const esiDuration = new Trend('titip_esi_duration', true);
 
-// Configurable environment options
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
-const ADMIN_URL = __ENV.ADMIN_URL || 'http://localhost:2019';
+// Test Configuration (modify directly before running k6)
+const BASE_URL = 'http://localhost:8080';
+const ADMIN_URL = 'http://localhost:2019';
+const DURATION = '20s';
+const VUS = 50;
+const PURGE_RATIO = 0.003; // 0.3% purge traffic
+const THINK_TIME = false;
 
 export const options = {
     scenarios: {
         // High-concurrency traffic simulating realistic caching & ESI workload
         caching_traffic: {
             executor: 'ramping-vus',
-            startVUs: 5,
+            startVUs: Math.min(5, VUS),
             stages: [
-                { duration: '5s', target: 25 },  // Ramp-up
-                { duration: '20s', target: 50 }, // Sustained load
-                { duration: '5s', target: 0 },   // Ramp-down
+                { duration: '5s', target: Math.min(25, VUS) }, // Ramp-up
+                { duration: DURATION, target: VUS },            // Sustained load
+                { duration: '5s', target: 0 },                  // Ramp-down
             ],
             gracefulRampDown: '2s',
         },
@@ -40,53 +44,8 @@ export const options = {
 const LANGUAGES = ['en-US', 'id-ID', 'ja-JP', 'de-DE', 'fr-FR'];
 
 export default function () {
-    const rand = Math.random();
-
-    // 1. Time API (High frequency, cached 30s + stale-while-revalidate) [40% traffic]
-    if (rand < 0.40) {
-        const res = http.get(`${BASE_URL}/api/time`);
-        trackCacheStatus(res);
-        check(res, {
-            'time status 200': (r) => r.status === 200,
-            'time has Cache-Status': (r) => r.headers['Cache-Status'] !== undefined,
-        });
-    }
-    // 2. Products API (Catalog cached with surrogate tags) [30% traffic]
-    else if (rand < 0.70) {
-        const res = http.get(`${BASE_URL}/api/products`);
-        trackCacheStatus(res);
-        check(res, {
-            'products status 200': (r) => r.status === 200,
-            'products body valid': (r) => typeof r.body === 'string' && r.body.includes('Cloud Edge CDN'),
-        });
-    }
-    // 3. Multi-Variant Language API (Tests RFC Vary negotiation) [15% traffic]
-    else if (rand < 0.85) {
-        const lang = LANGUAGES[Math.floor(Math.random() * LANGUAGES.length)];
-        const res = http.get(`${BASE_URL}/api/vary`, {
-            headers: { 'Accept-Language': lang },
-        });
-        trackCacheStatus(res);
-        check(res, {
-            'vary status 200': (r) => r.status === 200,
-            'vary language matched': (r) => typeof r.body === 'string' && r.body.includes(lang),
-        });
-    }
-    // 4. Edge Side Includes (ESI) composite page [14% traffic]
-    else if (rand < 0.99) {
-        const start = Date.now();
-        const res = http.get(`${BASE_URL}/esi-demo`);
-        esiDuration.add(Date.now() - start);
-
-        check(res, {
-            'esi status 200': (r) => r.status === 200,
-            'esi spliced static fragment': (r) => typeof r.body === 'string' && r.body.includes('Caddy Static Fragment'),
-            'esi spliced header': (r) => typeof r.body === 'string' && r.body.includes('Global ESI Header Component'),
-            'esi spliced clock': (r) => typeof r.body === 'string' && r.body.includes('Live Dynamic Clock Fragment'),
-        });
-    }
-    // 5. Cache Invalidation / Purge test [1% traffic]
-    else {
+    // 1. Cache Invalidation / Purge test [configurable PURGE_RATIO, default 0.3%]
+    if (Math.random() < PURGE_RATIO) {
         const purgeType = Math.random() > 0.5 ? 'tag' : 'url';
         let payload;
         if (purgeType === 'tag') {
@@ -101,10 +60,61 @@ export default function () {
         check(res, {
             'purge status 200': (r) => r.status === 200,
         });
+
+        if (THINK_TIME) {
+            sleep(0.005 + Math.random() * 0.02);
+        }
+        return;
+    }
+
+    const rand = Math.random();
+
+    // 2. Time API (High frequency, cached 30s + stale-while-revalidate) [40% traffic]
+    if (rand < 0.40) {
+        const res = http.get(`${BASE_URL}/api/time`);
+        trackCacheStatus(res);
+        check(res, {
+            'time status 200': (r) => r.status === 200,
+            'time has Cache-Status': (r) => r.headers['Cache-Status'] !== undefined,
+        });
+    }
+    // 3. Products API (Catalog cached with surrogate tags) [30% traffic]
+    else if (rand < 0.70) {
+        const res = http.get(`${BASE_URL}/api/products`);
+        trackCacheStatus(res);
+        check(res, {
+            'products status 200': (r) => r.status === 200,
+            'products body valid': (r) => typeof r.body === 'string' && r.body.includes('Cloud Edge CDN'),
+        });
+    }
+    // 4. Multi-Variant Language API (Tests RFC Vary negotiation) [15% traffic]
+    else if (rand < 0.85) {
+        const lang = LANGUAGES[Math.floor(Math.random() * LANGUAGES.length)];
+        const res = http.get(`${BASE_URL}/api/vary`, {
+            headers: { 'Accept-Language': lang },
+        });
+        trackCacheStatus(res);
+        check(res, {
+            'vary status 200': (r) => r.status === 200,
+            'vary language matched': (r) => typeof r.body === 'string' && r.body.includes(lang),
+        });
+    }
+    // 5. Edge Side Includes (ESI) composite page [15% traffic]
+    else {
+        const start = Date.now();
+        const res = http.get(`${BASE_URL}/esi-demo`);
+        esiDuration.add(Date.now() - start);
+
+        check(res, {
+            'esi status 200': (r) => r.status === 200,
+            'esi spliced static fragment': (r) => typeof r.body === 'string' && r.body.includes('Caddy Static Fragment'),
+            'esi spliced header': (r) => typeof r.body === 'string' && r.body.includes('Global ESI Header Component'),
+            'esi spliced clock': (r) => typeof r.body === 'string' && r.body.includes('Live Dynamic Clock Fragment'),
+        });
     }
 
     // Optional think time for realistic simulation (disabled by default for maximum throughput)
-    if (__ENV.THINK_TIME === 'true') {
+    if (THINK_TIME) {
         sleep(0.005 + Math.random() * 0.02);
     }
 }
