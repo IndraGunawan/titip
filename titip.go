@@ -271,10 +271,7 @@ func (t *Titip) Close(ctx context.Context) error {
 	}
 
 	if closeErr != nil {
-		if waitErr != nil {
-			return errors.Join(waitErr, fmt.Errorf("titip: storage close error: %w", closeErr))
-		}
-		return fmt.Errorf("titip: storage close error: %w", closeErr)
+		closeErr = fmt.Errorf("titip: storage close error: %w", closeErr)
 	}
-	return waitErr
+	return errors.Join(waitErr, closeErr)
 }
