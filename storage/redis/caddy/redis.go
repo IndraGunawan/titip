@@ -90,11 +90,8 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-// Cleanup closes the Redis client and storage connection.
+// Cleanup closes the Redis client.
 func (r *RedisStorage) Cleanup() error {
-	if r.store != nil {
-		_ = r.store.Close()
-	}
 	if r.client != nil {
 		r.client.Close()
 	}

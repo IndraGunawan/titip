@@ -265,10 +265,11 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if v := coalesce(h.ConvertHeadToGet, appConvertHead); v != nil && !*v {
 		opts = append(opts, titip.WithoutConvertHeadToGet())
 	}
-	if bg := cmp.Or(h.BackgroundFetchTimeout, appBgTimeout); bg != "" {
-		d, err := caddy.ParseDuration(bg)
+	h.BackgroundFetchTimeout = cmp.Or(h.BackgroundFetchTimeout, appBgTimeout)
+	if h.BackgroundFetchTimeout != "" {
+		d, err := caddy.ParseDuration(h.BackgroundFetchTimeout)
 		if err != nil {
-			return fmt.Errorf("titip: invalid background_fetch_timeout duration %q: %w", bg, err)
+			return fmt.Errorf("titip: invalid background_fetch_timeout duration %q: %w", h.BackgroundFetchTimeout, err)
 		}
 		opts = append(opts, titip.WithBackgroundFetchTimeout(d))
 	}
@@ -430,7 +431,11 @@ func (h *Handler) Cleanup() error {
 		)
 	}
 	if h.instance != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		timeout := 125 * time.Second
+		if d, err := caddy.ParseDuration(h.BackgroundFetchTimeout); err == nil && d > 0 {
+			timeout = d
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		_ = h.instance.Close(ctx)
 	}

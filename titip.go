@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -262,11 +263,18 @@ func (t *Titip) Close(ctx context.Context) error {
 		}
 	}
 
-	if err := t.storage.Close(); err != nil {
+	var closeErr error
+	if closer, ok := t.storage.(storage.Closer); ok {
+		closeErr = closer.Close(ctx)
+	} else if closer, ok := t.storage.(io.Closer); ok {
+		closeErr = closer.Close()
+	}
+
+	if closeErr != nil {
 		if waitErr != nil {
-			return errors.Join(waitErr, fmt.Errorf("titip: storage close error: %w", err))
+			return errors.Join(waitErr, fmt.Errorf("titip: storage close error: %w", closeErr))
 		}
-		return fmt.Errorf("titip: storage close error: %w", err)
+		return fmt.Errorf("titip: storage close error: %w", closeErr)
 	}
 	return waitErr
 }

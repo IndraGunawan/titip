@@ -89,16 +89,6 @@ func (a *App) Stop() error {
 	return nil
 }
 
-// Cleanup implements caddy.CleanerUpper.
-func (a *App) Cleanup() error {
-	if a.storageMod != nil {
-		if s := a.storageMod.Storage(); s != nil {
-			_ = s.Close()
-		}
-	}
-	return nil
-}
-
 // parseGlobalOption parses the global `titip { ... }` block inside Caddyfile global options.
 func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 	app := new(App)

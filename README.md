@@ -102,7 +102,6 @@ func main() {
     if err != nil {
         panic(err)
     }
-    defer store.Close()
 
     // 3. Configure Titip Engine
     cache, err := titip.New(
