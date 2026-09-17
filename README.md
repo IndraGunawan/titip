@@ -59,7 +59,7 @@ Titip is organized as a multi-module workspace. Each module is versioned indepen
 | --- | --- | --- |
 | **`github.com/indragunawan/titip`** | Core caching middleware, state machine, and programmatic Purge API | [**Core Quickstart**](#quickstart) |
 | **`github.com/indragunawan/titip/adapter/caddy`** | Native Caddy HTTP middleware directive (`titip`) & Admin Purge API | [**Caddy Adapter Guide**](adapter/caddy/README.md) |
-| **`github.com/indragunawan/titip/storage/redis`** | High-performance Redis 7.4+/8 distributed storage driver (`rueidis`) | [**Redis Storage Guide**](storage/redis/README.md) |
+| **`github.com/indragunawan/titip/storage/redis`** | High-performance Redis (7.4+), Valkey (9.0+), DragonflyDB (1.38+) driver (`rueidis`) | [**Redis Storage Guide**](storage/redis/README.md) |
 | **`github.com/indragunawan/titip/storage/redis/caddy`** | Guest storage module for Caddy (`titip.storage.redis`) | [**Caddy Redis Guide**](storage/redis/README.md#caddy-integration) |
 
 ## Quickstart

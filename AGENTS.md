@@ -5,6 +5,38 @@
 
 ---
 
+## Critical Workflow Rules
+
+**MANDATORY — Always Follow This Order:**
+
+1. ✅ **Read Before Edit** — Always inspect target files, surrounding context, and interfaces before modifying code.
+2. ✅ **Use Correct Build & Test Commands** — See [Quick Command Reference](#quick-command-reference) below.
+3. ✅ **Test After Changes** — Run targeted tests with race detection immediately after editing:
+   - Specific package: `go test -v -race ./<pkg>/...`
+   - Workspace-wide: `make test` or `make race`
+4. ✅ **Format & Lint Code** — Run `make fmt`, `make vet`, and `make lint` before finishing any task.
+5. ✅ **Follow Architecture & RFCs** — Strict zero-allocation pools, fail-open resilience, atomic Redis Hash operations, and RFC compliance. See [Core Operating Principles](#1-core-operating-principles).
+6. ✅ **Never Push to Main** — Always create a dedicated feature or bugfix branch and open a PR. Never run `git push origin main`.
+
+---
+
+## Quick Command Reference
+
+| Action | Command | Scope |
+| :--- | :--- | :--- |
+| **Format Code** | `make fmt` | Formats all workspace modules (`gofmt -s -w .`) and syncs workspace |
+| **Static Analysis** | `make vet` | Static analysis across workspace (`go vet`) and syncs workspace |
+| **Linter** | `make lint` | `golangci-lint run` across all workspace modules |
+| **Code Cleanup** | `make fix` | `go fix` across all workspace modules |
+| **Unit Tests** | `make test` | `go test -v` across all workspace modules |
+| **Race Detector** | `make race` | `go test -race -count=100 -parallel=8` across all modules |
+| **Memory Benchmarks** | `make bench` | Memory allocation benchmarks (`go test -benchmem -bench=.`) |
+| **Targeted Test** | `go test -v -race ./<pkg>/...` | Fast feedback for the specific module under test |
+| **Targeted Bench** | `go test -benchmem -bench=. ./<pkg>/...` | Alloc/op validation for specific module |
+| **Workspace Sync** | `go work sync` | Re-sync multi-module dependency resolution |
+
+---
+
 ## 1. Core Operating Principles
 
 ### What AI Agent MUST ALWAYS Do (Required Behaviors)
