@@ -1,6 +1,8 @@
 {
 	skip_install_trust
-	admin localhost:2019
+	admin :2019 {
+		origins localhost:2019 127.0.0.1:2019 host.docker.internal:2019
+	}
 
 	log {
 		level DEBUG
@@ -12,6 +14,7 @@
 		storage redis {
 			address 127.0.0.1:6379
 			key_prefix caddy_demo:
+			pipeline_multiplex 2
 		}
 		cache_status rfc9211
 		respect_client_cache_control false
@@ -32,7 +35,12 @@
 :8080 {
 	titip
 
-	# 1. Separate Route for Static Fragment (Caddy Native Respond)
+	# 1. Prometheus Metrics Endpoint
+	handle /metrics {
+		metrics
+	}
+
+	# 2. Separate Route for Static Fragment (Caddy Native Respond)
 	handle /api/esi/caddy-static {
 		header Content-Type "text/html; charset=utf-8"
 		respond `<div class="card" style="border-left: 4px solid #f59e0b;">
@@ -42,7 +50,7 @@
 				</div>` 200
 	}
 
-	# 2. Default catch-all proxy to mock origin :9000
+	# 3. Default catch-all proxy to mock origin :9000
 	handle {
 		reverse_proxy localhost:9000
 	}

@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s
+
+scrape_configs:
+  - job_name: "caddy"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["host.docker.internal:2019"]
+        labels:
+          app: "caddy-titip"

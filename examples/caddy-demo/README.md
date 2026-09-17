@@ -11,10 +11,15 @@ make run
 
 This single command will automatically:
 
-1. Start Redis 8 container (`titip-redis8`) if not running.
+1. Start **Redis 8**, **Prometheus**, and **Grafana** via Docker Compose.
 2. Build the custom Caddy binary with Titip and Redis plugins (`./cmd/caddy`).
 3. Start the mock upstream origin server on `http://localhost:9000`.
 4. Start Caddy reverse proxy on `http://localhost:8080` (Admin API on `:2019`).
+
+Services provisioned:
+- **Caddy Proxy**: [http://localhost:8080](http://localhost:8080) (Admin API on `:2019`)
+- **Grafana Dashboard**: [http://localhost:3000](http://localhost:3000) (preloaded Titip Dashboard, anonymous admin access)
+- **Redis 8**: `localhost:6379`
 
 ---
 
@@ -136,30 +141,32 @@ curl -i -X POST http://localhost:2019/titip/purge \
 
 ---
 
-### E. Prometheus Metrics
+### E. Observability: Grafana Dashboard & Prometheus Metrics
 
-Inspect live cache and ESI telemetry in your browser or with `curl`:
+Titip provides full Prometheus telemetry out of the box with zero configuration:
 
-- **Browser direct link**: [http://localhost:8080/metrics](http://localhost:8080/metrics)
-- **Admin API endpoint**:
-
-  ```bash
-  curl http://localhost:2019/metrics | grep titip
-  ```
-
-**Available Metric Series**:
-
-- `titip_requests_total{status="hit|miss|stale_hit|revalidated|bypass|error"}`
-- `titip_storage_duration_seconds{operation="...", backend="redis"}`
-- `titip_esi_fragments_total{status="success|fallback|error|ssrf_blocked"}`
-- `titip_esi_duration_seconds{mode="in_process|http"}`
+- **Grafana Dashboard**: Open [http://localhost:3000](http://localhost:3000) (pre-provisioned, no login required)
+  - **Panels included**:
+    - **Cache Hit Ratio (%)**: Real-time gauge and trend showing cache effectiveness
+    - **Request Rates by Status**: Real-time breakdown of `hit`, `miss`, `stale_hit`, `revalidated`, `bypass`, and `error`
+    - **Latency Distributions**: p50 (median), p90, and p99 response times in milliseconds
+    - **Hit vs Miss Latency**: Direct comparison showing sub-millisecond cache hits vs upstream miss penalties
+    - **Cache Invalidation / Purge Rate**: Real-time tracking of URL and Tag purges
+    - **Edge Side Includes (ESI)**: Fragment splicing rates and latency
+- **Raw Metrics Endpoint**:
+  - `http://localhost:8080/metrics`
+  - Or via Caddy Admin: `curl http://localhost:2019/metrics | grep titip_`
 
 ---
 
 ### F. Running Load Tests (k6)
 
-Simulate high-concurrency traffic across cached endpoints, multi-language `Vary` variants, ESI splicing, and background purges:
+Simulate high-concurrency traffic across cached endpoints, multi-language `Vary` variants, ESI splicing, and background purges, and watch the graphs update live in Grafana:
 
 ```bash
+make loadtest
+# Or directly:
 k6 run loadtest.js
 ```
+
+Open [http://localhost:3000](http://localhost:3000) side-by-side with your terminal while running k6 to watch cache hit rates climb to 85%+, latencies drop to < 1ms on cache hits, and ESI fragments splice concurrently!
