@@ -10,9 +10,10 @@ Titip Redis Storage requires Hash field-level expiration (`HEXPIRE`) and dynamic
 | :--- | :--- | :--- |
 | **Redis** | $\ge$ `7.4` | `7.4`, `latest` |
 | **Valkey** | $\ge$ `9.0` | `9.0`, `latest` |
-| **DragonflyDB** | $\ge$ `1.24.0` | `1.24.0`, `latest` |
+| **DragonflyDB** | $\ge$ `1.38.0` | `1.38`, `latest` |
 
-- **Go**: 1.22+
+> [!NOTE]
+> While DragonflyDB introduced initial `HEXPIRE` support in v1.24.0, versions prior to v1.38.0 suffered from concurrency segmentation faults under high pipeline load and lacked the `HTTL` command (which Titip's test suite uses to verify that field expirations are set properly). Titip itself only calls `HEXPIRE` at runtime (evaluating freshness internally from stored metadata without querying `HTTL`), but crash-free concurrency and full test suite verification require **DragonflyDB $\ge 1.38.0$**.
 
 ## Key Layout
 
