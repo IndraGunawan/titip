@@ -38,8 +38,8 @@ jobs:
             image: "valkey/valkey:9-alpine"
           - name: "Valkey (latest)"
             image: "valkey/valkey:latest"
-          - name: "Dragonfly v1.24.0 (min)"
-            image: "docker.dragonflydb.io/dragonflydb/dragonfly:v1.24.0"
+          - name: "Dragonfly 1.38 (min)"
+            image: "docker.dragonflydb.io/dragonflydb/dragonfly:v1.38.0"
           - name: "Dragonfly (latest)"
             image: "docker.dragonflydb.io/dragonflydb/dragonfly:latest"
     services:
@@ -56,15 +56,6 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
-
-      - name: Wait for ${{ matrix.engine.name }} to be Ready
-        run: |
-          for i in {1..30}; do
-            nc -z localhost 6379 && echo "Engine is ready" && exit 0
-            sleep 1
-          done
-          echo "Engine failed to start"
-          exit 1
 
       - name: Test storage/redis
         working-directory: storage/redis
