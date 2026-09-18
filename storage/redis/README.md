@@ -74,9 +74,9 @@ func main() {
 
     // 3. Attach storage to Titip
     cache, err := titip.New(
-        titip.WithStorage(store),
+        store,
         titip.WithBackgroundFetchTimeout(125*time.Second),
-        titip.WithStorageTimeout(1*time.Second),
+        titip.WithStorageTimeout(5*time.Second),
     )
     if err != nil {
         log.Fatalf("failed to initialize titip: %v", err)

@@ -104,7 +104,7 @@ func main() {
 
     // 3. Configure Titip Engine
     cache, err := titip.New(
-        titip.WithStorage(store),
+        store,
         titip.WithCacheStatus(titip.CacheStatusRFC9211),
         titip.WithBackgroundFetchTimeout(125*time.Second),
     )
@@ -131,16 +131,15 @@ func main() {
 
 ## Configuration Reference
 
-Pass any of the following functional options to `titip.New(...)`:
+Initialize Titip with the mandatory storage engine and any functional options via `titip.New(store storage.Storage, opts ...Option)`:
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `WithStorage(s)` | `storage.Storage` | *(Required)* | Storage backend implementation (e.g. `storage/redis`). |
 | `WithCacheStatus(mode)` | `CacheStatusMode` | `CacheStatusSimpleToken` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimpleToken`, or `CacheStatusNone`). |
 | `WithCacheKey(cfg)` | `CacheKey` | `{}` (standard) | Primary cache key generation rules and query parameter filtering. |
 | `WithTagHeader(name)` | `string` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
 | `WithBackgroundFetchTimeout(d)` | `time.Duration` | `125s` | Maximum timeout budget for background revalidations (`stale-while-revalidate`). |
-| `WithStorageTimeout(d)` | `time.Duration` | `1s` | Maximum time budget for storage reads/writes before fail-open bypass. |
+| `WithStorageTimeout(d)` | `time.Duration` | `5s` | Maximum time budget for storage reads/writes before fail-open bypass. |
 | `WithRespectClientCacheControl()` | - | *(disabled)* | When enabled, honors client request `Cache-Control: no-cache` / `no-store`. |
 | `WithoutConvertHeadToGet()` | - | *(enabled)* | Disables converting origin `HEAD` cache misses to `GET` to prime the cache with body bytes. |
 | `WithAutoInvalidateMutatingMethods()` | - | *(disabled)* | RFC 9111 §4.4: Auto-purges URI cache when mutating requests (`POST`/`PUT`/`DELETE`) succeed. |
@@ -156,7 +155,7 @@ Titip constructs normalized cache keys directly without expensive hashing. Use `
 
 ```go
 cache, err := titip.New(
-    titip.WithStorage(store),
+    store,
     titip.WithCacheKey(titip.CacheKey{
         // Strips marketing query parameters (utm_*, fbclid, gclid, mc_eid, etc.)
         ExcludeMarketingQueryParams: true,
@@ -227,7 +226,7 @@ To prevent exposing internal infrastructure metrics to the general public, gate 
 
 ```go
 cache, err := titip.New(
-    titip.WithStorage(store),
+    store,
     titip.WithServerTimingCookie("debug_timing", "secret_value"),
 )
 ```
@@ -282,7 +281,7 @@ For standalone package documentation and options reference, see [**ESI Package G
 
 ```go
 cache, err := titip.New(
-    titip.WithStorage(store),
+    store,
     titip.WithESI(
         esi.WithInternalFetcher(esi.HandlerFetcher(router)),
         esi.WithMaxDepth(3),
@@ -326,8 +325,8 @@ Titip exports comprehensive Prometheus metrics for request traffic, cache latenc
 ```go
 // Register with a Prometheus registry:
 cache, err := titip.New(
-    titip.WithStorage(store),
-    titip.WithRegisterer(prometheus.DefaultRegisterer),
+    store,
+    titip.WithMetrics(prometheus.DefaultRegisterer),
 )
 ```
 

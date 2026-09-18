@@ -18,6 +18,11 @@ import (
 	"github.com/indragunawan/titip/storage"
 )
 
+var (
+	// ErrStorageRequired is returned by New when the mandatory storage parameter is nil.
+	ErrStorageRequired = errors.New("titip: storage is required")
+)
+
 // Titip represents the HTTP caching middleware instance.
 type Titip struct {
 	config       config
@@ -31,24 +36,36 @@ type Titip struct {
 }
 
 // New creates a new Titip caching middleware instance.
-func New(opts ...Option) (*Titip, error) {
+// The store parameter is mandatory. If store is nil, ErrStorageRequired is returned.
+func New(store storage.Storage, opts ...Option) (*Titip, error) {
+	if store == nil {
+		return nil, ErrStorageRequired
+	}
+
 	cfg := config{
+		storage:                   store,
 		cacheStatusMode:           CacheStatusSimpleToken,
 		respectClientCacheControl: false,
 		convertHeadToGet:          true,
 		cacheKey:                  CacheKey{},
 		tagHeaderName:             headerCacheTag,
-		backgroundFetchTimeout:    125 * time.Second,
-		storageTimeout:            1 * time.Second,
-		logger:                    slog.Default(),
+		// Default backgroundFetchTimeout is 125s, aligned with Cloudflare's default 125-second Proxy Read Timeout connection limit.
+		backgroundFetchTimeout: 125 * time.Second,
+		// Default storageTimeout is 5s, providing buffer for remote storage latency and TLS connection handshakes to prevent premature fail-open.
+		storageTimeout: 5 * time.Second,
+		logger:         slog.Default(),
 	}
 
 	for _, opt := range opts {
-		opt(&cfg)
-	}
-
-	if cfg.storage == nil {
-		return nil, fmt.Errorf("titip: storage is required")
+		if opt == nil {
+			return nil, fmt.Errorf("%w: option cannot be nil", ErrInvalidOption)
+		}
+		if err := opt(&cfg); err != nil {
+			if errors.Is(err, ErrInvalidOption) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w: %w", ErrInvalidOption, err)
+		}
 	}
 
 	if cfg.logger == nil {
@@ -73,7 +90,11 @@ func New(opts ...Option) (*Titip, error) {
 			)
 		}
 		processorOpts = append(processorOpts, cfg.esiOptions...)
-		t.esiProcessor = esi.NewProcessor(processorOpts...)
+		proc, err := esi.NewProcessor(processorOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("%w: ESI configuration error: %w", ErrInvalidOption, err)
+		}
+		t.esiProcessor = proc
 	}
 
 	return t, nil

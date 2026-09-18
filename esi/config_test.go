@@ -3,7 +3,9 @@ package esi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +24,8 @@ func TestConfig_Options(t *testing.T) {
 		return nil, nil, nil
 	}
 
+	logger := slog.Default()
+	httpClient := &http.Client{}
 	reg := prometheus.NewRegistry()
 	opts := []Option{
 		WithHeaderRequired(),
@@ -37,10 +41,14 @@ func TestConfig_Options(t *testing.T) {
 		WithIncludeErrorMarker("<!-- error placeholder -->"),
 		WithPreserveETag(),
 		WithMetrics(reg),
+		WithLogger(logger),
+		WithHTTPClient(httpClient),
 	}
 
 	for _, opt := range opts {
-		opt(&cfg)
+		if err := opt(&cfg); err != nil {
+			t.Fatalf("unexpected option error: %v", err)
+		}
 	}
 
 	if !cfg.headerRequired {
@@ -82,51 +90,110 @@ func TestConfig_Options(t *testing.T) {
 	if cfg.metrics != reg {
 		t.Errorf("expected metrics registerer to be set")
 	}
+	if cfg.logger != logger {
+		t.Errorf("expected logger to be set")
+	}
+	if cfg.httpClient != httpClient {
+		t.Errorf("expected httpClient to be set")
+	}
 }
 
-func TestConfig_Options_BoundaryGuards(t *testing.T) {
-	cfg := config{
-		maxDepth:              3,
-		maxTimeout:            30 * time.Second,
-		maxConcurrentRequests: 8,
-		maxResponseSize:       10 * 1024 * 1024,
+func TestNewProcessor_InvalidOption(t *testing.T) {
+	tests := []struct {
+		name        string
+		opt         Option
+		errContains string
+	}{
+		{
+			name:        "MaxDepth zero",
+			opt:         WithMaxDepth(0),
+			errContains: "max depth must be greater than 0",
+		},
+		{
+			name:        "MaxTimeout zero",
+			opt:         WithMaxTimeout(0),
+			errContains: "max timeout must be positive",
+		},
+		{
+			name:        "MaxTimeout negative",
+			opt:         WithMaxTimeout(-5 * time.Second),
+			errContains: "max timeout must be positive",
+		},
+		{
+			name:        "MaxConcurrentRequests zero",
+			opt:         WithMaxConcurrentRequests(0),
+			errContains: "max concurrent requests must be positive",
+		},
+		{
+			name:        "MaxConcurrentRequests negative",
+			opt:         WithMaxConcurrentRequests(-1),
+			errContains: "max concurrent requests must be positive",
+		},
+		{
+			name:        "MaxResponseSize negative",
+			opt:         WithMaxResponseSize(-10),
+			errContains: "max response size cannot be negative",
+		},
+		{
+			name:        "AllowedHosts empty string",
+			opt:         WithAllowedHosts(""),
+			errContains: "allowed host cannot be empty",
+		},
+		{
+			name:        "AllowedHosts whitespace only",
+			opt:         WithAllowedHosts("   "),
+			errContains: "allowed host cannot be empty",
+		},
+		{
+			name:        "InternalFetcher nil",
+			opt:         WithInternalFetcher(nil),
+			errContains: "internal fetcher cannot be nil",
+		},
+		{
+			name:        "Logger nil",
+			opt:         WithLogger(nil),
+			errContains: "logger cannot be nil",
+		},
+		{
+			name:        "Metrics nil",
+			opt:         WithMetrics(nil),
+			errContains: "metrics registerer cannot be nil",
+		},
+		{
+			name:        "HTTPClient nil",
+			opt:         WithHTTPClient(nil),
+			errContains: "http client cannot be nil",
+		},
+		{
+			name:        "Nil option",
+			opt:         nil,
+			errContains: "option cannot be nil",
+		},
 	}
 
-	// Applying invalid / zero values should preserve existing configuration
-	WithMaxDepth(0)(&cfg)
-	if cfg.maxDepth != 3 {
-		t.Errorf("expected maxDepth preserved at 3, got %d", cfg.maxDepth)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewProcessor(tt.opt)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.errContains)
+			}
+			if !errors.Is(err, ErrInvalidOption) {
+				t.Errorf("expected error to wrap ErrInvalidOption, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("expected error message to contain %q, got: %v", tt.errContains, err)
+			}
+		})
 	}
+}
 
-	WithMaxTimeout(0)(&cfg)
-	if cfg.maxTimeout != 30*time.Second {
-		t.Errorf("expected maxTimeout preserved at 30s, got %v", cfg.maxTimeout)
+func TestNewProcessor_ValidOptions(t *testing.T) {
+	proc, err := NewProcessor(WithMaxResponseSize(0))
+	if err != nil {
+		t.Fatalf("expected WithMaxResponseSize(0) to succeed (unlimited), got: %v", err)
 	}
-
-	WithMaxTimeout(-5 * time.Second)(&cfg)
-	if cfg.maxTimeout != 30*time.Second {
-		t.Errorf("expected maxTimeout preserved at 30s, got %v", cfg.maxTimeout)
-	}
-
-	WithMaxConcurrentRequests(0)(&cfg)
-	if cfg.maxConcurrentRequests != 8 {
-		t.Errorf("expected maxConcurrentRequests preserved at 8, got %d", cfg.maxConcurrentRequests)
-	}
-
-	WithMaxConcurrentRequests(-1)(&cfg)
-	if cfg.maxConcurrentRequests != 8 {
-		t.Errorf("expected maxConcurrentRequests preserved at 8, got %d", cfg.maxConcurrentRequests)
-	}
-
-	WithMaxResponseSize(-10)(&cfg)
-	if cfg.maxResponseSize != 10*1024*1024 {
-		t.Errorf("expected maxResponseSize preserved, got %d", cfg.maxResponseSize)
-	}
-
-	// 0 is valid for maxResponseSize (unlimited)
-	WithMaxResponseSize(0)(&cfg)
-	if cfg.maxResponseSize != 0 {
-		t.Errorf("expected maxResponseSize 0 (unlimited), got %d", cfg.maxResponseSize)
+	if proc.config.maxResponseSize != 0 {
+		t.Errorf("expected maxResponseSize 0, got %d", proc.config.maxResponseSize)
 	}
 }
 

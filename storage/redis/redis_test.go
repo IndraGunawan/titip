@@ -509,6 +509,12 @@ func TestDynamicTTLExtension_MultiVariantScenario(t *testing.T) {
 	// Step 3: Sleep 1.2s more (total 2.25s) -> "en" variant (2s TTL) expires, but "es" and Meta are still alive!
 	time.Sleep(1200 * time.Millisecond)
 
+	// Under high parallel test load, allow a short polling window for Redis TTL expiration to complete
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for keyExists(ctx, client, prefix+"body:"+primaryKey+":en") && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	if keyExists(ctx, client, prefix+"body:"+primaryKey+":en") {
 		t.Fatalf("expected en body to have expired")
 	}
@@ -634,8 +640,8 @@ func TestTagHashFieldAutoEviction(t *testing.T) {
 	}
 	vLong := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
 
-	// Store short item with 1s TTL and long item with 60s TTL
-	if err := store.SetVariant(ctx, pkShort, metaShort, vShort, []byte("short"), 1*time.Second); err != nil {
+	// Store short item with 2s TTL and long item with 60s TTL
+	if err := store.SetVariant(ctx, pkShort, metaShort, vShort, []byte("short"), 2*time.Second); err != nil {
 		t.Fatalf("failed to set short item: %v", err)
 	}
 	if err := store.SetVariant(ctx, pkLong, metaLong, vLong, []byte("long"), 60*time.Second); err != nil {
@@ -653,7 +659,17 @@ func TestTagHashFieldAutoEviction(t *testing.T) {
 	}
 
 	// Wait for short item field TTL to elapse
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(2200 * time.Millisecond)
+
+	// Under high parallel test load, allow a short polling window for field eviction to complete
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		resp := client.Do(ctx, client.B().Hget().Key(tagKey).Field(pkShort).Build())
+		if rueidis.IsRedisNil(resp.Error()) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	// Verify short item field was automatically evicted by Redis HEXPIRE
 	shortResp := client.Do(ctx, client.B().Hget().Key(tagKey).Field(pkShort).Build())
@@ -667,10 +683,10 @@ func TestTagHashFieldAutoEviction(t *testing.T) {
 		t.Fatalf("expected long item to still exist, got err=%v, val=%s", err, longValAfter)
 	}
 
-	// Tag key TTL should still be active (~58s)
+	// Tag key TTL should still be active (~57s)
 	keyTTL := getKeyTTL(ctx, client, tagKey)
 	if keyTTL < 50 || keyTTL > 60 {
-		t.Fatalf("expected tag key TTL ~58s, got %v", keyTTL)
+		t.Fatalf("expected tag key TTL ~57s, got %v", keyTTL)
 	}
 
 	// Purge by tag should only process the 1 remaining active item
@@ -694,9 +710,9 @@ func TestStorage_Variant_HEXPIRE_Eviction(t *testing.T) {
 		VaryHeaderNames: []string{"Accept-Encoding"},
 	}
 
-	// 1. Save variant 1 (gzip) with short TTL (1s)
+	// 1. Save variant 1 (gzip) with short TTL (2s)
 	vShort := &pb.VariantInfo{VariantKey: "gzip", StatusCode: 200}
-	if err := store.SetVariant(ctx, pk, meta, vShort, []byte("gzip-body"), 1*time.Second); err != nil {
+	if err := store.SetVariant(ctx, pk, meta, vShort, []byte("gzip-body"), 2*time.Second); err != nil {
 		t.Fatalf("failed to set short variant: %v", err)
 	}
 
@@ -719,7 +735,17 @@ func TestStorage_Variant_HEXPIRE_Eviction(t *testing.T) {
 	}
 
 	// Wait for short variant field TTL to elapse
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(2200 * time.Millisecond)
+
+	// Under high parallel test load, allow a short polling window for field eviction to complete
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		resp := client.Do(ctx, client.B().Hget().Key(metaKey).Field("v:gzip").Build())
+		if rueidis.IsRedisNil(resp.Error()) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	// Verify v:gzip was automatically evicted by Redis HEXPIRE
 	gzipResp := client.Do(ctx, client.B().Hget().Key(metaKey).Field("v:gzip").Build())

@@ -166,7 +166,7 @@ Framework adapters bridge web servers or HTTP routers with Titip's core caching 
 
 ### The Middleware Contract
 
-Titip instances are initialized via `titip.New(titip.WithStorage(store), opts...)`. The engine exposes a standard execution method designed around Go HTTP primitives:
+Titip instances are initialized via `titip.New(store, opts...)`. The engine exposes a standard execution method designed around Go HTTP primitives:
 
 ```go
 t.ServeHTTP(w http.ResponseWriter, r *http.Request, next http.Handler)
@@ -234,7 +234,7 @@ func main() {
 
     // 2. Initialize the Titip instance
     t, err := titip.New(
-        titip.WithStorage(store),
+        store,
         // ...and any optional titip.With... settings (e.g. WithESI, WithCacheStatus)
     )
     if err != nil {

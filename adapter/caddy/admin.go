@@ -96,6 +96,11 @@ func handleAdminPurge(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
+	if req.PurgeEverything && req.Soft != nil && *req.Soft {
+		http.Error(w, `{"error":"purge_everything cannot be done as a soft purge; use URLs [\"/\"] or tags to soft purge"}`, http.StatusBadRequest)
+		return nil
+	}
+
 	soft := true
 	if req.Soft != nil {
 		soft = *req.Soft
@@ -140,6 +145,11 @@ func handleAdminPurge(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	respSoft := soft
+	if targetType == "purge_everything" {
+		respSoft = false
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(purgeAdminResponse{
@@ -147,7 +157,7 @@ func handleAdminPurge(w http.ResponseWriter, r *http.Request) error {
 		Purged: adminPurgedInfo{
 			Type:  targetType,
 			Count: count,
-			Soft:  soft,
+			Soft:  respSoft,
 		},
 	})
 	return nil

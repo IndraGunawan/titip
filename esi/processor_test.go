@@ -19,6 +19,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+func newTestProcessor(t testing.TB, opts ...Option) *Processor {
+	t.Helper()
+	proc, err := NewProcessor(opts...)
+	if err != nil {
+		t.Fatalf("unexpected NewProcessor error: %v", err)
+	}
+	return proc
+}
+
 func testProcess(proc *Processor, ctx context.Context, req *http.Request, body []byte) (*Result, error) {
 	fragments := Scan(body)
 	if len(fragments) == 0 {
@@ -55,7 +64,7 @@ func processHTML(t *testing.T, proc *Processor, html string, reqPath ...string) 
 func runDualFetcher(t *testing.T, mux *http.ServeMux, fn func(t *testing.T, proc *Processor, base string)) {
 	t.Helper()
 	t.Run("internal", func(t *testing.T) {
-		proc := NewProcessor(
+		proc := newTestProcessor(t,
 			WithMaxTimeout(5*time.Second),
 			WithInternalFetcher(HandlerFetcher(mux)),
 		)
@@ -64,7 +73,7 @@ func runDualFetcher(t *testing.T, mux *http.ServeMux, fn func(t *testing.T, proc
 	t.Run("outbound_http", func(t *testing.T) {
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
-		proc := NewProcessor(
+		proc := newTestProcessor(t,
 			WithMaxTimeout(5*time.Second),
 			WithAllowPrivateIPs(),
 		)
@@ -85,7 +94,7 @@ func TestProcessor_InProcessFetcher(t *testing.T) {
 	})
 
 	reg := prometheus.NewRegistry()
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxTimeout(5*time.Second),
 		WithMaxConcurrentRequests(4),
 		WithInternalFetcher(HandlerFetcher(mux)),
@@ -134,7 +143,7 @@ func TestProcessor_OutboundHTTP(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxTimeout(5*time.Second),
 		WithAllowPrivateIPs(), // test server runs on loopback
 	)
@@ -173,7 +182,7 @@ func TestProcessor_OutboundHTTP_RelativePath(t *testing.T) {
 			t.Fatalf("failed to parse test server URL: %v", err)
 		}
 
-		proc := NewProcessor(
+		proc := newTestProcessor(t,
 			WithAllowPrivateIPs(), // test server runs on loopback
 			WithMaxTimeout(5*time.Second),
 		)
@@ -222,7 +231,7 @@ func TestProcessor_OutboundHTTP_RelativePath(t *testing.T) {
 			t.Fatalf("failed to parse test server URL: %v", err)
 		}
 
-		procTLS := NewProcessor(
+		procTLS := newTestProcessor(t,
 			WithHTTPClient(tsTLS.Client()),
 			WithAllowPrivateIPs(),
 			WithMaxTimeout(5*time.Second),
@@ -249,7 +258,7 @@ func TestProcessor_OutboundHTTP_RelativePath(t *testing.T) {
 }
 
 func TestProcessor_FallbackOnErrorContinue(t *testing.T) {
-	proc := NewProcessor(WithMaxTimeout(1 * time.Second))
+	proc := newTestProcessor(t, WithMaxTimeout(1*time.Second))
 	got, _ := processHTML(t, proc, `<div>Before <esi:include src="http://192.0.2.1/fail" onerror="continue" timeout="50" /> After</div>`, "http://example.com/")
 	if got != `<div>Before  After</div>` {
 		t.Errorf("got %q, want %q", got, `<div>Before  After</div>`)
@@ -257,7 +266,7 @@ func TestProcessor_FallbackOnErrorContinue(t *testing.T) {
 }
 
 func TestProcessor_FallbackErrorMarker(t *testing.T) {
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxTimeout(1*time.Second),
 		WithIncludeErrorMarker("<!-- ESI ERROR -->"),
 	)
@@ -268,7 +277,7 @@ func TestProcessor_FallbackErrorMarker(t *testing.T) {
 }
 
 func TestProcessor_CircularInclude(t *testing.T) {
-	proc := NewProcessor(WithMaxTimeout(2 * time.Second))
+	proc := newTestProcessor(t, WithMaxTimeout(2*time.Second))
 	got, _ := processHTML(t, proc, `<div><esi:include src="/circular" onerror="continue" /></div>`, "http://example.com/circular")
 	if got != `<div></div>` {
 		t.Errorf("got %q, want %q", got, `<div></div>`)
@@ -284,7 +293,7 @@ func TestProcessor_MaxRecursionDepth(t *testing.T) {
 		_, _ = w.Write([]byte(`<div>nested <esi:include src="/nested" onerror="continue" /></div>`))
 	})
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxDepth(2),
 		WithMaxTimeout(2*time.Second),
 		WithInternalFetcher(HandlerFetcher(mux)),
@@ -297,8 +306,8 @@ func TestProcessor_MaxRecursionDepth(t *testing.T) {
 }
 
 func TestProcessor_SSRFBlocked(t *testing.T) {
-	proc := NewProcessor(
-		WithMaxTimeout(1 * time.Second),
+	proc := newTestProcessor(t,
+		WithMaxTimeout(1*time.Second),
 	)
 
 	got, _ := processHTML(t, proc, `<div><esi:include src="http://127.0.0.1:9999/secret" onerror="continue" /></div>`, "http://example.com/")
@@ -312,7 +321,7 @@ func TestProcessor_WorkerPanicRecovery(t *testing.T) {
 		panic("simulated worker failure")
 	}
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithInternalFetcher(panicFetcher),
 		WithIncludeErrorMarker("PANIC_RECOVERED"),
 	)
@@ -332,7 +341,7 @@ func TestProcessor_FallbackToOutboundHTTPOn404(t *testing.T) {
 	// In-process router returns 404
 	emptyMux := http.NewServeMux()
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithAllowPrivateIPs(),
 		WithInternalFetcher(HandlerFetcher(emptyMux)),
 	)
@@ -354,7 +363,7 @@ func TestProcessor_FallbackToOutboundHTTPOn404(t *testing.T) {
 }
 
 func TestProcessor_BufferReleaseSafety(t *testing.T) {
-	proc := NewProcessor()
+	proc := newTestProcessor(t)
 
 	parentBody := []byte(`Hello World`)
 	res, err := proc.ProcessFragments(context.Background(), nil, parentBody, nil)
@@ -417,7 +426,7 @@ func TestProcessor_CorruptedInnerOffsets(t *testing.T) {
 	frags[0].InnerStartPos = -99
 	frags[0].InnerEndPos = 9999999
 
-	proc := NewProcessor()
+	proc := newTestProcessor(t)
 	res, err := proc.ProcessFragments(context.Background(), nil, parent, frags)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -438,7 +447,7 @@ func TestProcessor_ScanAndProcessFragments(t *testing.T) {
 		_, _ = w.Write([]byte("<b>Alice</b>"))
 	})
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
 
@@ -485,8 +494,8 @@ func TestProcessor_CanProcess(t *testing.T) {
 		{http.Header{"Surrogate-Control": []string{"abc, content=\"ESI/1.0\", max-age=60"}}, true},
 	}
 
-	procDefault := NewProcessor()
-	procRequired := NewProcessor(WithHeaderRequired())
+	procDefault := newTestProcessor(t)
+	procRequired := newTestProcessor(t, WithHeaderRequired())
 
 	for _, tt := range tests {
 		if !procDefault.CanProcess(tt.header) {
@@ -499,7 +508,7 @@ func TestProcessor_CanProcess(t *testing.T) {
 }
 
 func TestProcessor_SurrogateCapability(t *testing.T) {
-	proc := NewProcessor()
+	proc := newTestProcessor(t)
 
 	// 1. Nil processor does not add capability
 	var nilProc *Processor
@@ -558,7 +567,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 	}
 
 	t.Run("default PreserveETag false strips ETag and LastModified", func(t *testing.T) {
-		p := NewProcessor()
+		p := newTestProcessor(t)
 		h := newHeader("ESI/1.0", `"strong-123"`, "Wed, 21 Oct 2015 07:28:00 GMT")
 		h.Set("Content-Length", "100")
 		h.Set("Content-Type", "text/html")
@@ -585,7 +594,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 	})
 
 	t.Run("PreserveETag true weakens strong ETag and keeps weak and LastModified", func(t *testing.T) {
-		p := NewProcessor(WithPreserveETag())
+		p := newTestProcessor(t, WithPreserveETag())
 
 		h1 := newHeader("ESI/1.0", `"strong-456"`, "Wed, 21 Oct 2015 07:28:00 GMT")
 		p.ReconcileHeaders(h1, nil)
@@ -607,7 +616,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 	})
 
 	t.Run("omits Content-Length when origin omitted it", func(t *testing.T) {
-		p := NewProcessor()
+		p := newTestProcessor(t)
 		h := make(http.Header)
 		h.Set("Content-Type", "text/html")
 
@@ -619,7 +628,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 	})
 
 	t.Run("nil resilience", func(t *testing.T) {
-		p := NewProcessor()
+		p := newTestProcessor(t)
 		p.ReconcileHeaders(nil, nil)
 
 		h := make(http.Header)
@@ -660,7 +669,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 
 		// 1. Default PreserveETag = false
 		resp1 := parseWire()
-		NewProcessor().ReconcileHeaders(resp1.Header, res)
+		newTestProcessor(t).ReconcileHeaders(resp1.Header, res)
 		if resp1.Header.Get("Surrogate-Control") != "" || resp1.Header.Get("ETag") != "" || resp1.Header.Get("Last-Modified") != "" {
 			t.Errorf("expected headers stripped, got %v", resp1.Header)
 		}
@@ -673,7 +682,7 @@ func TestProcessor_ReconcileHeaders(t *testing.T) {
 
 		// 2. PreserveETag = true
 		resp2 := parseWire()
-		NewProcessor(WithPreserveETag()).ReconcileHeaders(resp2.Header, res)
+		newTestProcessor(t, WithPreserveETag()).ReconcileHeaders(resp2.Header, res)
 		if got := resp2.Header.Get("ETag"); got != `W/"origin-wire-etag"` {
 			t.Errorf("expected weakened ETag, got %q", got)
 		}
@@ -868,7 +877,7 @@ func TestProcessor_SharedSrc_DifferentTimeouts(t *testing.T) {
 		_, _ = w.Write([]byte(`<span>Live API Response</span>`))
 	})
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxTimeout(5*time.Second),
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
@@ -893,7 +902,7 @@ func TestProcessor_Singleflight_AbortsWhenAllListenersTimeout(t *testing.T) {
 		handlerCanceled.Store(true)
 	})
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxTimeout(5*time.Second),
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
@@ -931,7 +940,7 @@ func TestProcessor_SharedSrc_DifferentAltURLs(t *testing.T) {
 		_, _ = w.Write([]byte(`<span>Beta Alt</span>`))
 	})
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxTimeout(5*time.Second),
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
@@ -962,7 +971,7 @@ func TestProcessor_SharedSrc_DifferentMaxDepths(t *testing.T) {
 		_, _ = w.Write([]byte(`<span>Level 2 Content</span>`))
 	})
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxDepth(5),
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
@@ -994,7 +1003,7 @@ func TestProcessor_ConcurrentUsers_NoDataLeak(t *testing.T) {
 		_, _ = fmt.Fprintf(w, "Profile of %s", user)
 	})
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
 
@@ -1054,7 +1063,7 @@ func TestProcessor_MemoizedBufferNeverMutated(t *testing.T) {
 		_, _ = w.Write(canaryOriginal)
 	})
 
-	proc := NewProcessor(
+	proc := newTestProcessor(t,
 		WithMaxTimeout(5*time.Second),
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
@@ -1097,7 +1106,7 @@ func TestProcessor_InlineCommentUnescape(t *testing.T) {
 	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("Alice"))
 	})
-	proc := NewProcessor(WithInternalFetcher(HandlerFetcher(mux)))
+	proc := newTestProcessor(t, WithInternalFetcher(HandlerFetcher(mux)))
 
 	t.Run("plain content unescaped without tags (inner scan returns nil)", func(t *testing.T) {
 		html := []byte(`<div><!--esi <p>Rendered by ESI</p> --></div>`)
