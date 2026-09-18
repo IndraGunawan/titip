@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// defaultMarketingQueryParams contains commonly used advertising and tracking query parameters.
+// defaultMarketingQueryParams contains commonly used advertising and tracking click identifier parameters.
 var defaultMarketingQueryParams = []string{
 	"fbclid",
 	"gclid",
@@ -19,11 +19,6 @@ var defaultMarketingQueryParams = []string{
 	"msclkid",
 	"ttclid",
 	"twclid",
-	"utm_campaign",
-	"utm_content",
-	"utm_medium",
-	"utm_source",
-	"utm_term",
 }
 
 // CacheKey defines the rules for assembling zero-hash canonical cache keys.

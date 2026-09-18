@@ -456,6 +456,27 @@ func TestGeneratePrimaryKey_Query(t *testing.T) {
 			mustNot:  []string{":qs="},
 		},
 		{
+			name:     "exclude query overrides both included and excluded params",
+			url:      "http://example.com/items?id=1&page=2&sort=asc",
+			cfg:      &CacheKey{ExcludeQuery: true, IncludedQueryParams: []string{"id"}, ExcludedQueryParams: []string{"page"}},
+			exactKey: "p=/items:h=example.com:m=GET:",
+			mustNot:  []string{":qs="},
+		},
+		{
+			name:     "included params overrides excluded params for conflicting key",
+			url:      "http://example.com/items?id=1&page=2&sort=asc",
+			cfg:      &CacheKey{IncludedQueryParams: []string{"id"}, ExcludedQueryParams: []string{"id", "sort"}},
+			mustHave: []string{"id=1"},
+			mustNot:  []string{"page", "sort"},
+		},
+		{
+			name:     "included params overrides marketing exclusion for explicit utm param",
+			url:      "http://example.com/items?utm_source=newsletter&utm_campaign=summer&category=tech&fbclid=999",
+			cfg:      &CacheKey{IncludedQueryParams: []string{"utm_source", "category"}, ExcludeMarketingQueryParams: true},
+			mustHave: []string{"category=tech", "utm_source=newsletter"},
+			mustNot:  []string{"utm_campaign", "fbclid"},
+		},
+		{
 			name:    "empty query after all params filtered",
 			url:     "http://example.com/page?utm_source=google",
 			cfg:     &CacheKey{ExcludeMarketingQueryParams: true},
