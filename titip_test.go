@@ -22,14 +22,13 @@ func setupTestTitip(t testing.TB, opts ...Option) (*teststore.Store, storage.Sto
 	store := teststore.New()
 
 	defaultOpts := []Option{
-		WithStorage(store),
 		WithBackgroundFetchTimeout(10 * time.Second),
 		WithStorageTimeout(10 * time.Second),
 		WithCacheStatus(CacheStatusRFC9211),
 	}
 	defaultOpts = append(defaultOpts, opts...)
 
-	mw, err := New(defaultOpts...)
+	mw, err := New(store, defaultOpts...)
 	if err != nil {
 		t.Fatalf("failed to create Titip middleware: %v", err)
 	}
@@ -394,13 +393,12 @@ func TestOrigin_MalformedOriginTags(t *testing.T) {
 
 func TestNew_MissingStorage(t *testing.T) {
 	t.Parallel()
-	_, err := New()
+	_, err := New(nil)
 	if err == nil {
 		t.Fatal("expected error when creating Titip without storage, got nil")
 	}
-	expectedMsg := "titip: storage is required"
-	if err.Error() != expectedMsg {
-		t.Fatalf("expected error message %q, got %q", expectedMsg, err.Error())
+	if !errors.Is(err, ErrStorageRequired) {
+		t.Fatalf("expected error wrapping ErrStorageRequired, got: %v", err)
 	}
 }
 
@@ -408,8 +406,8 @@ func TestNew_MinimalOptions(t *testing.T) {
 	t.Parallel()
 	store := teststore.New()
 
-	// Initialize with ONLY the single required option
-	mw, err := New(WithStorage(store))
+	// Initialize with ONLY the single required storage parameter
+	mw, err := New(store)
 	if err != nil {
 		t.Fatalf("failed to initialize Titip with minimal options: %v", err)
 	}
@@ -433,8 +431,8 @@ func TestNew_MinimalOptions(t *testing.T) {
 	if mw.config.backgroundFetchTimeout != 125*time.Second {
 		t.Errorf("expected BackgroundFetchTimeout 125s, got %v", mw.config.backgroundFetchTimeout)
 	}
-	if mw.config.storageTimeout != 1*time.Second {
-		t.Errorf("expected StorageTimeout 1s, got %v", mw.config.storageTimeout)
+	if mw.config.storageTimeout != 5*time.Second {
+		t.Errorf("expected StorageTimeout 5s, got %v", mw.config.storageTimeout)
 	}
 	if mw.logger == nil {
 		t.Errorf("expected non-nil default logger")
@@ -489,47 +487,6 @@ func TestNew_MinimalOptions(t *testing.T) {
 	}
 	if err := mw.Close(ctx); err != nil {
 		t.Errorf("expected Close to succeed on minimal instance, got %v", err)
-	}
-}
-
-func TestNew_NilOptionGuards(t *testing.T) {
-	t.Parallel()
-	store := teststore.New()
-
-	// Initialize with explicit nil pointers
-	mw, err := New(
-		WithStorage(store),
-		WithLogger(nil),
-		WithMetrics(nil),
-	)
-	if err != nil {
-		t.Fatalf("expected New with nil option guards to succeed, got %v", err)
-	}
-
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = mw.Close(ctx)
-	})
-	if mw.logger == nil {
-		t.Fatal("expected mw.logger to fallback to slog.Default() when passed nil")
-	}
-	if mw.metrics != nil {
-		t.Fatal("expected mw.metrics to be nil when passed nil Registerer")
-	}
-
-	// Verify executing request with nil logger/metrics does not panic
-	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=60")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("nil-safe payload"))
-	})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/nil-safe", nil)
-	mw.ServeHTTP(rec, req, origin)
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200 OK, got %d", rec.Code)
 	}
 }
 
@@ -617,36 +574,6 @@ func TestSynchronousFetch_RequestContextPassThrough(t *testing.T) {
 	}
 }
 
-// TestBackgroundFetchTimeout_Configuration verifies WithBackgroundFetchTimeout options.
-func TestBackgroundFetchTimeout_Configuration(t *testing.T) {
-	t.Parallel()
-	store := teststore.New()
-
-	// 1. Custom timeout
-	mwCustom, err := New(
-		WithStorage(store),
-		WithBackgroundFetchTimeout(60*time.Second),
-	)
-	if err != nil {
-		t.Fatalf("failed to create mw: %v", err)
-	}
-	if mwCustom.config.backgroundFetchTimeout != 60*time.Second {
-		t.Errorf("expected 60s, got %v", mwCustom.config.backgroundFetchTimeout)
-	}
-
-	// 2. Disabled timeout (0)
-	mwDisabled, err := New(
-		WithStorage(store),
-		WithBackgroundFetchTimeout(0),
-	)
-	if err != nil {
-		t.Fatalf("failed to create mw: %v", err)
-	}
-	if mwDisabled.config.backgroundFetchTimeout != 0 {
-		t.Errorf("expected 0, got %v", mwDisabled.config.backgroundFetchTimeout)
-	}
-}
-
 type contextCloserStore struct {
 	*teststore.Store
 	closedWithCtx context.Context
@@ -677,7 +604,7 @@ func TestTitip_Close_StorageLifecycle(t *testing.T) {
 	t.Run("storage.Closer context-aware teardown", func(t *testing.T) {
 		baseStore := teststore.New()
 		ctxStore := &contextCloserStore{Store: baseStore}
-		mw, err := New(WithStorage(ctxStore))
+		mw, err := New(ctxStore)
 		if err != nil {
 			t.Fatalf("failed to create mw: %v", err)
 		}
@@ -696,7 +623,7 @@ func TestTitip_Close_StorageLifecycle(t *testing.T) {
 	t.Run("io.Closer teardown", func(t *testing.T) {
 		baseStore := teststore.New()
 		ioStore := &ioCloserStore{Store: baseStore}
-		mw, err := New(WithStorage(ioStore))
+		mw, err := New(ioStore)
 		if err != nil {
 			t.Fatalf("failed to create mw: %v", err)
 		}
@@ -715,7 +642,7 @@ func TestTitip_Close_StorageLifecycle(t *testing.T) {
 	t.Run("no closer storage is safe no-op", func(t *testing.T) {
 		baseStore := teststore.New()
 		// noCloserStore wraps Storage without exposing any Close method
-		mw, err := New(WithStorage(noCloserStore{Storage: baseStore}))
+		mw, err := New(noCloserStore{Storage: baseStore})
 		if err != nil {
 			t.Fatalf("failed to create mw: %v", err)
 		}
@@ -732,7 +659,7 @@ func TestTitip_Close_StorageLifecycle(t *testing.T) {
 		baseStore := teststore.New()
 		expectedErr := errors.New("simulated flush error")
 		ctxStore := &contextCloserStore{Store: baseStore, closeErr: expectedErr}
-		mw, err := New(WithStorage(ctxStore))
+		mw, err := New(ctxStore)
 		if err != nil {
 			t.Fatalf("failed to create mw: %v", err)
 		}

@@ -1,13 +1,21 @@
 package titip
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/indragunawan/titip/esi"
 	"github.com/indragunawan/titip/storage"
+)
+
+var (
+	// ErrInvalidOption is returned when an invalid configuration option is provided to New.
+	ErrInvalidOption = errors.New("titip: invalid option")
 )
 
 // CacheStatusMode specifies the format of the emitted Cache-Status header.
@@ -67,14 +75,15 @@ type config struct {
 }
 
 // Option configures Titip middleware options.
-type Option func(*config)
+type Option func(*config) error
 
 // WithoutConvertHeadToGet disables converting origin HEAD cache misses and revalidations to GET.
 // By default, HEAD misses are converted to GET to prime the cache with body bytes.
 // When disabled, HEAD misses query the origin as HEAD and are not saved to cache.
 func WithoutConvertHeadToGet() Option {
-	return func(c *config) {
+	return func(c *config) error {
 		c.convertHeadToGet = false
+		return nil
 	}
 }
 
@@ -83,51 +92,62 @@ func WithoutConvertHeadToGet() Option {
 // matching the mandatory invalidation behavior defined in RFC 9111 Section 4.4.
 // By default, this is disabled so applications can rely on explicit tag-based (Cache-Tag) or URL invalidation.
 func WithAutoInvalidateMutatingMethods() Option {
-	return func(c *config) {
+	return func(c *config) error {
 		c.autoInvalidateMutatingMethods = true
+		return nil
 	}
 }
 
 // WithMetrics configures the Prometheus metrics registerer.
 func WithMetrics(reg prometheus.Registerer) Option {
-	return func(c *config) {
+	return func(c *config) error {
+		if reg == nil {
+			return fmt.Errorf("%w: metrics registerer cannot be nil", ErrInvalidOption)
+		}
 		c.metrics = reg
+		return nil
 	}
 }
 
-// WithStorageTimeout configures maximum timeout for storage operations (defaults to 1s).
+// WithStorageTimeout configures maximum timeout for storage operations (defaults to 5s).
 func WithStorageTimeout(d time.Duration) Option {
-	return func(c *config) {
+	return func(c *config) error {
+		if d <= 0 {
+			return fmt.Errorf("%w: storage timeout must be positive, got %v", ErrInvalidOption, d)
+		}
 		c.storageTimeout = d
-	}
-}
-
-// WithStorage configures the backend cache storage engine.
-func WithStorage(s storage.Storage) Option {
-	return func(c *config) {
-		c.storage = s
+		return nil
 	}
 }
 
 // WithLogger configures the structured slog.Logger.
 func WithLogger(l *slog.Logger) Option {
-	return func(c *config) {
+	return func(c *config) error {
+		if l == nil {
+			return fmt.Errorf("%w: logger cannot be nil", ErrInvalidOption)
+		}
 		c.logger = l
+		return nil
 	}
 }
 
 // WithCacheStatus configures the Cache-Status header emission mode.
 func WithCacheStatus(mode CacheStatusMode) Option {
-	return func(c *config) {
+	return func(c *config) error {
+		if mode < CacheStatusSimpleToken || mode > CacheStatusNone {
+			return fmt.Errorf("%w: invalid cache status mode %v", ErrInvalidOption, mode)
+		}
 		c.cacheStatusMode = mode
+		return nil
 	}
 }
 
 // WithRespectClientCacheControl enables respecting client request Cache-Control directives (e.g. no-cache, no-store).
 // By default, client cache directives are ignored to protect origin servers.
 func WithRespectClientCacheControl() Option {
-	return func(c *config) {
+	return func(c *config) error {
 		c.respectClientCacheControl = true
+		return nil
 	}
 }
 
@@ -138,51 +158,74 @@ func WithRespectClientCacheControl() Option {
 // Titip applies standard default key generation (protocol-agnostic, host-aware, case-sensitive path,
 // all query parameters retained, and sorted alphabetically).
 func WithCacheKey(k CacheKey) Option {
-	return func(c *config) {
+	return func(c *config) error {
 		c.cacheKey = k
+		return nil
 	}
 }
 
 // WithTagHeader configures the response header inspected for cache tags (defaults to "Cache-Tag").
 func WithTagHeader(name string) Option {
-	return func(c *config) {
-		c.tagHeaderName = name
+	return func(c *config) error {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return fmt.Errorf("%w: tag header name cannot be empty", ErrInvalidOption)
+		}
+		c.tagHeaderName = trimmed
+		return nil
 	}
 }
 
 // WithBackgroundFetchTimeout configures the maximum timeout for asynchronous background revalidation
 // (stale-while-revalidate) origin fetches (defaults to 125s).
-// Set to 0 or negative to disable background timeout enforcement.
+// Set to 0 to disable background timeout enforcement.
 func WithBackgroundFetchTimeout(d time.Duration) Option {
-	return func(c *config) {
+	return func(c *config) error {
+		if d < 0 {
+			return fmt.Errorf("%w: background fetch timeout cannot be negative, got %v", ErrInvalidOption, d)
+		}
 		c.backgroundFetchTimeout = d
+		return nil
 	}
 }
 
 // WithESI enables ESI processing with the provided ESI options.
 // If no options are provided, ESI is enabled with safe production defaults.
 func WithESI(opts ...esi.Option) Option {
-	return func(c *config) {
+	return func(c *config) error {
+		for _, opt := range opts {
+			if opt == nil {
+				return fmt.Errorf("%w: ESI option cannot be nil", ErrInvalidOption)
+			}
+		}
 		if c.esiOptions == nil {
 			c.esiOptions = make([]esi.Option, 0, len(opts))
 		}
 		c.esiOptions = append(c.esiOptions, opts...)
+		return nil
 	}
 }
 
 // WithServerTiming enables Server-Timing header diagnostics for TTFB tracing in browser DevTools.
 func WithServerTiming() Option {
-	return func(c *config) {
+	return func(c *config) error {
 		c.serverTiming.active = true
+		return nil
 	}
 }
 
 // WithServerTimingCookie enables Server-Timing header generation gated by an exact cookie name and value match.
 func WithServerTimingCookie(name, value string) Option {
-	return func(c *config) {
+	return func(c *config) error {
+		trimmedName := strings.TrimSpace(name)
+		trimmedVal := strings.TrimSpace(value)
+		if trimmedName == "" || trimmedVal == "" {
+			return fmt.Errorf("%w: server timing cookie name and value cannot be empty", ErrInvalidOption)
+		}
 		c.serverTiming.active = true
-		c.serverTiming.cookieName = name
-		c.serverTiming.cookieValue = value
+		c.serverTiming.cookieName = trimmedName
+		c.serverTiming.cookieValue = trimmedVal
+		return nil
 	}
 }
 

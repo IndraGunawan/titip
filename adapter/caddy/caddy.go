@@ -213,9 +213,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 
 	// 2. Configure Titip options
-	opts := []titip.Option{
-		titip.WithStorage(store),
-		titip.WithMetrics(ctx.GetMetricsRegistry()),
+	var opts []titip.Option
+	if reg := ctx.GetMetricsRegistry(); reg != nil {
+		opts = append(opts, titip.WithMetrics(reg))
 	}
 
 	if h.logger != nil {
@@ -380,7 +380,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 	}
 
-	instance, err := titip.New(opts...)
+	instance, err := titip.New(store, opts...)
 	if err != nil {
 		return fmt.Errorf("titip: failed to create instance: %w", err)
 	}

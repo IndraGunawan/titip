@@ -185,24 +185,23 @@ type Processor struct {
 }
 
 // NewProcessor constructs a new ESI Processor from the provided options.
-func NewProcessor(opts ...Option) *Processor {
-	var config config
+func NewProcessor(opts ...Option) (*Processor, error) {
+	config := config{
+		maxDepth:              3,
+		maxTimeout:            30 * time.Second,
+		maxConcurrentRequests: 8,
+		maxResponseSize:       10 * 1024 * 1024,
+		logger:                slog.Default(),
+	}
 	for _, opt := range opts {
-		opt(&config)
+		if opt == nil {
+			return nil, fmt.Errorf("%w: option cannot be nil", ErrInvalidOption)
+		}
+		if err := opt(&config); err != nil {
+			return nil, err
+		}
 	}
 
-	if config.maxDepth == 0 {
-		config.maxDepth = 3
-	}
-	if config.maxTimeout <= 0 {
-		config.maxTimeout = 30 * time.Second
-	}
-	if config.maxConcurrentRequests <= 0 {
-		config.maxConcurrentRequests = 8
-	}
-	if config.maxResponseSize <= 0 {
-		config.maxResponseSize = 10 * 1024 * 1024
-	}
 	if config.logger == nil {
 		config.logger = slog.Default()
 	}
@@ -222,7 +221,7 @@ func NewProcessor(opts ...Option) *Processor {
 		httpClient: config.httpClient,
 		logger:     config.logger,
 		metrics:    newMetrics(config.metrics),
-	}
+	}, nil
 }
 
 // ShouldPreserveETag reports whether downstream ETag (weakened) and Last-Modified headers are preserved.

@@ -3,6 +3,7 @@ package caddy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -627,4 +628,51 @@ func TestCaddyHandler_ModuleLifecycleLogging(t *testing.T) {
 	if !foundCleanup {
 		t.Errorf("expected DEBUG 'module cleaned up' log record")
 	}
+}
+
+func TestAdminPurge_PurgeEverythingValidation(t *testing.T) {
+	t.Run("rejects soft purge_everything with 400", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/titip/purge", strings.NewReader(`{"purge_everything":true,"soft":true}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		err := handleAdminPurge(rec, req)
+		if err != nil {
+			t.Fatalf("unexpected handler error: %v", err)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "purge_everything cannot be done as a soft purge") {
+			t.Errorf("expected error message explaining soft purge rejection, got: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("allows hard purge_everything and reports soft false", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/titip/purge", strings.NewReader(`{"purge_everything":true}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		err := handleAdminPurge(rec, req)
+		if err != nil {
+			t.Fatalf("unexpected handler error: %v", err)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var resp purgeAdminResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if !resp.Success {
+			t.Errorf("expected success true")
+		}
+		if resp.Purged.Type != "purge_everything" {
+			t.Errorf("expected type purge_everything, got %s", resp.Purged.Type)
+		}
+		if resp.Purged.Soft {
+			t.Errorf("expected soft to be false for purge_everything, got true")
+		}
+	})
 }

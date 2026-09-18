@@ -652,7 +652,7 @@ func TestTitip_PurgePrefix_Integration(t *testing.T) {
 	// Step 1: Initialize Titip with teststore
 	store := teststore.New()
 	titipInst, err := New(
-		WithStorage(store),
+		store,
 		WithCacheKey(CacheKey{}),
 	)
 	if err != nil {
@@ -753,7 +753,7 @@ func TestTitip_Purge_LiteralAsterisk_DoesNotPurgeSiblings(t *testing.T) {
 
 	store := teststore.New()
 	titipInst, err := New(
-		WithStorage(store),
+		store,
 		WithCacheKey(CacheKey{}),
 	)
 	if err != nil {
@@ -817,7 +817,7 @@ func TestTitip_PurgePrefix_Multilingual(t *testing.T) {
 
 	store := teststore.New()
 	titipInst, err := New(
-		WithStorage(store),
+		store,
 		WithCacheKey(CacheKey{}),
 	)
 	if err != nil {
@@ -880,7 +880,7 @@ func TestTitip_PurgePrefix_Errors(t *testing.T) {
 	t.Parallel()
 
 	store := teststore.New()
-	titipInst, err := New(WithStorage(store))
+	titipInst, err := New(store)
 	if err != nil {
 		t.Fatalf("failed to initialize Titip: %v", err)
 	}
