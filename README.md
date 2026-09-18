@@ -5,7 +5,7 @@
 
 **Titip** is a high-throughput, low-allocation HTTP caching middleware for Go applications and API gateways.
 
-Designed for high-concurrency services, Titip reduces backend load by serving cached responses with minimal memory allocation, atomic Redis Hash multi-variant negotiation, RFC-compliant freshness calculations, and fail-open resilience.
+Designed for high-concurrency services, Titip reduces backend load by serving cached responses with minimal memory allocation, atomic multi-variant negotiation, RFC-compliant freshness calculations, and fail-open resilience.
 
 ## Key Features
 
@@ -15,7 +15,7 @@ Designed for high-concurrency services, Titip reduces backend load by serving ca
 * **RFC-7234, RFC-9111 & RFC-9213 Compliant**: Implements the official Age & Freshness calculation standard (apparent age, corrected initial age, resident time, clock-skew correction, and multi-variant `Vary` header negotiation).
 * **Tiered Cache-Control (RFC 9213)**: Supports targeted header resolution (`Titip-Cache-Control` → `CDN-Cache-Control` → `Cache-Control`), allowing backends to configure edge caching independently from browser caching.
 * **RFC-9211 `Cache-Status` Observability**: Structured diagnostics (`Cache-Status: titip; hit; ttl=295`, `fwd=stale`, `fwd=bypass`) with multi-tier cache chaining.
-* **Edge Side Includes (ESI 1.0)**: Concurrent fragment assembly, in-process routing, recursive loop protection, and SSRF prevention.
+* **Edge Side Includes (ESI)**: Concurrent fragment assembly, in-process routing, recursive loop protection, and SSRF prevention.
 * **Granular Cache Purge API**: Invalidation via programmatic Go API (exact URL, wildcard prefixes, surrogate `Cache-Tag`, soft-purge, or total cache wipeout).
 * **Pluggable Architecture**: Standard `net/http` middleware with modular framework adapters and decoupled storage engines.
 
@@ -28,9 +28,8 @@ Titip separates metadata from variant payloads to enable atomic multi-variant ne
                                │
                                ▼
         ┌──────────────────────────────────────────────┐
-        │ Stage 1: Metadata Lookup (Redis Hash)        │
-        │ Redis Key: titip:meta:<primaryKey>           │
-        │ Fields: _index (pb.CacheMetadata), <variant> │
+        │ Stage 1: GetMeta(primaryKey)                 │
+        │ Evaluates: Vary headers, freshness, tags     │
         └──────────────────────┬───────────────────────┘
                                │
         ┌──────────────────────┴───────────────────────┐
@@ -41,8 +40,8 @@ Titip separates metadata from variant payloads to enable atomic multi-variant ne
                │                               │
                ▼                               ▼
     ┌─────────────────────┐       ┌──────────────────────────────┐
-    │ Serve 304 / Headers │       │ Stage 2: Fetch Variant Body  │
-    │ (0 Body Payload I/O)│       │ Redis Key: titip:body:...    │
+    │ Serve 304 / Headers │       │ Stage 2: GetVariant(pk, vk)  │
+    │ (0 Body Payload I/O)│       │ Returns: Headers & Body      │
     └─────────────────────┘       └──────────────┬───────────────┘
                                                  │
                                                  ▼
@@ -212,10 +211,10 @@ Server-Timing: titip-status;desc="HIT", titip-meta;dur=1.49, titip-body;dur=3.39
 | Metric | Description |
 | :--- | :--- |
 | `titip-status;desc="..."` | Cache status token (`HIT`, `MISS`, `EXPIRED`, `REVALIDATED`, `STALE`, `DYNAMIC`, `BYPASS`). |
-| `titip-meta;dur=X` | Redis Stage 1 metadata lookup duration in milliseconds. |
-| `titip-body;dur=X` | Redis Stage 2 body retrieval and LZ4 decompression duration. |
+| `titip-meta;dur=X` | Stage 1 metadata lookup duration in milliseconds. |
+| `titip-body;dur=X` | Stage 2 body retrieval and LZ4 decompression duration. |
 | `titip-origin;dur=X` | Upstream backend origin fetch duration (on misses or revalidations). |
-| `titip-store;dur=X` | Cache storage duration (LZ4 compression + Redis write). |
+| `titip-store;dur=X` | Cache storage duration (LZ4 compression + storage write). |
 | `titip-esi;dur=X;desc="N fragments"` | Edge Side Includes processing duration and fragment count. |
 | `titip;dur=X` | Total Titip processing duration from request arrival. |
 
@@ -270,14 +269,14 @@ Titip-Cache-Control: public, max-age=86400, stale-while-revalidate=3600
 Cache-Control: private, no-store
 ```
 
-* **Titip (Intermediary)**: Caches the response in Redis for 24 hours (`max-age=86400`), shielding the origin from load.
+* **Titip (Intermediary)**: Caches the response in storage for 24 hours (`max-age=86400`), shielding the origin from load.
 * **Client (Browser)**: Receives `Cache-Control: private, no-store`, preventing sensitive data from persisting in local browser history.
 
 ## Edge Side Includes (ESI)
 
-Titip includes an **Edge Side Includes (ESI 1.0)** engine with parallel fragment fetching, circular loop protection, and SSRF prevention.
+Titip includes an **Edge Side Includes (ESI)** engine with parallel fragment fetching, circular loop protection, and SSRF prevention.
 
-When ESI is active, Titip advertises capability to upstream origins by sending `Surrogate-Capability: titip="ESI/1.0"` per Edge Side Includes (ESI 1.0) specifications. Origins can respond with `Surrogate-Control: content="ESI/1.0"` to direct ESI processing.
+When ESI is active, Titip advertises capability to upstream origins by sending `Surrogate-Capability: titip="ESI/1.0"` per Edge Side Includes (ESI) specifications. Origins can respond with `Surrogate-Control: content="ESI/1.0"` to direct ESI processing.
 
 For standalone package documentation and options reference, see [**ESI Package Guide**](esi/README.md).
 

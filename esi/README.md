@@ -1,6 +1,6 @@
 # ESI (Edge Side Includes)
 
-Package `github.com/indragunawan/titip/esi` provides an [Edge Side Includes (ESI 1.0)](https://www.w3.org/TR/esi-lang/) processor for Go.
+Package `github.com/indragunawan/titip/esi` provides an [Edge Side Includes (ESI)](https://www.w3.org/TR/esi-lang/) processor for Go.
 
 ## Features
 
@@ -124,12 +124,12 @@ If the handler returns 404, the processor falls back to outbound HTTP.
 
 ## Protocol Helpers
 
-Helpers for upstream capability negotiation and downstream response reconciliation defined in the Edge Side Includes (ESI 1.0) specification and RFC 9110:
+Helpers for upstream capability negotiation and downstream response reconciliation defined in the Edge Side Includes (ESI) specification and RFC 9110:
 
 - `proc.AddSurrogateCapability(header http.Header, deviceToken string)`: Advertises `Surrogate-Capability: <deviceToken>="ESI/1.0"` to upstream origin servers (nil-safe no-op).
 - `proc.CanProcess(header http.Header) bool`: Reports whether response headers meet ESI processing requirements based on `WithHeaderRequired`.
 - `proc.ShouldPreserveETag() bool`: Reports whether downstream ETag (weakened) and Last-Modified headers are preserved based on `WithPreserveETag`.
-- `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI 1.0 specifications (removes `Surrogate-Control`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
+- `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI specifications (removes `Surrogate-Control`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
 
 ## Memory Management
 

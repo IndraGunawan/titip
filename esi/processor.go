@@ -263,7 +263,7 @@ func (p *Processor) CanProcess(h http.Header) bool {
 	return h != nil && strings.Contains(h.Get(headerSurrogateControl), "ESI/1.0")
 }
 
-// ReconcileHeaders updates h in-place per ESI 1.0 (§3.2) and RFC 9110 specifications:
+// ReconcileHeaders updates h in-place per ESI (§3.2) and RFC 9110 specifications:
 // - Removes Surrogate-Control header
 // - Weakens or removes ETag and Last-Modified according to PreserveETag
 // - Updates Content-Length if present to match the spliced body length

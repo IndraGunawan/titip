@@ -114,7 +114,7 @@ Configure cache key assembly inside the `cache_key { ... }` block:
 | `preserve_etag <bool>` | `false` | When true, weakens origin ETag (`W/"..."`) and preserves `Last-Modified` for downstream 304. When false (default), strips `ETag`/`Last-Modified` downstream to force dynamic fragment re-evaluation. |
 
 > [!NOTE]
-> When ESI is enabled, Caddy advertises capability to upstream origins via `Surrogate-Capability: titip="ESI/1.0"` per Edge Side Includes (ESI 1.0) specifications.
+> When ESI is enabled, Caddy advertises capability to upstream origins via `Surrogate-Capability: titip="ESI/1.0"` per Edge Side Includes (ESI) specifications.
 
 ### Server-Timing Directive Reference
 
@@ -160,12 +160,14 @@ curl -X POST http://localhost:2019/titip/purge \
 curl -X POST http://localhost:2019/titip/purge \
   -H "Content-Type: application/json" \
   -d '{
-    "purge_everything": true,
-    "soft": true
+    "purge_everything": true
   }'
 ```
 
-* `"soft": true` (default): Marks cache entries as stale, allowing backend revalidation in the background without causing origin stampedes.
+> [!NOTE]
+> `purge_everything` executes a complete physical eviction of all metadata and body keys. Soft purge is not permitted for `purge_everything` (returns HTTP 400 Bad Request); to perform a safe soft purge across broad routes without origin stampedes, target specific URLs (e.g. `{"urls": ["/"], "soft": true}`) or surrogate tags.
+
+* `"soft": true` (default for `urls` and `tags`): Marks cache entries as stale, allowing backend revalidation in the background without causing origin stampedes.
 * `"soft": false`: Hard-purges and evicts entries immediately from storage.
 
 ## 4. Multi-Site & Graceful Reloads

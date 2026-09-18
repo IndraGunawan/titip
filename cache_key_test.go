@@ -436,6 +436,19 @@ func TestGeneratePrimaryKey_Query(t *testing.T) {
 			mustNot:  []string{"UTM_CAMPAIGN", "Utm_Source", "GCLID", "FBCLID"},
 		},
 		{
+			name:     "marketing params wildcard utm prefix stripping",
+			url:      "http://example.com/shoes?utm_id=camp123&utm_custom_tag=promo&utm_source_platform=search&size=10",
+			cfg:      &CacheKey{ExcludeMarketingQueryParams: true},
+			mustHave: []string{"size=10"},
+			mustNot:  []string{"utm_id", "utm_custom_tag", "utm_source_platform"},
+		},
+		{
+			name:     "marketing params wildcard utm prefix retained when disabled",
+			url:      "http://example.com/shoes?utm_id=camp123&utm_custom_tag=promo&size=10",
+			cfg:      &CacheKey{ExcludeMarketingQueryParams: false},
+			mustHave: []string{"size=10", "utm_id=camp123", "utm_custom_tag=promo"},
+		},
+		{
 			name:     "exclude all query string",
 			url:      "http://example.com/articles?id=99&debug=true",
 			cfg:      &CacheKey{ExcludeQuery: true},
