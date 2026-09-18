@@ -154,6 +154,17 @@ func TestExtractVaryHeaderNames(t *testing.T) {
 		}
 	})
 
+	t.Run("mixed case deduplication and canonicalization", func(t *testing.T) {
+		h := http.Header{}
+		h.Add(headerVary, "accept-encoding, user-agent")
+		h.Add(headerVary, "Accept-Encoding, COOKIE")
+		got := extractVaryHeaderNames(h)
+		want := []string{"Accept-Encoding", "User-Agent", "Cookie"}
+		if !slices.Equal(got, want) {
+			t.Errorf("extractVaryHeaderNames() = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("empty vary", func(t *testing.T) {
 		h := http.Header{}
 		got := extractVaryHeaderNames(h)

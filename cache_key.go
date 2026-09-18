@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// defaultMarketingQueryParams contains commonly used advertising and tracking query parameters.
+// defaultMarketingQueryParams contains commonly used advertising and tracking click identifier parameters.
 var defaultMarketingQueryParams = []string{
 	"fbclid",
 	"gclid",
@@ -19,11 +19,6 @@ var defaultMarketingQueryParams = []string{
 	"msclkid",
 	"ttclid",
 	"twclid",
-	"utm_campaign",
-	"utm_content",
-	"utm_medium",
-	"utm_source",
-	"utm_term",
 }
 
 // CacheKey defines the rules for assembling zero-hash canonical cache keys.
@@ -58,7 +53,8 @@ type CacheKey struct {
 	ExcludedQueryParams []string
 
 	// ExcludeMarketingQueryParams filters out standard advertising and tracking query parameters
-	// (e.g. utm_source, utm_campaign, utm_medium, gclid, fbclid, ttclid).
+	// including all utm_* prefix parameters (e.g. utm_source, utm_campaign, utm_id, utm_content)
+	// and common advertising click IDs (gclid, fbclid, ttclid, msclkid, etc.).
 	// When true, marketing tracking parameters are stripped from the cache key.
 	ExcludeMarketingQueryParams bool
 
@@ -275,8 +271,11 @@ func isQueryParamAllowed(k, v string, cfg *CacheKey) bool {
 	if slices.Contains(cfg.ExcludedQueryParams, k) {
 		return false
 	}
-	if cfg.ExcludeMarketingQueryParams && slices.Contains(defaultMarketingQueryParams, strings.ToLower(k)) {
-		return false
+	if cfg.ExcludeMarketingQueryParams {
+		lowerK := strings.ToLower(k)
+		if strings.HasPrefix(lowerK, "utm_") || slices.Contains(defaultMarketingQueryParams, lowerK) {
+			return false
+		}
 	}
 	return true
 }

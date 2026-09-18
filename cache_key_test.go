@@ -436,11 +436,45 @@ func TestGeneratePrimaryKey_Query(t *testing.T) {
 			mustNot:  []string{"UTM_CAMPAIGN", "Utm_Source", "GCLID", "FBCLID"},
 		},
 		{
+			name:     "marketing params wildcard utm prefix stripping",
+			url:      "http://example.com/shoes?utm_id=camp123&utm_custom_tag=promo&utm_source_platform=search&size=10",
+			cfg:      &CacheKey{ExcludeMarketingQueryParams: true},
+			mustHave: []string{"size=10"},
+			mustNot:  []string{"utm_id", "utm_custom_tag", "utm_source_platform"},
+		},
+		{
+			name:     "marketing params wildcard utm prefix retained when disabled",
+			url:      "http://example.com/shoes?utm_id=camp123&utm_custom_tag=promo&size=10",
+			cfg:      &CacheKey{ExcludeMarketingQueryParams: false},
+			mustHave: []string{"size=10", "utm_id=camp123", "utm_custom_tag=promo"},
+		},
+		{
 			name:     "exclude all query string",
 			url:      "http://example.com/articles?id=99&debug=true",
 			cfg:      &CacheKey{ExcludeQuery: true},
 			exactKey: "p=/articles:h=example.com:m=GET:",
 			mustNot:  []string{":qs="},
+		},
+		{
+			name:     "exclude query overrides both included and excluded params",
+			url:      "http://example.com/items?id=1&page=2&sort=asc",
+			cfg:      &CacheKey{ExcludeQuery: true, IncludedQueryParams: []string{"id"}, ExcludedQueryParams: []string{"page"}},
+			exactKey: "p=/items:h=example.com:m=GET:",
+			mustNot:  []string{":qs="},
+		},
+		{
+			name:     "included params overrides excluded params for conflicting key",
+			url:      "http://example.com/items?id=1&page=2&sort=asc",
+			cfg:      &CacheKey{IncludedQueryParams: []string{"id"}, ExcludedQueryParams: []string{"id", "sort"}},
+			mustHave: []string{"id=1"},
+			mustNot:  []string{"page", "sort"},
+		},
+		{
+			name:     "included params overrides marketing exclusion for explicit utm param",
+			url:      "http://example.com/items?utm_source=newsletter&utm_campaign=summer&category=tech&fbclid=999",
+			cfg:      &CacheKey{IncludedQueryParams: []string{"utm_source", "category"}, ExcludeMarketingQueryParams: true},
+			mustHave: []string{"category=tech", "utm_source=newsletter"},
+			mustNot:  []string{"utm_campaign", "fbclid"},
 		},
 		{
 			name:    "empty query after all params filtered",
@@ -668,14 +702,19 @@ func TestGeneratePrimaryKey_NonASCII_Multilingual(t *testing.T) {
 			name:       "Thai path",
 			rawURL:     "http://example.com/สวัสดี/โลก",
 			escapedURL: "http://example.com/%E0%B8%AA%E0%B8%A7%E0%B8%B1%E0%B8%AA%E0%B8%94%E0%B8%B5/%E0%B9%82%E0%B8%A5%E0%B8%81",
+			wantKey:    "p=/%E0%B8%AA%E0%B8%A7%E0%B8%B1%E0%B8%AA%E0%B8%94%E0%B8%B5/%E0%B9%82%E0%B8%A5%E0%B8%81:h=example.com:m=GET:",
 		},
 		{
-			name:   "Arabic path",
-			rawURL: "http://example.com/مرحبا/عالم",
+			name:       "Arabic path",
+			rawURL:     "http://example.com/مرحبا/عالم",
+			escapedURL: "http://example.com/%D9%85%D8%B1%D8%AD%D8%A8%D8%A7/%D8%B9%D8%A7%D9%84%D9%85",
+			wantKey:    "p=/%D9%85%D8%B1%D8%AD%D8%A8%D8%A7/%D8%B9%D8%A7%D9%84%D9%85:h=example.com:m=GET:",
 		},
 		{
-			name:   "Emoji path",
-			rawURL: "http://example.com/product/🎉?id=42",
+			name:       "Emoji path",
+			rawURL:     "http://example.com/product/🎉?id=42",
+			escapedURL: "http://example.com/product/%F0%9F%8E%89?id=42",
+			wantKey:    "p=/product/%F0%9F%8E%89:h=example.com:qs=id=42:m=GET:",
 		},
 	}
 
@@ -691,22 +730,16 @@ func TestGeneratePrimaryKey_NonASCII_Multilingual(t *testing.T) {
 				}
 			}
 
-			if tt.wantKey != "" && keyRaw != tt.wantKey {
+			if keyRaw != tt.wantKey {
 				t.Errorf("expected %q, got %q", tt.wantKey, keyRaw)
 			}
 
 			// If client sends pre-escaped URL, it must produce the exact same primary key
-			uEscaped, err := url.Parse(reqRaw.URL.String())
-			if err == nil {
-				reqEscaped := &http.Request{
-					Method: http.MethodGet,
-					Host:   uEscaped.Host,
-					URL:    uEscaped,
-					Header: http.Header{},
-				}
+			if tt.escapedURL != "" {
+				reqEscaped := makeReq(tt.escapedURL)
 				keyEscaped := generatePrimaryKey(reqEscaped, &CacheKey{})
 				if keyRaw != keyEscaped {
-					t.Errorf("raw URL and escaped URL produced different keys:\n raw:     %s\n escaped: %s", keyRaw, keyEscaped)
+					t.Errorf("raw URL and pre-escaped URL produced different keys:\n raw:     %s\n escaped: %s", keyRaw, keyEscaped)
 				}
 			}
 		})

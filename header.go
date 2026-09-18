@@ -123,8 +123,11 @@ func extractVaryHeaderNames(headers http.Header) []string {
 	for _, varyHeader := range headers.Values(headerVary) {
 		for p := range strings.SplitSeq(varyHeader, ",") {
 			name := strings.TrimSpace(p)
-			if name != "" && !slices.Contains(names, name) {
-				names = append(names, name)
+			if name != "" {
+				name = http.CanonicalHeaderKey(name)
+				if !slices.Contains(names, name) {
+					names = append(names, name)
+				}
 			}
 		}
 	}
