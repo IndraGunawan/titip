@@ -702,14 +702,19 @@ func TestGeneratePrimaryKey_NonASCII_Multilingual(t *testing.T) {
 			name:       "Thai path",
 			rawURL:     "http://example.com/สวัสดี/โลก",
 			escapedURL: "http://example.com/%E0%B8%AA%E0%B8%A7%E0%B8%B1%E0%B8%AA%E0%B8%94%E0%B8%B5/%E0%B9%82%E0%B8%A5%E0%B8%81",
+			wantKey:    "p=/%E0%B8%AA%E0%B8%A7%E0%B8%B1%E0%B8%AA%E0%B8%94%E0%B8%B5/%E0%B9%82%E0%B8%A5%E0%B8%81:h=example.com:m=GET:",
 		},
 		{
-			name:   "Arabic path",
-			rawURL: "http://example.com/مرحبا/عالم",
+			name:       "Arabic path",
+			rawURL:     "http://example.com/مرحبا/عالم",
+			escapedURL: "http://example.com/%D9%85%D8%B1%D8%AD%D8%A8%D8%A7/%D8%B9%D8%A7%D9%84%D9%85",
+			wantKey:    "p=/%D9%85%D8%B1%D8%AD%D8%A8%D8%A7/%D8%B9%D8%A7%D9%84%D9%85:h=example.com:m=GET:",
 		},
 		{
-			name:   "Emoji path",
-			rawURL: "http://example.com/product/🎉?id=42",
+			name:       "Emoji path",
+			rawURL:     "http://example.com/product/🎉?id=42",
+			escapedURL: "http://example.com/product/%F0%9F%8E%89?id=42",
+			wantKey:    "p=/product/%F0%9F%8E%89:h=example.com:qs=id=42:m=GET:",
 		},
 	}
 
@@ -725,22 +730,16 @@ func TestGeneratePrimaryKey_NonASCII_Multilingual(t *testing.T) {
 				}
 			}
 
-			if tt.wantKey != "" && keyRaw != tt.wantKey {
+			if keyRaw != tt.wantKey {
 				t.Errorf("expected %q, got %q", tt.wantKey, keyRaw)
 			}
 
 			// If client sends pre-escaped URL, it must produce the exact same primary key
-			uEscaped, err := url.Parse(reqRaw.URL.String())
-			if err == nil {
-				reqEscaped := &http.Request{
-					Method: http.MethodGet,
-					Host:   uEscaped.Host,
-					URL:    uEscaped,
-					Header: http.Header{},
-				}
+			if tt.escapedURL != "" {
+				reqEscaped := makeReq(tt.escapedURL)
 				keyEscaped := generatePrimaryKey(reqEscaped, &CacheKey{})
 				if keyRaw != keyEscaped {
-					t.Errorf("raw URL and escaped URL produced different keys:\n raw:     %s\n escaped: %s", keyRaw, keyEscaped)
+					t.Errorf("raw URL and pre-escaped URL produced different keys:\n raw:     %s\n escaped: %s", keyRaw, keyEscaped)
 				}
 			}
 		})
