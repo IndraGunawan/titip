@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/indragunawan/titip v0.4.0
-	github.com/redis/rueidis v1.0.77
+	github.com/redis/rueidis v1.0.78
 	google.golang.org/protobuf v1.36.12
 )
 
