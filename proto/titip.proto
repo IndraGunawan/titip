@@ -30,6 +30,7 @@ message VariantInfo {
   int64 last_modified_unix_nano = 6;
   int64 raw_body_size = 7;
   repeated EsiFragment esi_fragments = 8;
+  string storage_compression = 9;
 }
 
 // CacheMetadata stores the primary URL index and variant registry

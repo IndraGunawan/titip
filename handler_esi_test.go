@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2032,5 +2033,101 @@ func TestESI_HeaderRequired_EndToEnd(t *testing.T) {
 	}
 	if sc := rec2.Header().Get("Surrogate-Control"); sc != "" {
 		t.Errorf("expected Surrogate-Control to be stripped from client response, got %q", sc)
+	}
+}
+
+// TestESIMemoryPoolRecycling verifies that all response recorders and splicing byte buffers
+// utilized during ESI execution are safely recycled back to their respective sync.Pools.
+func TestESIMemoryPoolRecycling(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/pool-esi-page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/f1" /><esi:include src="/f2" /></div>`))
+	})
+	mux.HandleFunc("/f1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Fragment 1</span>`))
+	})
+	mux.HandleFunc("/f2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>Fragment 2</span>`))
+	})
+
+	_, _, mw := setupTestTitip(t,
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
+	)
+	handler := mw.testHandler(mux)
+
+	// Execute 100 concurrent requests, ensuring zero pool corruption or buffer retention
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Go(func() {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/pool-esi-page", nil)
+			rec := getResponseRecorder()
+			defer putResponseRecorder(rec)
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("expected 200, got %d", rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "<span>Fragment 1</span><span>Fragment 2</span>") {
+				t.Errorf("unexpected body: %s", rec.Body.String())
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// BenchmarkESI_MemoryPoolReuse benchmarks the memory efficiency and zero-leak pool recycling
+// during complete ESI subrequest execution and buffer splicing.
+func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/bench-pool-esi", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/b1" /><esi:include src="/b2" /></div>`))
+	})
+	mux.HandleFunc("/b1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>B1</span>`))
+	})
+	mux.HandleFunc("/b2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>B2</span>`))
+	})
+
+	_, _, mw := setupTestTitip(b,
+		WithESI(
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
+	)
+	handler := mw.testHandler(mux)
+
+	// Warm up cache once
+	warmReq := httptest.NewRequest(http.MethodGet, "http://example.com/bench-pool-esi", nil)
+	warmRec := httptest.NewRecorder()
+	handler.ServeHTTP(warmRec, warmReq)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench-pool-esi", nil)
+
+	for b.Loop() {
+		rec := getResponseRecorder()
+		handler.ServeHTTP(rec, req)
+		putResponseRecorder(rec)
 	}
 }

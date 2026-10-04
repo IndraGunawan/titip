@@ -40,3 +40,4 @@ Thumbs.db
 # Temporary / Scratch directories
 tmp/
 scratch/
+.codebase-memory/

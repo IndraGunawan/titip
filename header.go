@@ -38,6 +38,7 @@ const (
 	headerPragma          = "Pragma"
 	headerLocation        = "Location"
 	headerContentLocation = "Content-Location"
+	headerContentEncoding = "Content-Encoding"
 
 	// Surrogate & Tag Invalidation / ESI
 	headerCacheTag         = "Cache-Tag"

@@ -184,6 +184,7 @@ type VariantInfo struct {
 	LastModifiedUnixNano int64                    `protobuf:"varint,6,opt,name=last_modified_unix_nano,json=lastModifiedUnixNano,proto3" json:"last_modified_unix_nano,omitempty"`
 	RawBodySize          int64                    `protobuf:"varint,7,opt,name=raw_body_size,json=rawBodySize,proto3" json:"raw_body_size,omitempty"`
 	EsiFragments         []*EsiFragment           `protobuf:"bytes,8,rep,name=esi_fragments,json=esiFragments,proto3" json:"esi_fragments,omitempty"`
+	StorageCompression   string                   `protobuf:"bytes,9,opt,name=storage_compression,json=storageCompression,proto3" json:"storage_compression,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -272,6 +273,13 @@ func (x *VariantInfo) GetEsiFragments() []*EsiFragment {
 		return x.EsiFragments
 	}
 	return nil
+}
+
+func (x *VariantInfo) GetStorageCompression() string {
+	if x != nil {
+		return x.StorageCompression
+	}
+	return ""
 }
 
 // CacheMetadata stores the primary URL index and variant registry
@@ -392,7 +400,7 @@ const file_titip_proto_rawDesc = "" +
 	"\n" +
 	"timeout_ms\x18\a \x01(\x03R\ttimeoutMs\x12&\n" +
 	"\x0finner_start_pos\x18\b \x01(\x03R\rinnerStartPos\x12\"\n" +
-	"\rinner_end_pos\x18\t \x01(\x03R\vinnerEndPos\"\xac\x04\n" +
+	"\rinner_end_pos\x18\t \x01(\x03R\vinnerEndPos\"\xdd\x04\n" +
 	"\vVariantInfo\x12\x1f\n" +
 	"\vvariant_key\x18\x01 \x01(\tR\n" +
 	"variantKey\x12F\n" +
@@ -403,7 +411,8 @@ const file_titip_proto_rawDesc = "" +
 	"\x04etag\x18\x05 \x01(\tR\x04etag\x125\n" +
 	"\x17last_modified_unix_nano\x18\x06 \x01(\x03R\x14lastModifiedUnixNano\x12\"\n" +
 	"\rraw_body_size\x18\a \x01(\x03R\vrawBodySize\x127\n" +
-	"\resi_fragments\x18\b \x03(\v2\x12.titip.EsiFragmentR\fesiFragments\x1a>\n" +
+	"\resi_fragments\x18\b \x03(\v2\x12.titip.EsiFragmentR\fesiFragments\x12/\n" +
+	"\x13storage_compression\x18\t \x01(\tR\x12storageCompression\x1a>\n" +
 	"\x10VaryHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aW\n" +

@@ -52,8 +52,14 @@ func New(store storage.Storage, opts ...Option) (*Titip, error) {
 		// Default backgroundFetchTimeout is 125s, aligned with Cloudflare's default 125-second Proxy Read Timeout connection limit.
 		backgroundFetchTimeout: 125 * time.Second,
 		// Default storageTimeout is 5s, providing buffer for remote storage latency and TLS connection handshakes to prevent premature fail-open.
-		storageTimeout: 5 * time.Second,
-		logger:         slog.Default(),
+		storageTimeout:        5 * time.Second,
+		logger:                slog.Default(),
+		activeCompressionName: StorageCompressionLZ4,
+		compressors: map[string]Compressor{
+			StorageCompressionLZ4:  NewLZ4Compressor(),
+			StorageCompressionNone: NewNoneCompressor(),
+			StorageCompressionZstd: NewZstdCompressor(),
+		},
 	}
 
 	for _, opt := range opts {
@@ -66,6 +72,10 @@ func New(store storage.Storage, opts ...Option) (*Titip, error) {
 			}
 			return nil, fmt.Errorf("%w: %w", ErrInvalidOption, err)
 		}
+	}
+
+	if _, ok := cfg.compressors[cfg.activeCompressionName]; !ok {
+		return nil, fmt.Errorf("%w: unknown active storage compression %q", ErrInvalidOption, cfg.activeCompressionName)
 	}
 
 	if cfg.logger == nil {

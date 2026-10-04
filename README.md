@@ -46,7 +46,7 @@ Titip separates metadata from variant payloads to enable atomic multi-variant ne
                                                  │
                                                  ▼
                                   ┌──────────────────────────────┐
-                                  │ LZ4 Decompress & Stream Body │
+                                  │Decompress & Stream (LZ4/Zstd)│
                                   └──────────────────────────────┘
 ```
 
@@ -148,6 +148,8 @@ Initialize Titip with the mandatory storage engine and any functional options vi
 | `WithESI(opts...)` | `...esi.Option` | `disabled` | Edge Side Includes processing configuration and options. |
 | `WithServerTiming()` | - | *(disabled)* | Enables `Server-Timing` header diagnostics for TTFB tracing in browser DevTools. |
 | `WithServerTimingCookie(name, val)` | `string, string` | `""` | Restricts `Server-Timing` header generation to requests matching an exact cookie name and value. |
+| `WithStorageCompression(name)` | `string` | `"lz4"` | Active compression codec for stored variant bodies (`"lz4"`, `"zstd"`, or `"none"`). |
+| `WithStorageCompressor(comp)` | `Compressor` | - | Registers a custom compression engine implementing `Compressor` for storage reads/writes. |
 
 ## Cache Key & Query Parameter Normalization
 
@@ -230,6 +232,30 @@ cache, err := titip.New(
     titip.WithServerTimingCookie("debug_timing", "secret_value"),
 )
 ```
+
+## Storage Compression
+
+Titip supports configurable internal storage compression to optimize storage memory consumption (e.g. Redis RAM) and network transfer:
+
+* **`"lz4"` (default)**: Ultra-fast compression and decompression, ideal for general high-throughput caching.
+* **`"zstd"`**: High compression ratio powered by Zstandard with fast decompression (`SpeedFastest`, 512KB window). Ideal for significant Redis RAM savings on large JSON/HTML payloads.
+* **`"none"`**: Identity storage of uncompressed raw bytes. Zero compression CPU overhead.
+* **Pluggable Codecs**: Custom algorithms implementing the `Compressor` interface registered via `WithStorageCompressor(comp)`.
+
+```go
+cache, err := titip.New(
+    store,
+    titip.WithStorageCompression("zstd"),
+)
+```
+
+### Zero-Knob Smart Auto-Bypass
+
+Regardless of the configured active compression algorithm, Titip automatically bypasses compression (storing raw bytes with `"none"`) when:
+
+1. Payload size is **< 256 bytes** (avoiding compression frame overhead and size expansion).
+2. Origin response has a **`Content-Encoding`** header (e.g. `gzip`, `br`, `zstd`).
+3. Response is an inherently compressed media format (**`image/*`** except SVG/ICO, **`video/*`**, **`audio/*`**, **`application/zip`**, **`application/pdf`**).
 
 ## Cache Invalidation & Purge API
 

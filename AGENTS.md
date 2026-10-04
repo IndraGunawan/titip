@@ -47,7 +47,7 @@
    - Write automated unit, concurrency, and race condition tests for every feature before declaring it complete.
    - Run tests with continuous race detection: `go test -race -count=100 ./...`.
 3. **Enforce Low-Allocation Standards via Memory Pools**:
-   - Use `sync.Pool` for all byte buffers, response recorders, LZ4 compressor/decompressor instances, and request contexts to eliminate payload heap churn.
+   - Use `sync.Pool` for all byte buffers, response recorders, compressor/decompressor instances (`lz4`, `zstd`), and request contexts to eliminate payload heap churn.
    - Verify buffer and reader recycling with `testing.B` benchmarks.
 4. **Implement Fail-Open Architecture**:
    - Storage outages (Redis down/timeout), Protobuf deserialization errors, or decompression failures **must never crash or return 500 errors to end users**.
@@ -89,7 +89,7 @@
 | Component | Strict Rules |
 | --- | --- |
 | **Storage Engine** | Decoupled via `storage.Storage` interface. Redis is the sole first-class v1.0 storage (`github.com/redis/rueidis`). |
-| **Serialization** | Compact Protobuf schema (`CacheMetadata`, `VariantInfo`) + LZ4 compression (`github.com/pierrec/lz4/v4`). |
+| **Serialization & Compression** | Compact Protobuf schema (`CacheMetadata`, `VariantInfo`) + configurable storage compression (default `lz4`, `zstd`, `none`, or custom `Compressor`). |
 | **Cache Key** | Configurable via `CacheKey` (All, Allowlist, Denylist, Exclude All query parameters). Zero-hash direct assembly. |
 | **Origin Age Handling** | RFC 9111 / RFC-7234 Section 4.2.3 algorithm (apparent age, corrected initial age, resident time, effective TTL). Max TTL clamped to 1 year. |
 | **Cache Status Headers** | RFC-9211 structured field (`Cache-Status: titip; hit; ...`), Simple Token (`HIT`, `MISS`), or Disabled. |
@@ -142,11 +142,11 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 ## 5. Memory Pool & Zero-Allocation Safety Rules
 
 1. **Strict Pool Return Discipline**:
-   - Always pair `GetBuffer()` / `GetResponseRecorder()` with an immediate `defer PutBuffer(buf)` / `defer PutResponseRecorder(rec)`.
+   - Always pair `getBuffer()` / `getResponseRecorder()` with an immediate `defer putBuffer(buf)` / `defer putResponseRecorder(rec)` (and `acquireRequestContext` with `defer releaseRequestContext(ctx)`).
 2. **Zero Slice Retention After Put**:
-   - **NEVER** hold references or slice pointers to a pooled buffer's underlying byte array after `PutBuffer` has been called. If bytes must outlive the request, allocate an explicit copy (`bytes.Clone(b)`).
+   - **NEVER** hold references or slice pointers to a pooled buffer's underlying byte array after `putBuffer` has been called. If bytes must outlive the request, allocate an explicit copy (`bytes.Clone(b)`).
 3. **Buffer Growth Protection**:
-   - In `PutBuffer(b)`, if `b.Cap() > 2*1024*1024` ($2\text{ MB}$), discard the buffer rather than returning it to the pool to protect against permanent heap retention from abnormally large single responses.
+   - In `putBuffer(b)` and `putResponseRecorder(rec)`, if buffer capacity exceeds $2\text{ MB}$ (`maxBufferSize = 2*1024*1024`), discard or reallocate rather than returning oversized buffers to the pool to protect against permanent heap retention.
 4. **Protobuf Instance Reuse**:
    - Always call `proto.Reset(msg)` when recycling Protobuf structs back into pools.
 
