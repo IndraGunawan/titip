@@ -26,9 +26,7 @@ var responseRecorderPool = sync.Pool{
 
 // getResponseRecorder retrieves a pooled responseRecorder.
 func getResponseRecorder() *responseRecorder {
-	rec := responseRecorderPool.Get().(*responseRecorder)
-	rec.Reset()
-	return rec
+	return responseRecorderPool.Get().(*responseRecorder)
 }
 
 // putResponseRecorder cleans and returns a responseRecorder to the pool.

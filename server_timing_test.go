@@ -271,6 +271,49 @@ func TestServerTiming_PreserveUpstreamHeader(t *testing.T) {
 	}
 }
 
+func TestServerTiming_CompressionDetails(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t, WithServerTiming(), WithStorageCompression("zstd"))
+
+	payload := strings.Repeat("Highly compressible JSON block with repeated words and phrases. ", 50) // ~3.3 KB
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerContentType, "application/json")
+		w.Header().Set(headerCacheControl, "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(payload))
+	})
+	handler := mw.testHandler(origin)
+
+	// 1. Cold Miss (Store): should include zstd compression ratio and percentage saved
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/timing-comp", nil)
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+
+	timing1 := rec1.Header().Get("Server-Timing")
+	if !strings.Contains(timing1, `titip-store;dur=`) {
+		t.Fatalf("expected titip-store in Server-Timing, got: %q", timing1)
+	}
+	if !strings.Contains(timing1, `desc="zstd (`) || !strings.Contains(timing1, `->`) || !strings.Contains(timing1, `%)"`) {
+		t.Fatalf("expected zstd compression ratio and percentage saved in titip-store, got: %q", timing1)
+	}
+
+	// 2. Cache Hit: should include codec name on titip-body without byte size
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/timing-comp", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	timing2 := rec2.Header().Get("Server-Timing")
+	if !strings.Contains(timing2, `titip-body;dur=`) {
+		t.Fatalf("expected titip-body in Server-Timing, got: %q", timing2)
+	}
+	if !strings.Contains(timing2, `desc="zstd"`) {
+		t.Fatalf("expected zstd codec in titip-body, got: %q", timing2)
+	}
+	if strings.Contains(timing2, `desc="zstd (`) {
+		t.Fatalf("did not expect compressed byte size in titip-body, got: %q", timing2)
+	}
+}
+
 func BenchmarkServerTiming_Active_CacheHit(b *testing.B) {
 	_, _, mw := setupTestTitip(b, WithServerTiming())
 
@@ -294,5 +337,26 @@ func BenchmarkServerTiming_Active_CacheHit(b *testing.B) {
 		rec := getResponseRecorder()
 		handler.ServeHTTP(rec, req)
 		putResponseRecorder(rec)
+	}
+}
+
+func BenchmarkServerTiming_Emit(b *testing.B) {
+	cfg := serverTimingConfig{active: true}
+	timing := &serverTimingRecorder{
+		enabled:      true,
+		startNano:    time.Now().UnixNano(),
+		metaDuration: 100 * time.Microsecond,
+		bodyDuration: 200 * time.Microsecond,
+		storeCodec:   "zstd",
+	}
+
+	rec := getResponseRecorder()
+	defer putResponseRecorder(rec)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		rec.Reset()
+		cfg.emit(rec, timing, "HIT")
 	}
 }

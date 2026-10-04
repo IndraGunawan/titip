@@ -139,9 +139,11 @@ func (c *noneCompressor) Decompress(src []byte, dst *bytes.Buffer) error {
 	return nil
 }
 
+var noneInstance = &noneCompressor{}
+
 // NewNoneCompressor creates a new Compressor instance for raw, uncompressed payload storage.
 func NewNoneCompressor() Compressor {
-	return &noneCompressor{}
+	return noneInstance
 }
 
 // --- Zstandard Compressor ---
@@ -219,17 +221,13 @@ func NewZstdCompressor() Compressor {
 
 // --- Smart Auto-Bypass Helpers ---
 
-var noneInstance = &noneCompressor{}
-
 // isPrecompressedContentType checks if Content-Type indicates inherently compressed media.
 func isPrecompressedContentType(ct string) bool {
 	if ct == "" {
 		return false
 	}
-	ct = strings.ToLower(ct)
-	if idx := strings.IndexByte(ct, ';'); idx != -1 {
-		ct = strings.TrimSpace(ct[:idx])
-	}
+	base, _, _ := strings.Cut(ct, ";")
+	ct = strings.TrimSpace(strings.ToLower(base))
 	switch {
 	case strings.HasPrefix(ct, "image/"),
 		strings.HasPrefix(ct, "video/"),

@@ -25,57 +25,17 @@ type requestContext struct {
 	meta         *pb.CacheMetadata
 	isSoftPurged bool
 	varInfo      *pb.VariantInfo
-	freshness    freshnessInfo
 	nowNano      int64 // nowNano is the timestamp evaluated during freshness check for RFC 9111 Age calculation.
 	isVaryMiss   bool
 
-	// serverTiming indicates whether Server-Timing header generation is active for this request.
-	serverTiming bool
-
-	// startNano is the immutable request arrival timestamp used for total duration calculation.
-	startNano int64
-
-	// metaDuration is the Stage 1 Redis metadata lookup duration.
-	metaDuration time.Duration
-
-	// bodyDuration is the Stage 2 Redis body retrieval and decompression duration.
-	bodyDuration time.Duration
-
-	// originDuration is the upstream backend origin fetch duration.
-	originDuration time.Duration
-
-	// storeDuration is the cache storage (LZ4 compression + Redis write) duration.
-	storeDuration time.Duration
-
-	// esiDuration is the ESI fragment fetching and assembly duration.
-	esiDuration time.Duration
-
-	// esiFragments is the count of ESI fragment tags processed in the response.
-	esiFragments int
+	// timing captures optional Server-Timing diagnostics.
+	// Embedded by value
+	timing serverTimingRecorder
 }
 
 // Reset clears all fields before returning the struct to the pool.
 func (ctx *requestContext) Reset() {
-	ctx.w = nil
-	ctx.r = nil
-	ctx.next = nil
-	ctx.reqCC = nil
-	ctx.primaryKey = ""
-	ctx.variantKey = ""
-	ctx.meta = nil
-	ctx.isSoftPurged = false
-	ctx.varInfo = nil
-	ctx.freshness = freshnessInfo{}
-	ctx.nowNano = 0
-	ctx.isVaryMiss = false
-	ctx.serverTiming = false
-	ctx.startNano = 0
-	ctx.metaDuration = 0
-	ctx.bodyDuration = 0
-	ctx.originDuration = 0
-	ctx.storeDuration = 0
-	ctx.esiDuration = 0
-	ctx.esiFragments = 0
+	*ctx = requestContext{}
 }
 
 var requestContextPool = sync.Pool{
@@ -90,7 +50,7 @@ func acquireRequestContext(w http.ResponseWriter, r *http.Request, next http.Han
 	ctx.r = r
 	ctx.next = next
 	now := time.Now().UnixNano()
-	ctx.startNano = now
+	ctx.timing.startNano = now
 	ctx.nowNano = now
 	return ctx
 }
@@ -121,8 +81,8 @@ func (t *Titip) emitCacheStatus(ctx *requestContext, simpleToken, rfc9211Detail 
 		// Do not emit Cache-Status header
 	}
 
-	if ctx.serverTiming {
-		t.config.serverTiming.emit(w, ctx, simpleToken)
+	if ctx.timing.enabled {
+		t.config.serverTiming.emit(w, &ctx.timing, simpleToken)
 	}
 }
 
@@ -131,8 +91,8 @@ func (t *Titip) recordRequest(ctx *requestContext, status string) {
 		return
 	}
 	var dur time.Duration
-	if ctx != nil && ctx.startNano > 0 {
-		dur = time.Duration(time.Now().UnixNano() - ctx.startNano)
+	if ctx != nil && ctx.timing.startNano > 0 {
+		dur = time.Duration(time.Now().UnixNano() - ctx.timing.startNano)
 	}
 	t.metrics.recordRequest(status, dur)
 }
@@ -176,6 +136,11 @@ func (t *Titip) loadDecompressed(ctx *requestContext) (*pb.VariantInfo, *bytes.B
 			)
 		}
 		return nil, nil, false
+	}
+	if ctx.timing.enabled {
+		ctx.timing.storeCodec = codec
+		ctx.timing.storeRawSize = varInfo.RawBodySize
+		ctx.timing.storeCompSize = int64(len(compBody))
 	}
 	return varInfo, buf, true
 }

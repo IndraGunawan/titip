@@ -27,7 +27,7 @@ func (t *Titip) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 	ctx := acquireRequestContext(w, r, next)
 	defer releaseRequestContext(ctx)
 
-	ctx.serverTiming = t.config.serverTiming.enabled(r)
+	ctx.timing.enabled = t.config.serverTiming.enabled(r)
 
 	for state := stateCheckBypass; state != nil; {
 		state = state(t, ctx)
@@ -120,12 +120,12 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 
 	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
 	var t0 time.Time
-	if ctx.serverTiming {
+	if ctx.timing.enabled {
 		t0 = time.Now()
 	}
 	meta, isSoftPurged, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)
-	if ctx.serverTiming {
-		ctx.metaDuration = time.Since(t0)
+	if ctx.timing.enabled {
+		ctx.timing.metaDuration = time.Since(t0)
 	}
 	storeCancel()
 
@@ -260,12 +260,12 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	var t0 time.Time
-	if ctx.serverTiming {
+	if ctx.timing.enabled {
 		t0 = time.Now()
 	}
 	varInfo, dstBuf, ok := t.loadDecompressed(ctx)
-	if ctx.serverTiming {
-		ctx.bodyDuration = time.Since(t0)
+	if ctx.timing.enabled {
+		ctx.timing.bodyDuration = time.Since(t0)
 	}
 	if !ok {
 		if dstBuf != nil {
@@ -298,12 +298,12 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 // 7. stateServeSWR: Serves stale cached variant and triggers background revalidation
 func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	var t0 time.Time
-	if ctx.serverTiming {
+	if ctx.timing.enabled {
 		t0 = time.Now()
 	}
 	varInfo, dstBuf, ok := t.loadDecompressed(ctx)
-	if ctx.serverTiming {
-		ctx.bodyDuration = time.Since(t0)
+	if ctx.timing.enabled {
+		ctx.timing.bodyDuration = time.Since(t0)
 	}
 	if !ok {
 		if dstBuf != nil {
@@ -374,8 +374,8 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		ctx.next.ServeHTTP(rec, originReq)
 	}()
 	respTime := time.Now()
-	if ctx.serverTiming {
-		ctx.originDuration = respTime.Sub(reqTime)
+	if ctx.timing.enabled {
+		ctx.timing.originDuration = respTime.Sub(reqTime)
 	}
 
 	// Origin Panic Recovery (Fail-Open)
@@ -434,14 +434,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		shouldCache = false
 	}
 	if shouldCache {
-		var t0 time.Time
-		if ctx.serverTiming {
-			t0 = time.Now()
-		}
-		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
-		if ctx.serverTiming {
-			ctx.storeDuration = time.Since(t0)
-		}
+		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime, &ctx.timing)
 	}
 
 	// ESI Processing on Cold Miss
@@ -533,7 +526,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	var tRevalStart time.Time
-	if ctx.serverTiming {
+	if ctx.timing.enabled {
 		tRevalStart = time.Now()
 	}
 
@@ -672,7 +665,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			shouldCache = false
 		}
 		if shouldCache {
-			t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
+			t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime, &ctx.timing)
 		}
 
 		return &fetchResult{
@@ -697,8 +690,8 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		return nil
 	}
 
-	if ctx.serverTiming {
-		ctx.originDuration = time.Since(tRevalStart)
+	if ctx.timing.enabled {
+		ctx.timing.originDuration = time.Since(tRevalStart)
 	}
 
 	collapsedToken := ""
@@ -868,7 +861,13 @@ func (t *Titip) saveVariantToStorage(
 	bodyBytes []byte,
 	freshness freshnessInfo,
 	respTime time.Time,
+	timing *serverTimingRecorder,
 ) {
+	var t0 time.Time
+	if timing != nil && timing.enabled {
+		t0 = time.Now()
+	}
+
 	tags := extractTags(headers, t.config.tagHeaderName)
 
 	// Check for ESI directives in body
@@ -944,6 +943,13 @@ func (t *Titip) saveVariantToStorage(
 			t.logger.ErrorContext(ctx, "storage error saving variant", "error", storeErr, "key", primaryKey)
 		}
 	}
+
+	if timing != nil && timing.enabled {
+		timing.storeDuration = time.Since(t0)
+		timing.storeCodec = compName
+		timing.storeRawSize = int64(len(bodyBytes))
+		timing.storeCompSize = int64(len(compBytes))
+	}
 }
 
 func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primaryKey string, variantKey string) {
@@ -992,7 +998,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 		shouldCache = false
 	}
 	if shouldCache {
-		t.saveVariantToStorage(bgCtx, primaryKey, variantKey, rec.Code, r, headers, bodyBytes, freshness, respTime)
+		t.saveVariantToStorage(bgCtx, primaryKey, variantKey, rec.Code, r, headers, bodyBytes, freshness, respTime, nil)
 	}
 }
 
