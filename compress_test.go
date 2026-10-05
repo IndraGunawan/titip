@@ -334,6 +334,24 @@ func TestSmartAutoBypassSelection(t *testing.T) {
 			headers:    map[string]string{"Content-Type": "image/svg+xml"},
 			wantActive: true,
 		},
+		{
+			name:       "application/x-tar bypassed",
+			bodyLen:    1024,
+			headers:    map[string]string{"Content-Type": "application/x-tar"},
+			wantActive: false,
+		},
+		{
+			name:       "application/avatar+json NOT bypassed",
+			bodyLen:    1024,
+			headers:    map[string]string{"Content-Type": "application/avatar+json"},
+			wantActive: true,
+		},
+		{
+			name:       "application/vnd.target+json NOT bypassed",
+			bodyLen:    1024,
+			headers:    map[string]string{"Content-Type": "application/vnd.target+json"},
+			wantActive: true,
+		},
 	}
 
 	for _, tt := range tests {

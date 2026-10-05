@@ -221,38 +221,43 @@ func NewZstdCompressor() Compressor {
 
 // --- Smart Auto-Bypass Helpers ---
 
-// isPrecompressedContentType checks if Content-Type indicates inherently compressed media.
+// isPrecompressedContentType checks if Content-Type indicates inherently compressed media
+// (e.g. images/*, audio/*, video/*, or archive formats like application/zip, application/gzip, application/zstd, and application/pdf).
 func isPrecompressedContentType(ct string) bool {
 	if ct == "" {
 		return false
 	}
 	base, _, _ := strings.Cut(ct, ";")
 	ct = strings.TrimSpace(strings.ToLower(base))
+	if strings.HasPrefix(ct, "text/") ||
+		ct == "application/json" ||
+		ct == "application/javascript" ||
+		ct == "application/xml" {
+		return false
+	}
 	switch {
 	case strings.HasPrefix(ct, "image/"),
 		strings.HasPrefix(ct, "video/"),
 		strings.HasPrefix(ct, "audio/"):
-		// Uncompressed or text-based media formats that benefit from compression
-		if ct == "image/svg+xml" || ct == "image/x-icon" || ct == "image/vnd.microsoft.icon" {
-			return false
-		}
-		return true
+		// Text-based or uncompressed image formats that benefit from compression
+		return ct != "image/svg+xml" && ct != "image/x-icon" && ct != "image/vnd.microsoft.icon"
 	case strings.Contains(ct, "zip"),
 		strings.Contains(ct, "gzip"),
 		strings.Contains(ct, "compressed"),
-		strings.Contains(ct, "tar"),
 		strings.Contains(ct, "zstd"),
 		strings.Contains(ct, "brotli"),
-		strings.Contains(ct, "pdf"):
+		strings.Contains(ct, "pdf"),
+		strings.Contains(ct, "/tar"),
+		strings.Contains(ct, "/x-tar"):
 		return true
 	default:
 		return false
 	}
 }
 
-// selectCompressor chooses the compressor to use for storing variant payload.
-// Hardcoded invariant: automatically selects noneCompressor if the body is < 256 bytes,
-// already compressed by origin (Content-Encoding), or inherently compressed media format.
+// selectCompressor chooses the storage compressor for a variant payload.
+// Automatically bypasses compression (<256B, wire-encoded Content-Encoding, or pre-compressed Content-Type)
+// to prevent double compression and CPU waste.
 func selectCompressor(active Compressor, headers http.Header, bodyLen int) Compressor {
 	if bodyLen < minCompressionSize {
 		return noneInstance
