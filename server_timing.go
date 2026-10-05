@@ -78,8 +78,16 @@ func (cfg serverTimingConfig) emit(w http.ResponseWriter, rec *serverTimingRecor
 					buf.WriteString(" -> ")
 					appendByteSize(buf, &scratch, rec.storeCompSize)
 					savedPct := 100 - (rec.storeCompSize*100)/rec.storeRawSize
-					buf.WriteString(", -")
-					buf.Write(strconv.AppendInt(scratch[:0], savedPct, 10))
+					buf.WriteString(", ")
+					if savedPct < 0 {
+						// If it grew larger, print a plus sign and invert the percentage (e.g., +5%)
+						buf.WriteByte('+')
+						buf.Write(strconv.AppendInt(scratch[:0], -savedPct, 10))
+					} else {
+						// If it shrank, print a minus sign for reduction (e.g., -72%)
+						buf.WriteByte('-')
+						buf.Write(strconv.AppendInt(scratch[:0], savedPct, 10))
+					}
 					buf.WriteByte('%')
 				}
 				buf.WriteByte(')')
