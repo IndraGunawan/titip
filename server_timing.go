@@ -75,7 +75,7 @@ func (cfg serverTimingConfig) emit(w http.ResponseWriter, rec *serverTimingRecor
 				buf.WriteString(" (")
 				appendByteSize(buf, &scratch, rec.storeRawSize)
 				if rec.storeCompSize > 0 && rec.storeCodec != StorageCompressionNone {
-					buf.WriteString("->")
+					buf.WriteString(" -> ")
 					appendByteSize(buf, &scratch, rec.storeCompSize)
 					savedPct := 100 - (rec.storeCompSize*100)/rec.storeRawSize
 					buf.WriteString(", -")

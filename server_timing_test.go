@@ -293,7 +293,7 @@ func TestServerTiming_CompressionDetails(t *testing.T) {
 	if !strings.Contains(timing1, `titip-store;dur=`) {
 		t.Fatalf("expected titip-store in Server-Timing, got: %q", timing1)
 	}
-	if !strings.Contains(timing1, `desc="zstd (`) || !strings.Contains(timing1, `->`) || !strings.Contains(timing1, `%)"`) {
+	if !strings.Contains(timing1, `desc="zstd (`) || !strings.Contains(timing1, ` -> `) || !strings.Contains(timing1, `%)"`) {
 		t.Fatalf("expected zstd compression ratio and percentage saved in titip-store, got: %q", timing1)
 	}
 
