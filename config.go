@@ -59,19 +59,30 @@ const (
 
 // config defines the configuration parameters for the Titip middleware.
 type config struct {
-	storage                       storage.Storage
-	logger                        *slog.Logger
-	metrics                       prometheus.Registerer
+	// Storage engine & persistence
+	storage            storage.Storage
+	storageTimeout     time.Duration
+	storageCompression string
+	compressors        map[string]Compressor
+
+	// Cache keying & tagging
+	cacheKey      CacheKey
+	tagHeaderName string
+
+	// HTTP caching protocol & upstream behavior
 	cacheStatusMode               CacheStatusMode
 	respectClientCacheControl     bool
 	convertHeadToGet              bool
 	autoInvalidateMutatingMethods bool
-	cacheKey                      CacheKey
-	tagHeaderName                 string
 	backgroundFetchTimeout        time.Duration
-	storageTimeout                time.Duration
-	esiOptions                    []esi.Option
-	serverTiming                  serverTimingConfig
+
+	// Optional features & extensions
+	esiOptions   []esi.Option
+	serverTiming serverTimingConfig
+
+	// Observability & telemetry
+	logger  *slog.Logger
+	metrics prometheus.Registerer
 }
 
 // Option configures Titip middleware options.
@@ -225,6 +236,41 @@ func WithServerTimingCookie(name, value string) Option {
 		c.serverTiming.active = true
 		c.serverTiming.cookieName = trimmedName
 		c.serverTiming.cookieValue = trimmedVal
+		return nil
+	}
+}
+
+// WithStorageCompression sets the compression algorithm used when writing new cache entries to storage.
+// Built-in supported codecs are "lz4" (default), "zstd", and "none", as well as any registered custom compressor.
+// Empty string is rejected.
+func WithStorageCompression(name string) Option {
+	return func(c *config) error {
+		trimmed := strings.ToLower(strings.TrimSpace(name))
+		if trimmed == "" {
+			return fmt.Errorf("%w: storage compression name cannot be empty", ErrInvalidOption)
+		}
+		c.storageCompression = trimmed
+		return nil
+	}
+}
+
+// WithStorageCompressor registers a custom compressor for reading and writing cached variant bodies.
+// Compressor names must be unique; built-in codecs ("lz4", "zstd", "none") and previously registered
+// compressors cannot be overwritten.
+// To use the registered compressor for writing new cache entries, pass its name to WithStorageCompression.
+func WithStorageCompressor(comp Compressor) Option {
+	return func(c *config) error {
+		if comp == nil {
+			return fmt.Errorf("%w: compressor cannot be nil", ErrInvalidOption)
+		}
+		name := strings.ToLower(strings.TrimSpace(comp.Name()))
+		if name == "" {
+			return fmt.Errorf("%w: compressor name cannot be empty", ErrInvalidOption)
+		}
+		if _, exists := c.compressors[name]; exists {
+			return fmt.Errorf("%w: compressor %q already registered", ErrInvalidOption, name)
+		}
+		c.compressors[name] = comp
 		return nil
 	}
 }

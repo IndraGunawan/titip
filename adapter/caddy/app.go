@@ -52,6 +52,9 @@ type App struct {
 	// ServerTiming defines default Server-Timing parameters.
 	ServerTiming *ServerTimingConfig `json:"server_timing,omitempty"`
 
+	// StorageCompression specifies the default storage compression algorithm ("lz4", "zstd", or "none").
+	StorageCompression string `json:"storage_compression,omitempty"`
+
 	storageMod StorageModule
 }
 
@@ -186,6 +189,12 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 					return nil, err
 				}
 				app.ServerTiming = st
+
+			case "storage_compression":
+				if !d.NextArg() {
+					return nil, d.ArgErr()
+				}
+				app.StorageCompression = d.Val()
 
 			default:
 				return nil, d.Errf("unknown global titip directive: %s", d.Val())

@@ -43,17 +43,28 @@ func New(store storage.Storage, opts ...Option) (*Titip, error) {
 	}
 
 	cfg := config{
-		storage:                   store,
+		// Storage engine & persistence
+		storage:            store,
+		storageTimeout:     5 * time.Second, // Default 5s buffer for remote storage latency and TLS connection handshakes
+		storageCompression: StorageCompressionLZ4,
+		compressors: map[string]Compressor{
+			StorageCompressionLZ4:  NewLZ4Compressor(),
+			StorageCompressionNone: NewNoneCompressor(),
+			StorageCompressionZstd: NewZstdCompressor(),
+		},
+
+		// Cache keying & tagging
+		cacheKey:      CacheKey{},
+		tagHeaderName: headerCacheTag,
+
+		// HTTP caching protocol & upstream behavior
 		cacheStatusMode:           CacheStatusSimpleToken,
 		respectClientCacheControl: false,
 		convertHeadToGet:          true,
-		cacheKey:                  CacheKey{},
-		tagHeaderName:             headerCacheTag,
-		// Default backgroundFetchTimeout is 125s, aligned with Cloudflare's default 125-second Proxy Read Timeout connection limit.
-		backgroundFetchTimeout: 125 * time.Second,
-		// Default storageTimeout is 5s, providing buffer for remote storage latency and TLS connection handshakes to prevent premature fail-open.
-		storageTimeout: 5 * time.Second,
-		logger:         slog.Default(),
+		backgroundFetchTimeout:    125 * time.Second, // Aligned with Cloudflare's default 125s Proxy Read Timeout connection limit
+
+		// Observability & telemetry
+		logger: slog.Default(),
 	}
 
 	for _, opt := range opts {
@@ -66,6 +77,10 @@ func New(store storage.Storage, opts ...Option) (*Titip, error) {
 			}
 			return nil, fmt.Errorf("%w: %w", ErrInvalidOption, err)
 		}
+	}
+
+	if _, ok := cfg.compressors[cfg.storageCompression]; !ok {
+		return nil, fmt.Errorf("%w: unknown storage compression %q", ErrInvalidOption, cfg.storageCompression)
 	}
 
 	if cfg.logger == nil {

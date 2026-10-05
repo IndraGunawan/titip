@@ -27,7 +27,7 @@ func (t *Titip) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 	ctx := acquireRequestContext(w, r, next)
 	defer releaseRequestContext(ctx)
 
-	ctx.serverTiming = t.config.serverTiming.enabled(r)
+	ctx.timing.enabled = t.config.serverTiming.enabled(r)
 
 	for state := stateCheckBypass; state != nil; {
 		state = state(t, ctx)
@@ -120,12 +120,12 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 
 	storeCtx, storeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
 	var t0 time.Time
-	if ctx.serverTiming {
+	if ctx.timing.enabled {
 		t0 = time.Now()
 	}
 	meta, isSoftPurged, err := t.storage.GetMeta(storeCtx, ctx.primaryKey)
-	if ctx.serverTiming {
-		ctx.metaDuration = time.Since(t0)
+	if ctx.timing.enabled {
+		ctx.timing.metaDuration = time.Since(t0)
 	}
 	storeCancel()
 
@@ -260,12 +260,12 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	var t0 time.Time
-	if ctx.serverTiming {
+	if ctx.timing.enabled {
 		t0 = time.Now()
 	}
 	varInfo, dstBuf, ok := t.loadDecompressed(ctx)
-	if ctx.serverTiming {
-		ctx.bodyDuration = time.Since(t0)
+	if ctx.timing.enabled {
+		ctx.timing.bodyDuration = time.Since(t0)
 	}
 	if !ok {
 		if dstBuf != nil {
@@ -298,12 +298,12 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 // 7. stateServeSWR: Serves stale cached variant and triggers background revalidation
 func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	var t0 time.Time
-	if ctx.serverTiming {
+	if ctx.timing.enabled {
 		t0 = time.Now()
 	}
 	varInfo, dstBuf, ok := t.loadDecompressed(ctx)
-	if ctx.serverTiming {
-		ctx.bodyDuration = time.Since(t0)
+	if ctx.timing.enabled {
+		ctx.timing.bodyDuration = time.Since(t0)
 	}
 	if !ok {
 		if dstBuf != nil {
@@ -374,8 +374,8 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		ctx.next.ServeHTTP(rec, originReq)
 	}()
 	respTime := time.Now()
-	if ctx.serverTiming {
-		ctx.originDuration = respTime.Sub(reqTime)
+	if ctx.timing.enabled {
+		ctx.timing.originDuration = respTime.Sub(reqTime)
 	}
 
 	// Origin Panic Recovery (Fail-Open)
@@ -434,14 +434,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		shouldCache = false
 	}
 	if shouldCache {
-		var t0 time.Time
-		if ctx.serverTiming {
-			t0 = time.Now()
-		}
-		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
-		if ctx.serverTiming {
-			ctx.storeDuration = time.Since(t0)
-		}
+		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime, &ctx.timing)
 	}
 
 	// ESI Processing on Cold Miss
@@ -533,7 +526,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	var tRevalStart time.Time
-	if ctx.serverTiming {
+	if ctx.timing.enabled {
 		tRevalStart = time.Now()
 	}
 
@@ -672,7 +665,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			shouldCache = false
 		}
 		if shouldCache {
-			t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime)
+			t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime, &ctx.timing)
 		}
 
 		return &fetchResult{
@@ -697,8 +690,8 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 		return nil
 	}
 
-	if ctx.serverTiming {
-		ctx.originDuration = time.Since(tRevalStart)
+	if ctx.timing.enabled {
+		ctx.timing.originDuration = time.Since(tRevalStart)
 	}
 
 	collapsedToken := ""
@@ -737,7 +730,15 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			dstBuf.Grow(int(res.fallback.varInfo.RawBodySize))
 		}
 
-		if err := decompressLZ4(res.fallback.body, dstBuf); err == nil {
+		codec := ""
+		if res.fallback.varInfo != nil {
+			codec = res.fallback.varInfo.StorageCompression
+		}
+		if codec == "" {
+			codec = StorageCompressionLZ4
+		}
+		comp, ok := t.config.compressors[codec]
+		if ok && comp.Decompress(res.fallback.body, dstBuf) == nil {
 			if t.esiProcessor != nil && len(res.fallback.varInfo.EsiFragments) > 0 {
 				protoHeaders := protoHeadersToHTTP(res.fallback.varInfo.ResponseHeaders)
 				if res.fallback.meta != nil {
@@ -860,7 +861,13 @@ func (t *Titip) saveVariantToStorage(
 	bodyBytes []byte,
 	freshness freshnessInfo,
 	respTime time.Time,
+	timing *serverTimingRecorder,
 ) {
+	var t0 time.Time
+	if timing != nil && timing.enabled {
+		t0 = time.Now()
+	}
+
 	tags := extractTags(headers, t.config.tagHeaderName)
 
 	// Check for ESI directives in body
@@ -869,9 +876,24 @@ func (t *Titip) saveVariantToStorage(
 		fragments = esi.Scan(bodyBytes)
 	}
 
+	// Resolve storage compressor (smart auto-bypass or configured compressor)
+	configuredComp := t.config.compressors[t.config.storageCompression]
+	comp := resolveCompressor(configuredComp, headers, len(bodyBytes))
+
 	// Compress body payload
 	compBuf := getBuffer()
-	_ = compressLZ4(bodyBytes, compBuf)
+	compName := comp.Name()
+	if err := comp.Compress(bodyBytes, compBuf); err != nil {
+		if t.logger != nil {
+			t.logger.WarnContext(r.Context(), "titip: compression failed, storing uncompressed",
+				slog.String("compression", compName),
+				slog.Any("error", err),
+			)
+		}
+		compBuf.Reset()
+		_, _ = compBuf.Write(bodyBytes)
+		compName = StorageCompressionNone
+	}
 	compBytes := bytes.Clone(compBuf.Bytes())
 	putBuffer(compBuf)
 
@@ -898,12 +920,13 @@ func (t *Titip) saveVariantToStorage(
 	}
 
 	newVariant := &pb.VariantInfo{
-		VariantKey:      varKey,
-		StatusCode:      int32(statusCode),
-		ResponseHeaders: protoHeadersFromHTTP(headers),
-		Etag:            headers.Get(headerETag),
-		RawBodySize:     int64(len(bodyBytes)),
-		EsiFragments:    fragments,
+		VariantKey:         varKey,
+		StatusCode:         int32(statusCode),
+		ResponseHeaders:    protoHeadersFromHTTP(headers),
+		Etag:               headers.Get(headerETag),
+		RawBodySize:        int64(len(bodyBytes)),
+		EsiFragments:       fragments,
+		StorageCompression: compName,
 	}
 	if lm, err := parseDate(headers.Get(headerLastModified)); err == nil && !lm.IsZero() {
 		newVariant.LastModifiedUnixNano = lm.UnixNano()
@@ -919,6 +942,13 @@ func (t *Titip) saveVariantToStorage(
 		if t.logger.Enabled(ctx, slog.LevelError) {
 			t.logger.ErrorContext(ctx, "storage error saving variant", "error", storeErr, "key", primaryKey)
 		}
+	}
+
+	if timing != nil && timing.enabled {
+		timing.storeDuration = time.Since(t0)
+		timing.storeCodec = compName
+		timing.storeRawSize = int64(len(bodyBytes))
+		timing.storeCompSize = int64(len(compBytes))
 	}
 }
 
@@ -968,7 +998,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 		shouldCache = false
 	}
 	if shouldCache {
-		t.saveVariantToStorage(bgCtx, primaryKey, variantKey, rec.Code, r, headers, bodyBytes, freshness, respTime)
+		t.saveVariantToStorage(bgCtx, primaryKey, variantKey, rec.Code, r, headers, bodyBytes, freshness, respTime, nil)
 	}
 }
 
@@ -1131,29 +1161,6 @@ func (t *Titip) remainingTTL(expiresAtUnixNano, nowNano int64) time.Duration {
 	return rem
 }
 
-func (t *Titip) emitCacheStatus(ctx *requestContext, simpleToken, rfc9211Detail string) {
-	w := ctx.w
-	switch t.config.cacheStatusMode {
-	case CacheStatusRFC9211:
-		titipStatus := "titip; " + rfc9211Detail
-		if len(w.Header().Values(headerCacheStatus)) > 0 {
-			// RFC 9211 §2: Multi-cache chaining - append to existing Cache-Status header
-			w.Header().Add(headerCacheStatus, titipStatus)
-		} else {
-			w.Header().Set(headerCacheStatus, titipStatus)
-		}
-	case CacheStatusSimpleToken:
-		// Simple token replaces upstream header with Titip's definitive local status
-		w.Header().Set(headerCacheStatus, simpleToken)
-	case CacheStatusNone:
-		// Do not emit Cache-Status header
-	}
-
-	if ctx.serverTiming {
-		t.config.serverTiming.emit(w, ctx, simpleToken)
-	}
-}
-
 // isHopByHopHeader checks if a header is a standard hop-by-hop header per RFC 9110 §7.6.1 & RFC 7230 §6.1.
 func isHopByHopHeader(k string) bool {
 	switch http.CanonicalHeaderKey(k) {
@@ -1228,54 +1235,6 @@ func protoHeadersToHTTP(protoHeaders map[string]*pb.HeaderValues) http.Header {
 		}
 	}
 	return h
-}
-
-func (t *Titip) recordRequest(ctx *requestContext, status string) {
-	if t.metrics == nil {
-		return
-	}
-	var dur time.Duration
-	if ctx != nil && ctx.startNano > 0 {
-		dur = time.Duration(time.Now().UnixNano() - ctx.startNano)
-	}
-	t.metrics.recordRequest(status, dur)
-}
-
-// loadDecompressed fetches and decompresses the cached variant body.
-// Returns varInfo, pooled buffer (caller must putBuffer), ok.
-func (t *Titip) loadDecompressed(ctx *requestContext) (*pb.VariantInfo, *bytes.Buffer, bool) {
-	varCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
-	varInfo, compBody, err := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
-	cancel()
-	if err != nil || varInfo == nil || len(compBody) == 0 {
-		return nil, nil, false
-	}
-	buf := getBuffer()
-	if varInfo.RawBodySize > 0 {
-		buf.Grow(int(varInfo.RawBodySize))
-	}
-	if err := decompressLZ4(compBody, buf); err != nil {
-		putBuffer(buf)
-		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
-			t.logger.ErrorContext(ctx.r.Context(), "decompression error, failing open to origin", "error", err)
-		}
-		return nil, nil, false
-	}
-	return varInfo, buf, true
-}
-
-func (t *Titip) spawnSWR(ctx *requestContext) {
-	if t.closed.Load() {
-		return
-	}
-	t.swrWG.Add(1)
-	reqClone := ctx.r.Clone(context.WithoutCancel(ctx.r.Context()))
-	next := ctx.next
-	pk, vk := ctx.primaryKey, ctx.variantKey
-	go func() {
-		defer t.swrWG.Done()
-		t.revalidateOriginAsync(reqClone, next, pk, vk)
-	}()
 }
 
 func (t *Titip) canProcessESI(h http.Header) bool {

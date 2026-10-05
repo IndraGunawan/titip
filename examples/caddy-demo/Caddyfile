@@ -20,6 +20,7 @@
 		respect_client_cache_control false
 		background_fetch_timeout 125s
 		storage_timeout 1s
+		storage_compression zstd
 		esi {
 			enabled true
 			max_depth 3

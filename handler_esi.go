@@ -41,9 +41,9 @@ func (t *Titip) processESI(
 			defer res.Release()
 			body = res.Body()
 			t.esiProcessor.ReconcileHeaders(reconciled, res)
-			if ctx.serverTiming {
-				ctx.esiDuration = res.Duration()
-				ctx.esiFragments = len(fragments)
+			if ctx.timing.enabled {
+				ctx.timing.esiDuration = res.Duration()
+				ctx.timing.esiFragments = len(fragments)
 			}
 			if t.config.cacheStatusMode == CacheStatusRFC9211 {
 				detail = rfc9211Detail + "; detail=\"esi-includes=" + strconv.Itoa(len(fragments)) + ";time=" + res.Duration().String() + "\""

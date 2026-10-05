@@ -160,6 +160,7 @@ type Handler struct {
 	ESI                           *ESIConfig          `json:"esi,omitempty"`
 	UseRewrittenURL               *bool               `json:"use_rewritten_url,omitempty"`
 	ServerTiming                  *ServerTimingConfig `json:"server_timing,omitempty"`
+	StorageCompression            string              `json:"storage_compression,omitempty"`
 
 	storageMod      StorageModule
 	instance        *titip.Titip
@@ -223,14 +224,15 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 
 	var (
-		appCacheStatus    string
-		appRespectClient  *bool
-		appAutoInvalidate *bool
-		appConvertHead    *bool
-		appBgTimeout      string
-		appStorageTimeout string
-		appUseRewritten   *bool
-		appServerTiming   *ServerTimingConfig
+		appCacheStatus        string
+		appRespectClient      *bool
+		appAutoInvalidate     *bool
+		appConvertHead        *bool
+		appBgTimeout          string
+		appStorageTimeout     string
+		appUseRewritten       *bool
+		appServerTiming       *ServerTimingConfig
+		appStorageCompression string
 	)
 	if app != nil {
 		appCacheStatus = app.CacheStatus
@@ -241,6 +243,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		appStorageTimeout = app.StorageTimeout
 		appUseRewritten = app.UseRewrittenURL
 		appServerTiming = app.ServerTiming
+		appStorageCompression = app.StorageCompression
 	}
 
 	// Cache-Status header mode (inherit from app if not set)
@@ -254,6 +257,12 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		opts = append(opts, titip.WithCacheStatus(titip.CacheStatusNone))
 	default:
 		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
+	}
+
+	// Storage compression algorithm (inherit from app if not set, defaults to lz4 in titip.New)
+	storageCompression := cmp.Or(h.StorageCompression, appStorageCompression)
+	if storageCompression != "" {
+		opts = append(opts, titip.WithStorageCompression(storageCompression))
 	}
 
 	if v := coalesce(h.RespectClientCacheControl, appRespectClient); v != nil && *v {
@@ -572,6 +581,11 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return err
 				}
 				h.ServerTiming = st
+			case "storage_compression":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				h.StorageCompression = d.Val()
 			default:
 				return d.Errf("unknown titip directive %q", d.Val())
 			}

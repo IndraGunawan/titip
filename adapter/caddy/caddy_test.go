@@ -676,3 +676,80 @@ func TestAdminPurge_PurgeEverythingValidation(t *testing.T) {
 		}
 	})
 }
+
+func TestCaddy_StorageCompression(t *testing.T) {
+	var originCalls atomic.Int32
+	bodyContent := strings.Repeat("Caching in Caddy with Zstandard storage compression! ", 20)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, bodyContent)
+	}))
+	defer origin.Close()
+
+	tester := caddytest.NewTester(t)
+	tester.InitServer(fmt.Sprintf(`
+	{
+		skip_install_trust
+		admin localhost:2999
+		http_port 9080
+		https_port 9443
+		grace_period 1ns
+	}
+	http://localhost:9080 {
+		titip {
+			storage test
+			storage_compression zstd
+			cache_status rfc9211
+		}
+		reverse_proxy %s
+	}
+	`, origin.Listener.Addr().String()), "caddyfile")
+
+	// 1. Initial request -> Cache Miss (origin called)
+	req1, err := http.NewRequest(http.MethodGet, "http://localhost:9080/zstd-data", nil)
+	if err != nil {
+		t.Fatalf("new request error: %v", err)
+	}
+	resp1, body1 := tester.AssertResponse(req1, 200, bodyContent)
+	status1 := resp1.Header.Get("Cache-Status")
+	if !strings.Contains(status1, "fwd=uri-miss") {
+		t.Errorf("expected Cache-Status on miss to contain fwd=uri-miss, got %q", status1)
+	}
+	if originCalls.Load() != 1 {
+		t.Errorf("expected 1 origin call on miss, got %d", originCalls.Load())
+	}
+
+	// 2. Second request -> Cache Hit (origin NOT called, decompressed cleanly)
+	req2, err := http.NewRequest(http.MethodGet, "http://localhost:9080/zstd-data", nil)
+	if err != nil {
+		t.Fatalf("new request error: %v", err)
+	}
+	resp2, body2 := tester.AssertResponse(req2, 200, bodyContent)
+	if body1 != body2 {
+		t.Errorf("body mismatch: %q vs %q", body1, body2)
+	}
+	status2 := resp2.Header.Get("Cache-Status")
+	if !strings.Contains(status2, "hit") {
+		t.Errorf("expected Cache-Status on hit to contain hit, got %q", status2)
+	}
+	if originCalls.Load() != 1 {
+		t.Errorf("cache hit should not increment origin calls, got %d", originCalls.Load())
+	}
+}
+
+func TestCaddyHandler_ProvisionUnknownStorageCompression(t *testing.T) {
+	t.Parallel()
+	h := &Handler{
+		StorageCompression: "unsupported-codec",
+		StorageRaw:         json.RawMessage(`{"name":"test"}`),
+	}
+	ctx, cancel := caddymain.NewContext(caddymain.Context{Context: context.Background()})
+	defer cancel()
+
+	err := h.Provision(ctx)
+	if err == nil {
+		t.Fatal("expected error provisioning handler with unknown storage_compression, got nil")
+	}
+}

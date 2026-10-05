@@ -79,6 +79,30 @@ func TestCaddyHandler_UnmarshalCaddyfile_Directives(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "storage_compression zstd",
+			config: `titip {
+				storage_compression zstd
+				storage test
+			}`,
+			validate: func(t *testing.T, h *Handler) {
+				if h.StorageCompression != "zstd" {
+					t.Fatalf("expected storage_compression zstd, got %s", h.StorageCompression)
+				}
+			},
+		},
+		{
+			name: "storage_compression none",
+			config: `titip {
+				storage_compression none
+				storage test
+			}`,
+			validate: func(t *testing.T, h *Handler) {
+				if h.StorageCompression != "none" {
+					t.Fatalf("expected storage_compression none, got %s", h.StorageCompression)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -224,6 +248,7 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 		skip_install_trust
 		titip {
 			storage test
+			storage_compression zstd
 			cache_status rfc9211
 			background_fetch_timeout 5s
 			respect_client_cache_control false
@@ -280,6 +305,9 @@ func TestCaddyGlobalOption_Adapt(t *testing.T) {
 	if titipApp["cache_status"] != "rfc9211" {
 		t.Errorf("expected cache_status rfc9211, got %v", titipApp["cache_status"])
 	}
+	if titipApp["storage_compression"] != "zstd" {
+		t.Errorf("expected storage_compression zstd, got %v", titipApp["storage_compression"])
+	}
 	if titipApp["background_fetch_timeout"] != "5s" {
 		t.Errorf("expected background_fetch_timeout 5s, got %v", titipApp["background_fetch_timeout"])
 	}
@@ -290,6 +318,7 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 	caddyfileInput := `{
 		titip {
 			storage test
+			storage_compression zstd
 			cache_status rfc9211
 			background_fetch_timeout 10s
 			respect_client_cache_control false
@@ -337,6 +366,9 @@ func TestCaddyGlobalOption_InheritanceAndOverride(t *testing.T) {
 
 	if app.CacheStatus != "rfc9211" {
 		t.Errorf("expected global cache_status rfc9211, got %s", app.CacheStatus)
+	}
+	if app.StorageCompression != "zstd" {
+		t.Errorf("expected global storage_compression zstd, got %s", app.StorageCompression)
 	}
 	if app.BackgroundFetchTimeout != "10s" {
 		t.Errorf("expected global background_fetch_timeout 10s, got %s", app.BackgroundFetchTimeout)

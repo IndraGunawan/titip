@@ -27,6 +27,7 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
             key_prefix caddy:
             password {env.REDIS_PASSWORD}
         }
+        storage_compression zstd
         cache_status rfc9211
         background_fetch_timeout 125s
         cache_key {
@@ -65,6 +66,7 @@ You can also configure `titip` locally or override specific settings per route:
                 key_prefix api_cache:
             }
             cache_status rfc9211
+            storage_compression zstd
             cache_key {
                 included_query_params id format page
                 exclude_marketing_query_params true
@@ -80,6 +82,17 @@ You can also configure `titip` locally or override specific settings per route:
     }
 }
 ```
+
+### Storage Compression Directive
+
+| Directive Syntax | Default | Description |
+| :--- | :--- | :--- |
+| `storage_compression lz4` | `lz4` | High-speed compression (recommended for general web caching). |
+| `storage_compression zstd` | - | High-ratio compression with fast decompression (optimal for Redis memory savings). |
+| `storage_compression none` | - | Raw uncompressed payload storage. |
+
+> [!TIP]
+> Titip employs automatic smart auto-bypass: payloads under 256 bytes, origin-compressed streams (`Content-Encoding: gzip/br/zstd`), and inherently compressed media types (`image/*`, `video/*`, `application/zip`) automatically bypass compression (stored as raw `none`) regardless of the configured active compressor.
 
 ### Cache Key Directive Reference
 
