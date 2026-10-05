@@ -148,7 +148,7 @@ Initialize Titip with the mandatory storage engine and any functional options vi
 | `WithESI(opts...)` | `...esi.Option` | `disabled` | Edge Side Includes processing configuration and options. |
 | `WithServerTiming()` | - | *(disabled)* | Enables `Server-Timing` header diagnostics for TTFB tracing in browser DevTools. |
 | `WithServerTimingCookie(name, val)` | `string, string` | `""` | Restricts `Server-Timing` header generation to requests matching an exact cookie name and value. |
-| `WithStorageCompression(name)` | `string` | `"lz4"` | Active compression codec for stored variant bodies (`"lz4"`, `"zstd"`, or `"none"`). |
+| `WithStorageCompression(name)` | `string` | `"lz4"` | Selected compression codec for stored variant bodies (`"lz4"`, `"zstd"`, or `"none"`). |
 | `WithStorageCompressor(comp)` | `Compressor` | - | Registers a custom compression engine implementing `Compressor` for storage reads/writes. |
 
 ## Cache Key & Query Parameter Normalization
@@ -251,7 +251,7 @@ cache, err := titip.New(
 
 ### Zero-Knob Smart Auto-Bypass
 
-Regardless of the configured active compression algorithm, Titip automatically bypasses compression (storing raw bytes with `"none"`) when:
+Regardless of the selected compression algorithm, Titip automatically bypasses compression (storing raw bytes with `"none"`) when:
 
 1. Payload size is **< 256 bytes** (avoiding compression frame overhead and size expansion).
 2. Origin response has a **`Content-Encoding`** header (e.g. `gzip`, `br`, `zstd`).

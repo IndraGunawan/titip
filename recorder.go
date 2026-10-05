@@ -18,6 +18,7 @@ type responseRecorder struct {
 var responseRecorderPool = sync.Pool{
 	New: func() any {
 		return &responseRecorder{
+			Code:      http.StatusOK,
 			HeaderMap: make(http.Header),
 			Body:      new(bytes.Buffer),
 		}

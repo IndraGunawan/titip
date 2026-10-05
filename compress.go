@@ -255,10 +255,10 @@ func isPrecompressedContentType(ct string) bool {
 	}
 }
 
-// selectCompressor chooses the storage compressor for a variant payload.
+// resolveCompressor resolves the storage compressor for a variant payload.
 // Automatically bypasses compression (<256B, wire-encoded Content-Encoding, or pre-compressed Content-Type)
 // to prevent double compression and CPU waste.
-func selectCompressor(active Compressor, headers http.Header, bodyLen int) Compressor {
+func resolveCompressor(configured Compressor, headers http.Header, bodyLen int) Compressor {
 	if bodyLen < minCompressionSize {
 		return noneInstance
 	}
@@ -268,8 +268,8 @@ func selectCompressor(active Compressor, headers http.Header, bodyLen int) Compr
 	if isPrecompressedContentType(headers.Get(headerContentType)) {
 		return noneInstance
 	}
-	if active == nil {
+	if configured == nil {
 		return noneInstance
 	}
-	return active
+	return configured
 }

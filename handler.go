@@ -876,9 +876,9 @@ func (t *Titip) saveVariantToStorage(
 		fragments = esi.Scan(bodyBytes)
 	}
 
-	// Select storage compressor (smart auto-bypass or active)
-	activeComp := t.config.compressors[t.config.activeCompressionName]
-	comp := selectCompressor(activeComp, headers, len(bodyBytes))
+	// Resolve storage compressor (smart auto-bypass or configured compressor)
+	configuredComp := t.config.compressors[t.config.storageCompression]
+	comp := resolveCompressor(configuredComp, headers, len(bodyBytes))
 
 	// Compress body payload
 	compBuf := getBuffer()

@@ -224,7 +224,25 @@ func TestStorageCompressionOptionsValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("registering compressor does not change default active lz4", func(t *testing.T) {
+	t.Run("duplicate custom compressor name rejected", func(t *testing.T) {
+		custom1 := &mockCustomCompressor{name: "my-codec"}
+		custom2 := &mockCustomCompressor{name: "my-codec"}
+		_, err := New(store, WithStorageCompressor(custom1), WithStorageCompressor(custom2))
+		if !errors.Is(err, ErrInvalidOption) {
+			t.Fatalf("expected ErrInvalidOption for duplicate compressor name, got: %v", err)
+		}
+	})
+
+	t.Run("duplicate custom compressor case-insensitive rejected", func(t *testing.T) {
+		custom1 := &mockCustomCompressor{name: "my-codec"}
+		custom2 := &mockCustomCompressor{name: "MY-CODEC"}
+		_, err := New(store, WithStorageCompressor(custom1), WithStorageCompressor(custom2))
+		if !errors.Is(err, ErrInvalidOption) {
+			t.Fatalf("expected ErrInvalidOption for case-insensitive duplicate compressor name, got: %v", err)
+		}
+	})
+
+	t.Run("registering compressor does not change default storage compression lz4", func(t *testing.T) {
 		custom := &mockCustomCompressor{name: "my-codec"}
 		mw, err := New(store, WithStorageCompressor(custom))
 		if err != nil {
@@ -232,8 +250,8 @@ func TestStorageCompressionOptionsValidation(t *testing.T) {
 		}
 		defer func() { _ = mw.Close(context.Background()) }()
 
-		if mw.config.activeCompressionName != StorageCompressionLZ4 {
-			t.Fatalf("expected active compression %q, got %q", StorageCompressionLZ4, mw.config.activeCompressionName)
+		if mw.config.storageCompression != StorageCompressionLZ4 {
+			t.Fatalf("expected storage compression %q, got %q", StorageCompressionLZ4, mw.config.storageCompression)
 		}
 	})
 
@@ -245,8 +263,8 @@ func TestStorageCompressionOptionsValidation(t *testing.T) {
 		}
 		defer func() { _ = mw.Close(context.Background()) }()
 
-		if mw.config.activeCompressionName != "my-codec" {
-			t.Fatalf("expected active compression %q, got %q", "my-codec", mw.config.activeCompressionName)
+		if mw.config.storageCompression != "my-codec" {
+			t.Fatalf("expected storage compression %q, got %q", "my-codec", mw.config.storageCompression)
 		}
 	})
 }
@@ -254,7 +272,7 @@ func TestStorageCompressionOptionsValidation(t *testing.T) {
 func TestSmartAutoBypassSelection(t *testing.T) {
 	t.Parallel()
 
-	active := NewZstdCompressor()
+	configured := NewZstdCompressor()
 
 	tests := []struct {
 		name       string
@@ -360,9 +378,9 @@ func TestSmartAutoBypassSelection(t *testing.T) {
 			for k, v := range tt.headers {
 				h.Set(k, v)
 			}
-			chosen := selectCompressor(active, h, tt.bodyLen)
-			if tt.wantActive && chosen.Name() != active.Name() {
-				t.Fatalf("expected active compressor %s, got %s", active.Name(), chosen.Name())
+			chosen := resolveCompressor(configured, h, tt.bodyLen)
+			if tt.wantActive && chosen.Name() != configured.Name() {
+				t.Fatalf("expected active compressor %s, got %s", configured.Name(), chosen.Name())
 			}
 			if !tt.wantActive && chosen.Name() != StorageCompressionNone {
 				t.Fatalf("expected noneCompressor, got %s", chosen.Name())
