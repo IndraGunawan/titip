@@ -31,8 +31,8 @@ func TestConfig_Defaults(t *testing.T) {
 	if mw.config.tagHeaderName != "Cache-Tag" {
 		t.Errorf("expected default tagHeaderName Cache-Tag, got %s", mw.config.tagHeaderName)
 	}
-	if mw.config.cacheStatusMode != CacheStatusSimpleToken {
-		t.Errorf("expected default cacheStatusMode CacheStatusSimpleToken, got %v", mw.config.cacheStatusMode)
+	if mw.config.cacheStatusMode != CacheStatusSimple {
+		t.Errorf("expected default cacheStatusMode CacheStatusSimple, got %v", mw.config.cacheStatusMode)
 	}
 	if !mw.config.convertHeadToGet {
 		t.Errorf("expected default convertHeadToGet to be true")

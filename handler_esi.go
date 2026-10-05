@@ -17,7 +17,7 @@ func (t *Titip) processESI(
 	fragments []*pb.EsiFragment,
 	statusCode int,
 	headers http.Header,
-	statusToken string,
+	simpleStatus string,
 	rfc9211Detail string,
 ) {
 	var (
@@ -61,7 +61,7 @@ func (t *Titip) processESI(
 		}
 	}
 
-	t.emitCacheStatus(ctx, statusToken, detail)
+	t.emitCacheStatus(ctx, simpleStatus, detail)
 	ctx.w.WriteHeader(statusCode)
 	if ctx.r.Method != http.MethodHead {
 		_, _ = ctx.w.Write(body)

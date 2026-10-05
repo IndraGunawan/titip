@@ -250,7 +250,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	cacheStatus := cmp.Or(h.CacheStatus, appCacheStatus)
 	switch strings.ToLower(cacheStatus) {
 	case "simple", "":
-		opts = append(opts, titip.WithCacheStatus(titip.CacheStatusSimpleToken))
+		opts = append(opts, titip.WithCacheStatus(titip.CacheStatusSimple))
 	case "rfc9211":
 		opts = append(opts, titip.WithCacheStatus(titip.CacheStatusRFC9211))
 	case "none":

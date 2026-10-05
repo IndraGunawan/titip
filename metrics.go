@@ -6,14 +6,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metric status label values for titip_requests_total
+// Request "status" metric label values for titip_requests_total and titip_request_duration_seconds.
 const (
-	statusHit         = "hit"
-	statusMiss        = "miss"
-	statusStaleHit    = "stale_hit"
-	statusRevalidated = "revalidated"
-	statusBypass      = "bypass"
-	statusError       = "error"
+	labelStatusHit         = "hit"
+	labelStatusMiss        = "miss"
+	labelStatusStaleHit    = "stale_hit"
+	labelStatusRevalidated = "revalidated"
+	labelStatusBypass      = "bypass"
+	labelStatusError       = "error"
 )
 
 // metrics encapsulates Prometheus telemetry collectors for Titip.

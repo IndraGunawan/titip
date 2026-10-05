@@ -419,8 +419,8 @@ func TestNew_MinimalOptions(t *testing.T) {
 	})
 
 	// 1. Verify default configuration values
-	if mw.config.cacheStatusMode != CacheStatusSimpleToken {
-		t.Errorf("expected CacheStatusSimpleToken (%v), got %v", CacheStatusSimpleToken, mw.config.cacheStatusMode)
+	if mw.config.cacheStatusMode != CacheStatusSimple {
+		t.Errorf("expected CacheStatusSimple (%v), got %v", CacheStatusSimple, mw.config.cacheStatusMode)
 	}
 	if mw.config.respectClientCacheControl {
 		t.Errorf("expected RespectClientCacheControl to be false by default")
@@ -458,8 +458,8 @@ func TestNew_MinimalOptions(t *testing.T) {
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK on cold miss, got %d", rec1.Code)
 	}
-	if cs := rec1.Header().Get("Cache-Status"); cs != tokenMiss {
-		t.Errorf("expected Cache-Status %q on cold miss, got %q", tokenMiss, cs)
+	if cs := rec1.Header().Get("Cache-Status"); cs != statusMiss {
+		t.Errorf("expected Cache-Status %q on cold miss, got %q", statusMiss, cs)
 	}
 	if originCalls.Load() != 1 {
 		t.Errorf("expected 1 origin call, got %d", originCalls.Load())
@@ -471,8 +471,8 @@ func TestNew_MinimalOptions(t *testing.T) {
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK on cache hit, got %d", rec2.Code)
 	}
-	if cs := rec2.Header().Get("Cache-Status"); cs != tokenHit {
-		t.Errorf("expected Cache-Status %q on cache hit, got %q", tokenHit, cs)
+	if cs := rec2.Header().Get("Cache-Status"); cs != statusHit {
+		t.Errorf("expected Cache-Status %q on cache hit, got %q", statusHit, cs)
 	}
 	if originCalls.Load() != 1 {
 		t.Errorf("expected still 1 origin call on hit, got %d", originCalls.Load())

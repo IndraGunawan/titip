@@ -12,13 +12,13 @@ import (
 	"time"
 )
 
-// Cache-Status header modes (RFC-9211, Simple Token, None).
+// Cache-Status header modes (RFC-9211, Simple, None).
 func TestCacheStatusModes(t *testing.T) {
 	t.Parallel()
 	// Mode 1: RFC-9211
 	_, _, mw1 := setupTestTitip(t, WithCacheStatus(CacheStatusRFC9211))
-	// Mode 2: Simple Token
-	_, _, mw2 := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
+	// Mode 2: Simple
+	_, _, mw2 := setupTestTitip(t, WithCacheStatus(CacheStatusSimple))
 	// Mode 3: None
 	_, _, mw3 := setupTestTitip(t, WithCacheStatus(CacheStatusNone))
 
@@ -214,7 +214,7 @@ func TestRFC9211_ForwardReasonsAndParameters(t *testing.T) {
 		assertCacheStatus("fwd=stale")
 }
 
-func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
+func TestCacheStatusSimple_AllStatuses(t *testing.T) {
 	t.Parallel()
 
 	// Mock origin handler that supports multiple behavior endpoints
@@ -269,80 +269,80 @@ func TestSimpleToken_CloudflareCompatible_AllTokens(t *testing.T) {
 
 	t.Run("MissAndHit", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimple))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/cacheable").
-			assertHeader("Cache-Status", tokenMiss)
+			assertHeader("Cache-Status", statusMiss)
 
 		doGet(t, handler, "http://example.com/api/simple/cacheable").
-			assertHeader("Cache-Status", tokenHit)
+			assertHeader("Cache-Status", statusHit)
 	})
 
 	t.Run("Bypass", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken), WithRespectClientCacheControl())
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimple), WithRespectClientCacheControl())
 		handler := mw.testHandler(originHandler)
 
 		doPost(t, handler, "http://example.com/api/simple/cacheable", `{}`).
-			assertHeader("Cache-Status", tokenBypass)
+			assertHeader("Cache-Status", statusBypass)
 
 		doGet(t, handler, "http://example.com/api/simple/cacheable", "Cache-Control", "no-store").
-			assertHeader("Cache-Status", tokenBypass)
+			assertHeader("Cache-Status", statusBypass)
 	})
 
 	t.Run("Dynamic", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimple))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/dynamic").
-			assertHeader("Cache-Status", tokenDynamic)
+			assertHeader("Cache-Status", statusDynamic)
 	})
 
 	t.Run("Updating", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimple))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/swr")
 		time.Sleep(1100 * time.Millisecond)
 		doGet(t, handler, "http://example.com/api/simple/swr").
-			assertHeader("Cache-Status", tokenUpdating)
+			assertHeader("Cache-Status", statusUpdating)
 	})
 
 	t.Run("Revalidated", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimple))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/reval")
 		time.Sleep(1100 * time.Millisecond)
 		doGet(t, handler, "http://example.com/api/simple/reval").
-			assertHeader("Cache-Status", tokenRevalidated)
+			assertHeader("Cache-Status", statusRevalidated)
 	})
 
 	t.Run("Expired", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimple))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/expired")
 		time.Sleep(1100 * time.Millisecond)
 		doGet(t, handler, "http://example.com/api/simple/expired").
-			assertHeader("Cache-Status", tokenExpired)
+			assertHeader("Cache-Status", statusExpired)
 	})
 
 	t.Run("Stale", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimple))
 		handler := mw.testHandler(originHandler)
 
 		doGet(t, handler, "http://example.com/api/simple/failover")
 		time.Sleep(1100 * time.Millisecond)
 		doGet(t, handler, "http://example.com/api/simple/failover").
 			assertStatus(http.StatusOK).
-			assertHeader("Cache-Status", tokenStale)
+			assertHeader("Cache-Status", statusStale)
 	})
 }
 
@@ -958,10 +958,10 @@ func TestRFC9211_MultiCacheChaining_AppendsHeader(t *testing.T) {
 		}
 	})
 
-	// 2. SimpleToken Mode: Overwrites upstream Cache-Status with single token
-	t.Run("SimpleToken_Overwrites_Upstream", func(t *testing.T) {
+	// 2. Simple Mode: Overwrites upstream Cache-Status with simple status
+	t.Run("Simple_Overwrites_Upstream", func(t *testing.T) {
 		t.Parallel()
-		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimpleToken))
+		_, _, mw := setupTestTitip(t, WithCacheStatus(CacheStatusSimple))
 
 		origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "public, max-age=300")
