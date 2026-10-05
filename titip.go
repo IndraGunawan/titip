@@ -58,7 +58,7 @@ func New(store storage.Storage, opts ...Option) (*Titip, error) {
 		tagHeaderName: headerCacheTag,
 
 		// HTTP caching protocol & upstream behavior
-		cacheStatusMode:           CacheStatusSimpleToken,
+		cacheStatusMode:           CacheStatusSimple,
 		respectClientCacheControl: false,
 		convertHeadToGet:          true,
 		backgroundFetchTimeout:    125 * time.Second, // Aligned with Cloudflare's default 125s Proxy Read Timeout connection limit

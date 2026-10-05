@@ -40,7 +40,7 @@ type serverTimingRecorder struct {
 	esiFragments   int
 }
 
-func (cfg serverTimingConfig) emit(w http.ResponseWriter, rec *serverTimingRecorder, statusToken string) {
+func (cfg serverTimingConfig) emit(w http.ResponseWriter, rec *serverTimingRecorder, status string) {
 	if rec == nil || !rec.enabled {
 		return
 	}
@@ -50,9 +50,9 @@ func (cfg serverTimingConfig) emit(w http.ResponseWriter, rec *serverTimingRecor
 	var scratch [24]byte
 
 	// 1. Status metric: titip-status;desc="HIT"
-	if statusToken != "" {
+	if status != "" {
 		buf.WriteString("titip-status;desc=\"")
-		buf.WriteString(statusToken)
+		buf.WriteString(status)
 		buf.WriteByte('"')
 	}
 

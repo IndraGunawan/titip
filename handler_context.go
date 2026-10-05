@@ -63,7 +63,7 @@ func releaseRequestContext(ctx *requestContext) {
 	requestContextPool.Put(ctx)
 }
 
-func (t *Titip) emitCacheStatus(ctx *requestContext, simpleToken, rfc9211Detail string) {
+func (t *Titip) emitCacheStatus(ctx *requestContext, simpleStatus, rfc9211Detail string) {
 	w := ctx.w
 	switch t.config.cacheStatusMode {
 	case CacheStatusRFC9211:
@@ -74,15 +74,15 @@ func (t *Titip) emitCacheStatus(ctx *requestContext, simpleToken, rfc9211Detail 
 		} else {
 			w.Header().Set(headerCacheStatus, titipStatus)
 		}
-	case CacheStatusSimpleToken:
-		// Simple token replaces upstream header with Titip's definitive local status
-		w.Header().Set(headerCacheStatus, simpleToken)
+	case CacheStatusSimple:
+		// Simple status replaces upstream header with Titip's definitive local status
+		w.Header().Set(headerCacheStatus, simpleStatus)
 	case CacheStatusNone:
 		// Do not emit Cache-Status header
 	}
 
 	if ctx.timing.enabled {
-		t.config.serverTiming.emit(w, &ctx.timing, simpleToken)
+		t.config.serverTiming.emit(w, &ctx.timing, simpleStatus)
 	}
 }
 

@@ -135,7 +135,7 @@ Initialize Titip with the mandatory storage engine and any functional options vi
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `WithCacheStatus(mode)` | `CacheStatusMode` | `CacheStatusSimpleToken` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimpleToken`, or `CacheStatusNone`). |
+| `WithCacheStatus(mode)` | `CacheStatusMode` | `CacheStatusSimple` | Emitted status format (`CacheStatusRFC9211`, `CacheStatusSimple`, or `CacheStatusNone`). |
 | `WithCacheKey(cfg)` | `CacheKey` | `{}` (standard) | Primary cache key generation rules and query parameter filtering. |
 | `WithTagHeader(name)` | `string` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
 | `WithBackgroundFetchTimeout(d)` | `time.Duration` | `125s` | Maximum timeout budget for background revalidations (`stale-while-revalidate`). |
@@ -180,11 +180,11 @@ Cache-Status: titip; hit; ttl=240
 Cache-Status: "Fastly"; hit, titip; hit; ttl=240
 ```
 
-### 2. `CacheStatusSimpleToken` (Single Token Header)
+### 2. `CacheStatusSimple` (Simple Status Header)
 
-Emits a concise single-token status header:
+Emits a concise status header:
 
-| Token | Description |
+| Status | Description |
 | :--- | :--- |
 | `HIT` | Served fresh directly from cache or matched downstream conditional `304 Not Modified`. |
 | `MISS` | Cache miss: fetched from origin and stored in cache. |
@@ -211,7 +211,7 @@ Server-Timing: titip-status;desc="HIT", titip-meta;dur=1.49, titip-body;dur=3.39
 
 | Metric | Description |
 | :--- | :--- |
-| `titip-status;desc="..."` | Cache status token (`HIT`, `MISS`, `EXPIRED`, `REVALIDATED`, `STALE`, `DYNAMIC`, `BYPASS`). |
+| `titip-status;desc="..."` | Cache status (`HIT`, `MISS`, `EXPIRED`, `REVALIDATED`, `STALE`, `DYNAMIC`, `BYPASS`). |
 | `titip-meta;dur=X` | Stage 1 metadata lookup duration in milliseconds. |
 | `titip-body;dur=X` | Stage 2 body retrieval and LZ4 decompression duration. |
 | `titip-origin;dur=X` | Upstream backend origin fetch duration (on misses or revalidations). |
