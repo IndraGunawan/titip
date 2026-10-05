@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -919,6 +921,128 @@ func BenchmarkCompressorPoolRecycling(b *testing.B) {
 				dst := getBuffer()
 				_ = tc.comp.Decompress(compBytes, dst)
 				putBuffer(dst)
+			}
+		})
+	}
+}
+
+func generateRealisticJSON(items int) []byte {
+	var b strings.Builder
+	b.WriteString(`{"status":"success","count":`)
+	b.WriteString(strconv.Itoa(items))
+	b.WriteString(`,"data":[`)
+	categories := []string{"electronics", "books", "home & kitchen", "sports", "apparel"}
+	for i := range items {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":%d,"sku":"SKU-%08d","name":"Product Item %d with high quality parts","price":%.2f,"category":"%s","tags":["tag-%d","popular","sale"],"in_stock":%t,"created_at":"2026-10-0%dT12:%02d:00Z","description":"Detailed product description for item %d explaining specifications, performance benchmarks, and user warranty information."}`,
+			i+1, (i*37)%100000, i+1, float64((i*17)%500)+0.99, categories[i%len(categories)], i%10, i%2 == 0, (i%5)+1, i%60, i+1)
+	}
+	b.WriteString(`]}`)
+	return []byte(b.String())
+}
+
+func generateRealisticHTML(sections int) []byte {
+	var b strings.Builder
+	b.WriteString(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Titip High-Performance HTTP Cache</title><link rel="stylesheet" href="/static/bundle.css"><script src="/static/app.js" defer></script></head><body><header><nav class="navbar"><h1>Titip Caching Engine</h1><ul><li><a href="/">Overview</a></li><li><a href="/benchmarks">Benchmarks</a></li><li><a href="/docs">Documentation</a></li></ul></nav></header><main class="container">`)
+	for i := range sections {
+		fmt.Fprintf(&b, `<section id="section-%d" class="content-block"><h2>Section Header %d: Advanced Architecture Details</h2><p>This paragraph contains detailed analytical text describing caching optimization #%d. Titip employs zero-allocation memory pools for request contexts, response recording, and decompression streaming buffers.</p><div class="metadata-table"><span>Latency: %d.%02d ms</span><span>Status: Verified</span><span>Algorithm: RFC-9111</span></div><ul><li>Feature %d-A: Low GC pressure</li><li>Feature %d-B: Multi-variant negotiation</li><li>Feature %d-C: Stampede prevention</li></ul></section>`,
+			i+1, i+1, i+1, (i*3)%10, (i*17)%100, i+1, i+1, i+1)
+	}
+	b.WriteString(`</main><footer><p>&copy; 2026 Titip Open Source Project. All rights reserved.</p></footer></body></html>`)
+	return []byte(b.String())
+}
+
+func getBenchmarkWebPayloads() []struct {
+	name string
+	data []byte
+} {
+	return []struct {
+		name string
+		data []byte
+	}{
+		{"JSON_Realistic_25KB", generateRealisticJSON(100)},
+		{"JSON_Realistic_100KB", generateRealisticJSON(400)},
+		{"JSON_Realistic_500KB", generateRealisticJSON(1500)},
+		{"JSON_Realistic_1MB", generateRealisticJSON(3000)},
+		{"HTML_Realistic_50KB", generateRealisticHTML(80)},
+		{"HTML_Realistic_500KB", generateRealisticHTML(850)},
+	}
+}
+
+func BenchmarkStorageCompression_Compress(b *testing.B) {
+	compressors := []struct {
+		name string
+		comp Compressor
+	}{
+		{"LZ4", NewLZ4Compressor()},
+		{"Zstd", NewZstdCompressor()},
+		{"None", NewNoneCompressor()},
+	}
+
+	for _, p := range getBenchmarkWebPayloads() {
+		b.Run(p.name, func(b *testing.B) {
+			for _, tc := range compressors {
+				b.Run(tc.name, func(b *testing.B) {
+					sampleBuf := getBuffer()
+					_ = tc.comp.Compress(p.data, sampleBuf)
+					compSize := sampleBuf.Len()
+					putBuffer(sampleBuf)
+
+					ratio := float64(len(p.data)) / float64(compSize)
+					savings := 100.0 * (1.0 - float64(compSize)/float64(len(p.data)))
+
+					b.SetBytes(int64(len(p.data)))
+					b.ReportAllocs()
+					for b.Loop() {
+						dst := getBuffer()
+						_ = tc.comp.Compress(p.data, dst)
+						putBuffer(dst)
+					}
+
+					b.ReportMetric(ratio, "x_ratio")
+					b.ReportMetric(savings, "%_saved")
+				})
+			}
+		})
+	}
+}
+
+func BenchmarkStorageCompression_Decompress(b *testing.B) {
+	compressors := []struct {
+		name string
+		comp Compressor
+	}{
+		{"LZ4", NewLZ4Compressor()},
+		{"Zstd", NewZstdCompressor()},
+		{"None", NewNoneCompressor()},
+	}
+
+	for _, p := range getBenchmarkWebPayloads() {
+		b.Run(p.name, func(b *testing.B) {
+			for _, tc := range compressors {
+				compBuf := getBuffer()
+				_ = tc.comp.Compress(p.data, compBuf)
+				compBytes := bytes.Clone(compBuf.Bytes())
+				compSize := compBuf.Len()
+				putBuffer(compBuf)
+
+				ratio := float64(len(p.data)) / float64(compSize)
+				savings := 100.0 * (1.0 - float64(compSize)/float64(len(p.data)))
+
+				b.Run(tc.name, func(b *testing.B) {
+					b.SetBytes(int64(len(p.data)))
+					b.ReportAllocs()
+					for b.Loop() {
+						dst := getBuffer()
+						_ = tc.comp.Decompress(compBytes, dst)
+						putBuffer(dst)
+					}
+
+					b.ReportMetric(ratio, "x_ratio")
+					b.ReportMetric(savings, "%_saved")
+				})
 			}
 		})
 	}

@@ -153,7 +153,7 @@ type zstdCompressor struct{}
 var zstdWriterPool = sync.Pool{
 	New: func() any {
 		w, _ := zstd.NewWriter(nil,
-			zstd.WithEncoderLevel(zstd.SpeedFastest),
+			zstd.WithEncoderLevel(zstd.SpeedDefault),
 			zstd.WithWindowSize(512*1024),
 			zstd.WithEncoderConcurrency(1),
 		)
