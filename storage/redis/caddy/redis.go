@@ -44,7 +44,6 @@ func (RedisStorage) CaddyModule() caddy.ModuleInfo {
 
 // Provision sets up the Redis client and storage backend.
 func (r *RedisStorage) Provision(ctx caddy.Context) error {
-	repl := caddy.NewReplacer()
 	var opt rueidis.ClientOption
 
 	if r.URL != "" {
@@ -52,20 +51,15 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("cannot combine \"url\" with discrete connection parameters (address, username, password, db); specify connection parameters inside the URL (e.g. redis://user:pass@host:port/db)")
 		}
 
-		rawURL := repl.ReplaceKnown(r.URL, "")
-		if rawURL == "" {
-			return fmt.Errorf("url cannot resolve to an empty string")
-		}
-		parsedOpt, err := rueidis.ParseURL(rawURL)
+		parsedOpt, err := rueidis.ParseURL(r.URL)
 		if err != nil {
-			return fmt.Errorf("invalid url %q: %w", rawURL, err)
+			return fmt.Errorf("invalid url %q: %w", r.URL, err)
 		}
 		opt = parsedOpt
 	} else {
 		var addrs []string
 		for _, raw := range r.Address {
-			replaced := repl.ReplaceKnown(raw, "")
-			for a := range strings.SplitSeq(replaced, ",") {
+			for a := range strings.SplitSeq(raw, ",") {
 				trimmed := strings.TrimSpace(a)
 				if trimmed != "" {
 					addrs = append(addrs, trimmed)
@@ -78,8 +72,8 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 
 		opt = rueidis.ClientOption{
 			InitAddress: addrs,
-			Username:    repl.ReplaceKnown(r.Username, ""),
-			Password:    repl.ReplaceKnown(r.Password, ""),
+			Username:    r.Username,
+			Password:    r.Password,
 			SelectDB:    r.DB,
 		}
 	}
@@ -90,7 +84,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("pipeline_multiplex must be >= 0, got %d", r.PipelineMultiplex)
 	}
 
-	prefix := cmp.Or(repl.ReplaceKnown(r.KeyPrefix, ""), "titip:")
+	prefix := cmp.Or(r.KeyPrefix, "titip:")
 
 	client, err := rueidis.NewClient(opt)
 	if err != nil {
