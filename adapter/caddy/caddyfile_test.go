@@ -744,3 +744,79 @@ func TestCaddyGlobalOption_StorageProvisionError_Propagated(t *testing.T) {
 		t.Errorf("expected error to contain %q, got %q", "simulated test storage provision error", err.Error())
 	}
 }
+
+func TestCaddyHandler_UnmarshalCaddyfile_StorageValidation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unknown storage module", func(t *testing.T) {
+		d := caddyfile.NewTestDispenser(`titip {
+			storage unknown_backend
+		}`)
+		var h Handler
+		err := h.UnmarshalCaddyfile(d)
+		if err == nil {
+			t.Fatal("expected error for unknown storage module, got nil")
+		}
+		expectedMsg := `storage module "unknown_backend" is not installed`
+		if !strings.Contains(err.Error(), expectedMsg) {
+			t.Errorf("expected error to contain %q, got %q", expectedMsg, err.Error())
+		}
+		if !strings.Contains(err.Error(), "installed: test") {
+			t.Errorf("expected error to contain installed modules list 'installed: test', got %q", err.Error())
+		}
+	})
+
+	t.Run("missing storage argument", func(t *testing.T) {
+		d := caddyfile.NewTestDispenser(`titip {
+			storage
+		}`)
+		var h Handler
+		err := h.UnmarshalCaddyfile(d)
+		if err == nil {
+			t.Fatal("expected error for missing storage argument, got nil")
+		}
+	})
+}
+
+func TestCaddyGlobalOption_StorageValidation(t *testing.T) {
+	t.Parallel()
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+
+	t.Run("unknown global storage module", func(t *testing.T) {
+		caddyfileInput := `{
+			titip {
+				storage unknown_backend
+			}
+		}
+		:8080 {
+			titip
+		}`
+		_, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+		if err == nil {
+			t.Fatal("expected error for unknown global storage module, got nil")
+		}
+		expectedMsg := `storage module "unknown_backend" is not installed`
+		if !strings.Contains(err.Error(), expectedMsg) {
+			t.Errorf("expected error to contain %q, got %q", expectedMsg, err.Error())
+		}
+		if !strings.Contains(err.Error(), "installed: test") {
+			t.Errorf("expected error to contain installed modules list 'installed: test', got %q", err.Error())
+		}
+	})
+
+	t.Run("missing global storage argument", func(t *testing.T) {
+		caddyfileInput := `{
+			titip {
+				storage
+			}
+		}
+		:8080 {
+			titip
+		}`
+		_, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+		if err == nil {
+			t.Fatal("expected error for missing global storage argument, got nil")
+		}
+	})
+}

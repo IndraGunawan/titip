@@ -499,15 +499,11 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 		for d.NextBlock(0) {
 			switch d.Val() {
 			case "storage":
-				if !d.NextArg() {
-					return d.ArgErr()
-				}
-				storageName := d.Val()
-				unm, err := caddyfile.UnmarshalModule(d, "titip.storage."+storageName)
+				raw, err := parseStorageModule(d)
 				if err != nil {
 					return err
 				}
-				h.StorageRaw = caddyconfig.JSONModuleObject(unm, "name", storageName, nil)
+				h.StorageRaw = raw
 			case "cache_status":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -917,6 +913,32 @@ func parseServerTimingCaddyfile(d *caddyfile.Dispenser) (*ServerTimingConfig, er
 	}
 	st.Enabled = &enabled
 	return st, nil
+}
+
+// parseStorageModule parses a "storage <name> { ... }" Caddyfile block, validating that
+// the specified storage backend is registered in Caddy under the "titip.storage" namespace.
+func parseStorageModule(d *caddyfile.Dispenser) (json.RawMessage, error) {
+	if !d.NextArg() {
+		return nil, d.ArgErr()
+	}
+	name := d.Val()
+	modID := "titip.storage." + name
+	if _, err := caddy.GetModule(modID); err != nil {
+		var installed []string
+		for _, m := range caddy.GetModules("titip.storage") {
+			installed = append(installed, strings.TrimPrefix(string(m.ID), "titip.storage."))
+		}
+		if len(installed) > 0 {
+			return nil, d.Errf("storage module %q is not installed (installed: %s); check for typos or compile the plugin into Caddy", name, strings.Join(installed, ", "))
+		}
+		return nil, d.Errf("storage module %q is not installed (no titip storage plugins installed); compile Caddy with a storage plugin such as github.com/indragunawan/titip/storage/redis/caddy", name)
+	}
+
+	unm, err := caddyfile.UnmarshalModule(d, modID)
+	if err != nil {
+		return nil, err
+	}
+	return caddyconfig.JSONModuleObject(unm, "name", name, nil), nil
 }
 
 // Interface guards
