@@ -195,22 +195,22 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if len(h.StorageRaw) > 0 {
 		val, err := ctx.LoadModule(h, "StorageRaw")
 		if err != nil {
-			return fmt.Errorf("titip: storage module not installed or invalid: %w", err)
+			return fmt.Errorf("storage module not installed or invalid: %w", err)
 		}
 		sMod, ok := val.(StorageModule)
 		if !ok {
-			return fmt.Errorf("titip: module does not implement StorageModule")
+			return fmt.Errorf("module does not implement StorageModule")
 		}
 		h.storageMod = sMod
 		store = sMod.Storage()
 	} else if app != nil && app.storageMod != nil {
 		store = app.storageMod.Storage()
 	} else {
-		return fmt.Errorf("titip: storage configuration is required (neither route nor global storage provided)")
+		return fmt.Errorf("storage configuration is required (neither route nor global storage provided)")
 	}
 
 	if store == nil {
-		return fmt.Errorf("titip: storage backend failed to initialize")
+		return fmt.Errorf("storage backend failed to initialize")
 	}
 
 	// 2. Configure Titip options
@@ -256,7 +256,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	case "none":
 		opts = append(opts, titip.WithCacheStatus(titip.CacheStatusNone))
 	default:
-		return fmt.Errorf("titip: unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
+		return fmt.Errorf("unknown cache_status mode %q (allowed: rfc9211, simple, none)", cacheStatus)
 	}
 
 	// Storage compression algorithm (inherit from app if not set, defaults to lz4 in titip.New)
@@ -278,14 +278,14 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if h.BackgroundFetchTimeout != "" {
 		d, err := caddy.ParseDuration(h.BackgroundFetchTimeout)
 		if err != nil {
-			return fmt.Errorf("titip: invalid background_fetch_timeout duration %q: %w", h.BackgroundFetchTimeout, err)
+			return fmt.Errorf("invalid background_fetch_timeout duration %q: %w", h.BackgroundFetchTimeout, err)
 		}
 		opts = append(opts, titip.WithBackgroundFetchTimeout(d))
 	}
 	if st := cmp.Or(h.StorageTimeout, appStorageTimeout); st != "" {
 		d, err := caddy.ParseDuration(st)
 		if err != nil {
-			return fmt.Errorf("titip: invalid storage_timeout duration %q: %w", st, err)
+			return fmt.Errorf("invalid storage_timeout duration %q: %w", st, err)
 		}
 		opts = append(opts, titip.WithStorageTimeout(d))
 	}
@@ -362,7 +362,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			} else if srv, ok := r.Context().Value(caddyhttp.ServerCtxKey).(caddyhttp.Handler); ok && srv != nil {
 				_ = srv.ServeHTTP(rec, virtReq)
 			} else {
-				return nil, nil, errors.New("titip: caddy: server context missing")
+				return nil, nil, errors.New("server context missing")
 			}
 
 			if rec.Code == http.StatusNotFound {
@@ -391,7 +391,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 	instance, err := titip.New(store, opts...)
 	if err != nil {
-		return fmt.Errorf("titip: failed to create instance: %w", err)
+		return fmt.Errorf("failed to create instance: %w", err)
 	}
 	h.instance = instance
 	registerInstance(h.id, instance)
@@ -426,7 +426,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // Validate ensures the handler is configured properly.
 func (h *Handler) Validate() error {
 	if h.instance == nil {
-		return fmt.Errorf("titip: instance was not provisioned")
+		return fmt.Errorf("instance was not provisioned")
 	}
 	return nil
 }
@@ -854,7 +854,7 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	if src.MaxTimeout != "" {
 		d, err := caddy.ParseDuration(src.MaxTimeout)
 		if err != nil {
-			return fmt.Errorf("titip: invalid esi max_timeout duration %q: %w", src.MaxTimeout, err)
+			return fmt.Errorf("invalid esi max_timeout duration %q: %w", src.MaxTimeout, err)
 		}
 		*opts = append(*opts, esi.WithMaxTimeout(d))
 	}
@@ -873,7 +873,7 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	if src.MaxResponseSize != "" {
 		uSize, err := humanize.ParseBytes(src.MaxResponseSize)
 		if err != nil {
-			return fmt.Errorf("titip: invalid esi max_response_size %q: %w", src.MaxResponseSize, err)
+			return fmt.Errorf("invalid esi max_response_size %q: %w", src.MaxResponseSize, err)
 		}
 		*opts = append(*opts, esi.WithMaxResponseSize(int64(uSize)))
 	}

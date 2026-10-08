@@ -19,12 +19,15 @@ func init() {
 
 // RedisStorage implements a Caddy storage guest module under the "titip.storage.redis" namespace.
 type RedisStorage struct {
+	URL               string   `json:"url,omitempty"`
 	Address           []string `json:"address,omitempty"`
 	KeyPrefix         string   `json:"key_prefix,omitempty"`
 	Username          string   `json:"username,omitempty"`
 	Password          string   `json:"password,omitempty"`
 	DB                int      `json:"db,omitempty"`
 	PipelineMultiplex int      `json:"pipeline_multiplex,omitempty"`
+
+	dbSet bool
 
 	store  storage.Storage
 	client rueidis.Client
@@ -41,38 +44,76 @@ func (RedisStorage) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the Redis client and storage backend.
 func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	repl := caddy.NewReplacer()
-	var addrs []string
-	for _, raw := range r.Address {
-		replaced := repl.ReplaceKnown(raw, "")
-		for a := range strings.SplitSeq(replaced, ",") {
-			trimmed := strings.TrimSpace(a)
-			if trimmed != "" {
-				addrs = append(addrs, trimmed)
+	var opt rueidis.ClientOption
+
+	if r.URL != "" {
+		// Enforce mutual exclusivity: discrete connection parameters are forbidden when url is defined
+		var conflicts []string
+		if len(r.Address) > 0 {
+			conflicts = append(conflicts, "address")
+		}
+		if r.Username != "" {
+			conflicts = append(conflicts, "username")
+		}
+		if r.Password != "" {
+			conflicts = append(conflicts, "password")
+		}
+		if r.dbSet || r.DB != 0 {
+			conflicts = append(conflicts, "db")
+		}
+		if len(conflicts) > 0 {
+			return fmt.Errorf("setting %q while \"url\" is defined is not allowed; specify connection parameters inside the URL (e.g. redis://user:pass@host:port/db)", strings.Join(conflicts, ", "))
+		}
+
+		rawURL := repl.ReplaceKnown(r.URL, "")
+		if rawURL == "" {
+			return fmt.Errorf("url cannot resolve to an empty string")
+		}
+		parsedOpt, err := rueidis.ParseURL(rawURL)
+		if err != nil {
+			return fmt.Errorf("invalid url %q: %w", rawURL, err)
+		}
+		opt = parsedOpt
+	} else {
+		var addrs []string
+		for _, raw := range r.Address {
+			replaced := repl.ReplaceKnown(raw, "")
+			for a := range strings.SplitSeq(replaced, ",") {
+				trimmed := strings.TrimSpace(a)
+				if trimmed != "" {
+					addrs = append(addrs, trimmed)
+				}
 			}
 		}
+		if len(addrs) == 0 {
+			return fmt.Errorf("connection configuration required (specify either 'url' or 'address')")
+		}
+
+		username := repl.ReplaceKnown(r.Username, "")
+		password := repl.ReplaceKnown(r.Password, "")
+
+		opt = rueidis.ClientOption{
+			InitAddress: addrs,
+			Username:    username,
+			Password:    password,
+			SelectDB:    r.DB,
+		}
 	}
-	if len(addrs) == 0 {
-		addrs = []string{"127.0.0.1:6379"}
+
+	if r.PipelineMultiplex > 0 {
+		opt.PipelineMultiplex = r.PipelineMultiplex
+	} else if r.PipelineMultiplex < 0 {
+		return fmt.Errorf("pipeline_multiplex must be >= 0, got %d", r.PipelineMultiplex)
 	}
 
 	prefix := repl.ReplaceKnown(r.KeyPrefix, "")
 	if prefix == "" {
 		prefix = "titip:"
 	}
-	username := repl.ReplaceKnown(r.Username, "")
-	password := repl.ReplaceKnown(r.Password, "")
-
-	opt := rueidis.ClientOption{
-		InitAddress:       addrs,
-		Username:          username,
-		Password:          password,
-		SelectDB:          r.DB,
-		PipelineMultiplex: r.PipelineMultiplex,
-	}
 
 	client, err := rueidis.NewClient(opt)
 	if err != nil {
-		return fmt.Errorf("titip.storage.redis: connect error: %w", err)
+		return fmt.Errorf("connect error: %w", err)
 	}
 	r.client = client
 
@@ -83,7 +124,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	)
 	if err != nil {
 		client.Close()
-		return fmt.Errorf("titip.storage.redis: init storage error: %w", err)
+		return fmt.Errorf("init storage error: %w", err)
 	}
 	r.store = store
 
@@ -108,6 +149,14 @@ func (r *RedisStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
+			case "url":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				if r.URL != "" {
+					return d.Errf("duplicate url directive")
+				}
+				r.URL = d.Val()
 			case "address":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
@@ -144,7 +193,11 @@ func (r *RedisStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if err != nil {
 					return d.Errf("invalid db number %q: %v", d.Val(), err)
 				}
+				if db < 0 {
+					return d.Errf("db number must be >= 0, got %d", db)
+				}
 				r.DB = db
+				r.dbSet = true
 			case "pipeline_multiplex":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -152,6 +205,9 @@ func (r *RedisStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				pm, err := strconv.Atoi(d.Val())
 				if err != nil {
 					return d.Errf("invalid pipeline_multiplex number %q: %v", d.Val(), err)
+				}
+				if pm < 0 {
+					return d.Errf("pipeline_multiplex must be >= 0, got %d", pm)
 				}
 				r.PipelineMultiplex = pm
 			default:

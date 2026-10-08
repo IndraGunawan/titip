@@ -71,11 +71,11 @@ func (a *App) Provision(ctx caddy.Context) error {
 	if len(a.StorageRaw) > 0 {
 		mod, err := ctx.LoadModule(a, "StorageRaw")
 		if err != nil {
-			return fmt.Errorf("titip: loading global storage module: %w", err)
+			return fmt.Errorf("loading global storage module: %w", err)
 		}
 		sm, ok := mod.(StorageModule)
 		if !ok {
-			return fmt.Errorf("titip: global storage module does not implement StorageModule")
+			return fmt.Errorf("global storage module does not implement StorageModule")
 		}
 		a.storageMod = sm
 	}
