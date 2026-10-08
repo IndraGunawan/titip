@@ -25,7 +25,7 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
         storage redis {
             address localhost:6379
             key_prefix caddy:
-            password {env.REDIS_PASSWORD}
+            password {$REDIS_PASSWORD}
         }
         storage_compression zstd
         cache_status rfc9211

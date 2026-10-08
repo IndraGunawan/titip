@@ -97,15 +97,49 @@ xcaddy build \
 
 ### Caddyfile Configuration
 
+Titip Redis storage supports two mutually exclusive connection modes: **URL Mode** or **Discrete Mode**.
+
+#### Option A: URL Mode
+
 ```caddyfile
 :8080 {
     route {
         titip {
             storage redis {
-                address localhost:6379
+                url {$REDIS_URL}
                 key_prefix titip:
-                password {env.REDIS_PASSWORD}
-                db 0
+                pipeline_multiplex 2
+            }
+        }
+    }
+}
+```
+
+Supports standard Redis URI schemes:
+
+- Plaintext: `redis://[user:pass@]host[:port][/db][?opts]`
+- TLS / SSL: `rediss://[user:pass@]host[:port][/db][?skip_verify=true]`
+- Unix Sockets: `unix://[user:pass@]/path/to/redis.sock[?db=0]`
+- Query tuning parameters: `?dial_timeout=5s&write_timeout=3s&client_name=caddy-titip&protocol=2&addr=<host2>:<port2>`
+
+To see all supported URL options, schemes, and query parameters, see [rueidis `ParseURL`](https://github.com/redis/rueidis/blob/2ed2326/url.go#L14-L111).
+
+> [!NOTE]
+> Setting `url` is mutually exclusive with discrete connection directives (`address`, `username`, `password`, `db`).
+
+#### Option B: Discrete Mode
+
+```caddyfile
+:8080 {
+    route {
+        titip {
+            storage redis {
+                address {$REDIS_ADDRESS:localhost:6379}
+                username {$REDIS_USERNAME}
+                password {$REDIS_PASSWORD}
+                db {$REDIS_DB:0}
+                key_prefix titip:
+                pipeline_multiplex 2
             }
         }
     }
