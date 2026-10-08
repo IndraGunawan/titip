@@ -99,16 +99,11 @@ func parseGlobalOption(d *caddyfile.Dispenser, prev any) (any, error) {
 		for d.NextBlock(0) {
 			switch d.Val() {
 			case "storage":
-				if !d.NextArg() {
-					return nil, d.ArgErr()
-				}
-				name := d.Val()
-				modID := "titip.storage." + name
-				unm, err := caddyfile.UnmarshalModule(d, modID)
+				raw, err := parseStorageModule(d)
 				if err != nil {
 					return nil, err
 				}
-				app.StorageRaw = caddyconfig.JSONModuleObject(unm, "name", name, nil)
+				app.StorageRaw = raw
 
 			case "cache_status":
 				if !d.NextArg() {
