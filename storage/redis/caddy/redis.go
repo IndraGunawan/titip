@@ -1,6 +1,7 @@
 package caddy
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 	"strings"
@@ -47,22 +48,8 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	var opt rueidis.ClientOption
 
 	if r.URL != "" {
-		// Enforce mutual exclusivity: discrete connection parameters are forbidden when url is defined
-		var conflicts []string
-		if len(r.Address) > 0 {
-			conflicts = append(conflicts, "address")
-		}
-		if r.Username != "" {
-			conflicts = append(conflicts, "username")
-		}
-		if r.Password != "" {
-			conflicts = append(conflicts, "password")
-		}
-		if r.dbSet || r.DB != 0 {
-			conflicts = append(conflicts, "db")
-		}
-		if len(conflicts) > 0 {
-			return fmt.Errorf("setting %q while \"url\" is defined is not allowed; specify connection parameters inside the URL (e.g. redis://user:pass@host:port/db)", strings.Join(conflicts, ", "))
+		if len(r.Address) > 0 || r.Username != "" || r.Password != "" || r.dbSet || r.DB != 0 {
+			return fmt.Errorf("cannot combine \"url\" with discrete connection parameters (address, username, password, db); specify connection parameters inside the URL (e.g. redis://user:pass@host:port/db)")
 		}
 
 		rawURL := repl.ReplaceKnown(r.URL, "")
@@ -89,13 +76,10 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("connection configuration required (specify either 'url' or 'address')")
 		}
 
-		username := repl.ReplaceKnown(r.Username, "")
-		password := repl.ReplaceKnown(r.Password, "")
-
 		opt = rueidis.ClientOption{
 			InitAddress: addrs,
-			Username:    username,
-			Password:    password,
+			Username:    repl.ReplaceKnown(r.Username, ""),
+			Password:    repl.ReplaceKnown(r.Password, ""),
 			SelectDB:    r.DB,
 		}
 	}
@@ -106,10 +90,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("pipeline_multiplex must be >= 0, got %d", r.PipelineMultiplex)
 	}
 
-	prefix := repl.ReplaceKnown(r.KeyPrefix, "")
-	if prefix == "" {
-		prefix = "titip:"
-	}
+	prefix := cmp.Or(repl.ReplaceKnown(r.KeyPrefix, ""), "titip:")
 
 	client, err := rueidis.NewClient(opt)
 	if err != nil {
