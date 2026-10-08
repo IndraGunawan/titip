@@ -139,13 +139,13 @@ func TestRedisStorage_Provision_URL_MutualExclusivity(t *testing.T) {
 	}
 }
 
-func TestRedisStorage_Provision_URL_Replacer(t *testing.T) {
+func TestRedisStorage_Provision_URL(t *testing.T) {
 	addr := getTestRedisAddr()
-	t.Setenv("TEST_REDIS_URL", "redis://"+addr+"/0?client_name=test-worker&dial_timeout=2s")
+	redisURL := "redis://" + addr + "/0?client_name=test-worker&dial_timeout=2s"
 
 	r := &RedisStorage{
-		URL:               "{env.TEST_REDIS_URL}",
-		KeyPrefix:         "url_repl_test:",
+		URL:               redisURL,
+		KeyPrefix:         "url_test:",
 		PipelineMultiplex: 2,
 	}
 
@@ -174,12 +174,12 @@ func TestRedisStorage_Provision_URL_Invalid(t *testing.T) {
 		t.Error("expected error for invalid scheme http, got nil")
 	}
 
-	// Empty resolved URL
+	// Malformed URL
 	r2 := &RedisStorage{
-		URL: "{env.NON_EXISTENT_REDIS_URL_VAR}",
+		URL: "redis://[invalid-host",
 	}
 	if err := r2.Provision(ctx); err == nil {
-		t.Error("expected error for empty resolved url, got nil")
+		t.Error("expected error for malformed url, got nil")
 	}
 }
 
@@ -245,10 +245,33 @@ func TestRedisStorage_Provision_MissingConnection(t *testing.T) {
 		t.Errorf("expected connection configuration required error, got %v", err)
 	}
 
-	// Address resolves to empty string
-	r2 := &RedisStorage{Address: []string{"{env.UNSET_ADDR_VAR}"}}
+	// Address is empty / whitespace
+	r2 := &RedisStorage{Address: []string{"   "}}
 	if err := r2.Provision(ctx); err == nil || !strings.Contains(err.Error(), "connection configuration required") {
 		t.Errorf("expected connection configuration required error, got %v", err)
+	}
+}
+
+func TestRedisStorage_Caddyfile_Env(t *testing.T) {
+	t.Setenv("TEST_REDIS_HOST", "127.0.0.1")
+	t.Setenv("TEST_REDIS_DB", "3")
+
+	config := `redis {
+		address {$TEST_REDIS_HOST}:6379
+		db {$TEST_REDIS_DB:0}
+	}`
+
+	d := caddyfile.NewTestDispenser(config)
+	var r RedisStorage
+	if err := r.UnmarshalCaddyfile(d); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if len(r.Address) != 1 || r.Address[0] != "127.0.0.1:6379" {
+		t.Errorf("expected address 127.0.0.1:6379, got %v", r.Address)
+	}
+	if r.DB != 3 {
+		t.Errorf("expected db 3, got %d", r.DB)
 	}
 }
 
