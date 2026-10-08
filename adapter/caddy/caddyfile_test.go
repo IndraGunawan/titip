@@ -3,6 +3,7 @@ package caddy
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	caddymain "github.com/caddyserver/caddy/v2"
@@ -709,5 +710,37 @@ func TestCaddyHandler_ServerTiming_UnmarshalCaddyfile(t *testing.T) {
 			}
 			tc.validate(t, &h)
 		})
+	}
+}
+
+func TestCaddyGlobalOption_StorageProvisionError_Propagated(t *testing.T) {
+	caddyfileInput := `{
+		titip {
+			storage test {
+				fail
+			}
+		}
+	}
+	:8080 {
+		titip
+	}`
+
+	cadAdapter := caddyconfig.GetAdapter("caddyfile")
+	jsonBytes, _, err := cadAdapter.Adapt([]byte(caddyfileInput), map[string]any{"filename": "Caddyfile"})
+	if err != nil {
+		t.Fatalf("adapt failed: %v", err)
+	}
+
+	cfg := new(caddymain.Config)
+	if err := json.Unmarshal(jsonBytes, cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	_, err = caddymain.ProvisionContext(cfg)
+	if err == nil {
+		t.Fatal("expected provision error when global storage configuration is invalid, got nil")
+	}
+	if !strings.Contains(err.Error(), "simulated test storage provision error") {
+		t.Errorf("expected error to contain %q, got %q", "simulated test storage provision error", err.Error())
 	}
 }

@@ -1,6 +1,8 @@
 package caddy
 
 import (
+	"errors"
+
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/indragunawan/titip/internal/teststore"
@@ -13,6 +15,7 @@ func init() {
 
 // TestStorage implements a test-only Caddy storage guest module under "titip.storage.test".
 type TestStorage struct {
+	Fail  bool `json:"fail,omitempty"`
 	store *teststore.Store
 }
 
@@ -28,6 +31,9 @@ func (TestStorage) CaddyModule() caddy.ModuleInfo {
 
 // Provision initializes the test store.
 func (t *TestStorage) Provision(ctx caddy.Context) error {
+	if t.Fail {
+		return errors.New("simulated test storage provision error")
+	}
 	if t.store == nil {
 		t.store = teststore.New()
 	}
@@ -51,7 +57,9 @@ func (t *TestStorage) Storage() storage.Storage {
 func (t *TestStorage) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
-			// consume any optional test config block if given
+			if d.Val() == "fail" {
+				t.Fail = true
+			}
 		}
 	}
 	return nil

@@ -186,7 +186,11 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 	// Check for global App defaults if configured
 	var app *App
-	if appIface, err := ctx.AppIfConfigured("titip"); err == nil && appIface != nil {
+	appIface, err := ctx.AppIfConfigured("titip")
+	if err != nil && !errors.Is(err, caddy.ErrNotConfigured) {
+		return err
+	}
+	if appIface != nil {
 		app, _ = appIface.(*App)
 	}
 
