@@ -523,7 +523,7 @@ func TestEndToEnd_CustomCompressor(t *testing.T) {
 func TestBackwardCompatibleLZ4(t *testing.T) {
 	t.Parallel()
 
-	// Simulates an existing key in Redis stored prior to the introduction of storage_compression.
+	// Simulates an existing key in storage stored prior to the introduction of storage_compression.
 	// In proto3, unset string fields default to "".
 	store := teststore.New()
 	mw, err := New(store, WithStorageCompression(StorageCompressionZstd)) // Active writer is zstd!

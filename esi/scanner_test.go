@@ -517,7 +517,7 @@ func BenchmarkESI_ScanAndSplice_ColdMiss(b *testing.B) {
 }
 
 // BenchmarkESI_PreCompiled_CacheHit_PooledBuffer simulates complete Cache Hit processing:
-// zero scanner called, using pre-compiled metadata from Redis and splicing into a pooled buffer.
+// zero scanner called, using pre-compiled metadata from storage and splicing into a pooled buffer.
 func BenchmarkESI_PreCompiled_CacheHit_PooledBuffer(b *testing.B) {
 	var buf bytes.Buffer
 	buf.WriteString("<!DOCTYPE html><html><head><title>Test Benchmark</title></head><body>\n")
@@ -535,7 +535,7 @@ func BenchmarkESI_PreCompiled_CacheHit_PooledBuffer(b *testing.B) {
 	buf.WriteString("</body></html>")
 	parentData := buf.Bytes()
 
-	// Pre-compile once (as stored in Redis on initial cold miss)
+	// Pre-compile once (as stored in storage on initial cold miss)
 	preCompiledFrags := Scan(parentData)
 
 	fragPayloads := [][]byte{

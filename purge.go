@@ -73,7 +73,7 @@ func buildPurgeOperation(target string, cfg *CacheKey) (isExact bool, keys []str
 	buf.WriteString("p=")
 	writeEscapedPath(buf, cleanedPath)
 
-	// 1. Query String handling
+	// Query string handling
 	hasQuery := !cfg.ExcludeQuery && parsed.RawQuery != ""
 	if hasQuery {
 		fakeURL, _ := url.Parse("http://x?" + parsed.RawQuery)
@@ -125,7 +125,7 @@ func buildPurgeOperation(target string, cfg *CacheKey) (isExact bool, keys []str
 		}
 	}
 
-	// 2. Path All Variants (no query or query stripped)
+	// Path all variants (no query or query stripped)
 	buf.WriteByte(':')
 	if !cfg.ExcludeHost && host != "" {
 		buf.WriteString("h=")

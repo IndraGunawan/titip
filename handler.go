@@ -34,7 +34,7 @@ func (t *Titip) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.Hand
 	}
 }
 
-// 1. stateCheckBypass: Protocol bypass guards, stream bypass, mutating method handling
+// stateCheckBypass handles protocol bypass guards, stream bypass, and mutating method handling.
 func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 	defer func() {
 		if p := recover(); p != nil {
@@ -45,28 +45,28 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 		}
 	}()
 
-	// A. WebSocket Handshake Bypass (RFC 6455 / RFC 9110 §7.8)
+	// WebSocket handshake bypass (RFC 6455 / RFC 9110 §7.8)
 	if containsToken(ctx.r.Header.Get(headerUpgrade), upgradeWebSocket) {
 		t.recordRequest(ctx, labelStatusBypass)
 		t.emitCacheStatus(ctx, statusBypass, "fwd=bypass; detail=websocket-upgrade")
 		return stateBypassOrigin
 	}
 
-	// B. Server-Sent Events (SSE) Bypass
+	// Server-Sent Events (SSE) bypass
 	if strings.Contains(strings.ToLower(ctx.r.Header.Get(headerAccept)), contentTypeEventStream) {
 		t.recordRequest(ctx, labelStatusBypass)
 		t.emitCacheStatus(ctx, statusBypass, "fwd=bypass; detail=sse-stream")
 		return stateBypassOrigin
 	}
 
-	// C. Range Byte Request Bypass
+	// Range byte request bypass
 	if ctx.r.Header.Get(headerRange) != "" {
 		t.recordRequest(ctx, labelStatusBypass)
 		t.emitCacheStatus(ctx, statusBypass, "fwd=bypass; detail=range-request")
 		return stateBypassOrigin
 	}
 
-	// D. Mutating Methods (POST, PUT, DELETE, PATCH)
+	// Mutating methods (POST, PUT, DELETE, PATCH)
 	if isMutatingMethod(ctx.r.Method) {
 		t.recordRequest(ctx, labelStatusBypass)
 		t.emitCacheStatus(ctx, statusBypass, "fwd=method")
@@ -74,14 +74,14 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 		return nil
 	}
 
-	// E. Non-Cacheable Methods (only GET and HEAD are cached)
+	// Non-cacheable methods (only GET and HEAD are cached)
 	if ctx.r.Method != http.MethodGet && ctx.r.Method != http.MethodHead {
 		t.recordRequest(ctx, labelStatusBypass)
 		t.emitCacheStatus(ctx, statusBypass, "fwd=method")
 		return stateBypassOrigin
 	}
 
-	// F. Client Cache-Control / Pragma (RFC 9111 §5.2.1 & §5.4)
+	// Client Cache-Control / Pragma (RFC 9111 §5.2.1 & §5.4)
 	if t.config.respectClientCacheControl {
 		ccValues := ctx.r.Header.Values(headerCacheControl)
 		cc := strings.Join(ccValues, ", ")
@@ -114,7 +114,7 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 	return stateLookupMetadata
 }
 
-// 2. stateLookupMetadata: Generates Primary Key and looks up Stage 1 metadata in Redis
+// stateLookupMetadata generates the primary key and looks up Stage 1 metadata in storage.
 func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 	ctx.primaryKey = generatePrimaryKey(ctx.r, &t.config.cacheKey)
 
@@ -156,7 +156,7 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 	return stateMatchVariant
 }
 
-// 3. stateMatchVariant: Evaluates Vary headers and matches variant in metadata
+// stateMatchVariant evaluates Vary headers and matches the variant in metadata.
 func stateMatchVariant(t *Titip, ctx *requestContext) stateFn {
 	ctx.variantKey = generateVariantKey(ctx.r, ctx.meta.VaryHeaderNames)
 	if ctx.variantKey == "" {
@@ -181,7 +181,7 @@ func stateMatchVariant(t *Titip, ctx *requestContext) stateFn {
 	return stateEvaluateFreshness
 }
 
-// 4. stateEvaluateFreshness: Computes RFC-7234 freshness, handles downstream 304, SWR, and stale states
+// stateEvaluateFreshness computes RFC-7234 / RFC-9111 freshness and handles downstream 304, SWR, and stale states.
 func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	ctx.nowNano = time.Now().UnixNano()
 
@@ -227,7 +227,7 @@ func stateEvaluateFreshness(t *Titip, ctx *requestContext) stateFn {
 	return stateFetchOriginRevalidate
 }
 
-// 5. stateServe304: Writes HTTP 304 Not Modified directly with 0 Redis Body I/O
+// stateServe304 writes HTTP 304 Not Modified directly with zero storage body I/O.
 func stateServe304(t *Titip, ctx *requestContext) stateFn {
 	t.recordRequest(ctx, labelStatusHit)
 	t.emitCacheStatus(ctx, statusHit, "hit")
@@ -246,7 +246,7 @@ func stateServe412(t *Titip, ctx *requestContext) stateFn {
 	return nil
 }
 
-// 6. stateServeCachedHit: Fetches compressed body from Redis, decompresses and writes response
+// stateServeCachedHit fetches the compressed body from storage, decompresses, and writes the response.
 func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	// HEAD Request Handling (0 body I/O)
 	if ctx.r.Method == http.MethodHead {
@@ -295,7 +295,7 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 	return nil
 }
 
-// 7. stateServeSWR: Serves stale cached variant and triggers background revalidation
+// stateServeSWR serves the stale cached variant and triggers background revalidation.
 func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	var t0 time.Time
 	if ctx.timing.enabled {
@@ -335,7 +335,7 @@ func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
 	return nil
 }
 
-// 8. stateFetchOriginMiss: Direct Origin Fetch (NO singleflight) to eliminate Set-Cookie leaks on cache misses
+// stateFetchOriginMiss executes a direct origin fetch (no singleflight) to eliminate Set-Cookie leaks on cache misses.
 func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	originCtx := ctx.r.Context()
 
@@ -511,11 +511,11 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 	return nil
 }
 
-// 9. stateFetchOriginRevalidate: Singleflight Coalesced Revalidation (with Upstream 304 support & stale fallback)
+// stateFetchOriginRevalidate executes singleflight coalesced revalidation with upstream 304 support and stale fallback.
 func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	sfKey := ctx.primaryKey + ":" + ctx.variantKey
 
-	// Fetch existing stale variant from Redis for 304 revalidation or 5xx fallback
+	// Fetch existing stale variant from storage for 304 revalidation or 5xx fallback
 	var staleVar *pb.VariantInfo
 	var staleCompBody []byte
 	if ctx.varInfo != nil {
@@ -628,7 +628,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 
 			freshness := calculateFreshness(200, ctx.r.Header, mergedHeaders, reqTime, respTime, respTime)
 			if freshness.EffectiveTTL > 0 && !t.closed.Load() {
-				// Refresh Redis TTL without rewriting body
+				// Refresh storage TTL without rewriting body
 				ctx.meta.ExpiresAtUnixNano = respTime.Add(freshness.EffectiveTTL).UnixNano()
 				if freshness.StaleWhileRevalidateTTL > 0 {
 					ctx.meta.StaleUntilUnixNano = ctx.meta.ExpiresAtUnixNano + int64(freshness.StaleWhileRevalidateTTL)
@@ -828,7 +828,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	return nil
 }
 
-// 10. stateBypassOrigin: Bypasses Titip cache completely and forwards request directly to next handler
+// stateBypassOrigin bypasses the Titip cache completely and forwards the request directly to the next handler.
 func stateBypassOrigin(t *Titip, ctx *requestContext) stateFn {
 	ctx.next.ServeHTTP(ctx.w, ctx.r)
 	return nil
@@ -1099,7 +1099,7 @@ func (t *Titip) evaluatePreconditions(r *http.Request, varInfo *pb.VariantInfo) 
 
 // evaluatePreconditionsHeaders evaluates HTTP conditional request headers directly from raw header metadata.
 func (t *Titip) evaluatePreconditionsHeaders(r *http.Request, etag string, lastModifiedUnixNano int64) (int, bool) {
-	// 1. If-Match (Strong comparison per RFC 9110 §13.1.1 & §13.2.2)
+	// If-Match (strong comparison per RFC 9110 §13.1.1 & §13.2.2)
 	if ifMatch := r.Header.Get(headerIfMatch); ifMatch != "" {
 		trimmed := strings.TrimSpace(ifMatch)
 		if trimmed != "*" {
@@ -1115,7 +1115,7 @@ func (t *Titip) evaluatePreconditionsHeaders(r *http.Request, etag string, lastM
 			}
 		}
 	} else if ifUnmodSince := r.Header.Get(headerIfUnmodifiedSince); ifUnmodSince != "" && lastModifiedUnixNano > 0 {
-		// 2. If-Unmodified-Since (RFC 9110 §13.1.4 & §13.2.2: only if If-Match is absent)
+		// If-Unmodified-Since (RFC 9110 §13.1.4 & §13.2.2: only if If-Match is absent)
 		if clientTime, err := parseDate(ifUnmodSince); err == nil && !clientTime.IsZero() {
 			cachedSec := time.Unix(0, lastModifiedUnixNano).Truncate(time.Second)
 			clientSec := clientTime.Truncate(time.Second)
@@ -1125,7 +1125,7 @@ func (t *Titip) evaluatePreconditionsHeaders(r *http.Request, etag string, lastM
 		}
 	}
 
-	// 3. If-None-Match (Weak comparison for GET/HEAD per RFC 9110 §13.1.2 & §13.2.2)
+	// If-None-Match (weak comparison for GET/HEAD per RFC 9110 §13.1.2 & §13.2.2)
 	if ifNoneMatch := r.Header.Get(headerIfNoneMatch); ifNoneMatch != "" {
 		trimmed := strings.TrimSpace(ifNoneMatch)
 		if trimmed == "*" {
@@ -1140,7 +1140,7 @@ func (t *Titip) evaluatePreconditionsHeaders(r *http.Request, etag string, lastM
 		}
 		return 0, true
 	} else if ifModSince := r.Header.Get(headerIfModifiedSince); ifModSince != "" && lastModifiedUnixNano > 0 {
-		// 4. If-Modified-Since (RFC 9110 §13.1.3 & §13.2.2: only if If-None-Match is absent)
+		// If-Modified-Since (RFC 9110 §13.1.3 & §13.2.2: only if If-None-Match is absent)
 		if clientTime, err := parseDate(ifModSince); err == nil && !clientTime.IsZero() {
 			cachedSec := time.Unix(0, lastModifiedUnixNano).Truncate(time.Second)
 			clientSec := clientTime.Truncate(time.Second)

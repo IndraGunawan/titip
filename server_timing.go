@@ -49,7 +49,7 @@ func (cfg serverTimingConfig) emit(w http.ResponseWriter, rec *serverTimingRecor
 
 	var scratch [24]byte
 
-	// 1. Status metric: titip-status;desc="HIT"
+	// Status metric: titip-status;desc="HIT"
 	if status != "" {
 		buf.WriteString("titip-status;desc=\"")
 		buf.WriteString(status)

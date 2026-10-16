@@ -15,7 +15,7 @@
    - Specific package: `go test -v -race ./<pkg>/...`
    - Workspace-wide: `make test` or `make race`
 4. ✅ **Format & Lint Code** — Run `make fmt`, `make vet`, and `make lint` before finishing any task.
-5. ✅ **Follow Architecture & RFCs** — Strict zero-allocation pools, fail-open resilience, atomic Redis Hash operations, and RFC compliance. See [Core Operating Principles](#1-core-operating-principles).
+5. ✅ **Follow Architecture & RFCs** — Strict zero-allocation pools, fail-open resilience, atomic storage operations, and RFC compliance. See [Core Operating Principles](#1-core-operating-principles).
 6. ✅ **Never Push to Main** — Always create a dedicated feature or bugfix branch and open a PR. Never run `git push origin main`.
 
 ---
@@ -50,12 +50,12 @@
    - Use `sync.Pool` for all byte buffers, response recorders, compressor/decompressor instances (`lz4`, `zstd`), and request contexts to eliminate payload heap churn.
    - Verify buffer and reader recycling with `testing.B` benchmarks.
 4. **Implement Fail-Open Architecture**:
-   - Storage outages (Redis down/timeout), Protobuf deserialization errors, or decompression failures **must never crash or return 500 errors to end users**.
+   - Storage outages (storage down/timeout), Protobuf deserialization errors, or decompression failures **must never crash or return 500 errors to end users**.
    - Transparently forward requests directly to the origin handler (`fwd=bypass`).
 5. **Enforce Context Detachment in Singleflight**:
    - Wrap singleflight origin fetches in `context.WithoutCancel(r.Context())` so client cancellations do not abort in-flight origin calls for waiting concurrent requests.
 6. **Maintain Complete Key Cleanup on Hard Purges**:
-   - Hard purges (URL and Tag) must atomically delete both the metadata Hash AND all associated variant body keys. Zero orphaned keys may remain in Redis.
+   - Hard purges (URL and Tag) must atomically delete both the metadata record AND all associated variant body keys. Zero orphaned keys may remain in storage.
 7. **Maintain Multi-Module Workspace (`go.work`) Integration**:
    - Whenever a new distributed module is added to the repository (e.g. framework adapters under `adapter/*` or storage drivers under `storage/*`), it **MUST** declare its own `go.mod` and be registered in the root `go.work` file.
    - Always run `go work sync` to maintain clean workspace dependency resolution.
@@ -66,8 +66,9 @@
 
 1. **NEVER Run Per-Request Hashing on URLs**:
    - Do **NOT** use SHA-256, MD5, Murmur3, or xxHash for cache keys. Assemble normalized strings directly via pooled string builders.
-2. **NEVER Perform Read-Modify-Write in Redis for Variants**:
-   - Do **NOT** fetch the entire metadata record, unmarshal, append a variant in Go, and re-write to Redis. Use atomic Redis Hash commands (`HSET`, `HMGET`) to eliminate race conditions.
+2. **NEVER Allow Race Conditions or Lost Updates on Concurrent Variant Saves**:
+   - Concurrent requests saving different variants (e.g. `gzip` vs `br`) must never overwrite or drop existing variants.
+   - **Avoid Read-Modify-Write**: Prefer atomic storage operations (e.g. Redis Hashes) or sub-key decomposition whenever possible. Only use Read-Modify-Write as a last resort when the storage backend lacks granular mutations, and ensure it is strictly guarded by concurrency control (CAS, transactions, or mutex locking).
 3. **NEVER Cache Heuristically Without `Cache-Control`**:
    - Responses lacking explicit cacheable `Cache-Control` directives (`max-age`, `s-maxage`, `public`) must **never** be cached.
 4. **NEVER Leak Sensitive Sessions (`Set-Cookie` / `private`)**:
