@@ -219,7 +219,7 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 
 	cmds := make([]rueidis.Completed, 0, 6+len(meta.Tags))
 
-	// 1. HSET metaKey _index <metaBytes> v:<variantKey> <varBytes>
+	// HSET metaKey _index <metaBytes> v:<variantKey> <varBytes>
 	hsetCmd := s.client.B().Hset().
 		Key(s.metaKey(primaryKey)).
 		FieldValue().
@@ -228,7 +228,7 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		Build()
 	cmds = append(cmds, hsetCmd)
 
-	// 2. Set field-level TTL on the variant field in metadata Hash (HEXPIRE)
+	// Set field-level TTL on the variant field in metadata Hash (HEXPIRE)
 	hexpireVariantCmd := s.client.B().Hexpire().
 		Key(s.metaKey(primaryKey)).
 		Seconds(ttlSeconds).
@@ -238,14 +238,14 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		Build()
 	cmds = append(cmds, hexpireVariantCmd)
 
-	// 3. HDEL metaKey _soft_purged (resets soft purge on fresh content)
+	// HDEL metaKey _soft_purged (resets soft purge on fresh content)
 	hdelSoftPurgeCmd := s.client.B().Hdel().
 		Key(s.metaKey(primaryKey)).
 		Field(softPurgedField).
 		Build()
 	cmds = append(cmds, hdelSoftPurgeCmd)
 
-	// 4. SET bodyKey <body> EX <ttl>
+	// SET bodyKey <body> EX <ttl>
 	setBodyCmd := s.client.B().Set().
 		Key(s.bodyKey(primaryKey, variant.VariantKey)).
 		Value(rueidis.BinaryString(body)).
@@ -253,12 +253,12 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 		Build()
 	cmds = append(cmds, setBodyCmd)
 
-	// 5. Dynamic TTL: Set initial TTL if none exists (NX), or extend if new TTL is greater (GT)
+	// Dynamic TTL: Set initial TTL if none exists (NX), or extend if new TTL is greater (GT)
 	expireNXCmd := s.client.B().Expire().Key(s.metaKey(primaryKey)).Seconds(ttlSeconds).Nx().Build()
 	expireGTCmd := s.client.B().Expire().Key(s.metaKey(primaryKey)).Seconds(ttlSeconds).Gt().Build()
 	cmds = append(cmds, expireNXCmd, expireGTCmd)
 
-	// 4. Index tags in Redis Hashes with field-level TTL (HEXPIRE) and key-level TTL extension (EXPIRE GT)
+	// Index tags in Redis Hashes with field-level TTL (HEXPIRE) and key-level TTL extension (EXPIRE GT)
 	for _, tag := range meta.Tags {
 		if tag == "" {
 			continue

@@ -849,7 +849,7 @@ func TestRFC_Upstream304_PreservesStoredCacheControl(t *testing.T) {
 		t.Fatalf("expected origin revalidation call, got %d", originCalls.Load())
 	}
 
-	// 4. Stored Cache-Control must have refreshed Redis TTL, so next request is a fresh HIT
+	// Stored Cache-Control must have refreshed storage TTL, so next request is a fresh HIT
 	doGet(t, handler, "http://example.com/upstream-304-merge").
 		assertCacheStatus("hit")
 	if originCalls.Load() != 2 {

@@ -430,7 +430,7 @@ func TestBypassGuards_WebSocket_SSE_Range(t *testing.T) {
 		assertCacheStatus("detail=range-request")
 }
 
-// Downstream 304 validation with zero Redis body I/O.
+// Downstream 304 validation with zero storage body I/O.
 func TestDownstream304_ZeroBodyIO(t *testing.T) {
 	t.Parallel()
 	_, _, mw := setupTestTitip(t)

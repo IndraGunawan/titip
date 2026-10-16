@@ -116,7 +116,7 @@ func TestESI_InProcessVirtualSubrequests(t *testing.T) {
 		t.Errorf("cache hit fragment splicing mismatch: %s", body2)
 	}
 
-	// Dashboard origin should NOT be re-executed (served from Redis metadata)
+	// Dashboard origin should NOT be re-executed (served from storage metadata)
 	if dashHits.Load() != 1 {
 		t.Errorf("dashboard origin re-executed on cache hit: dash=%d", dashHits.Load())
 	}
@@ -393,7 +393,7 @@ func TestESI_FullDocument_ColdMissAndCacheHitIdentical(t *testing.T) {
 
 	handler := mw.testHandler(mux)
 
-	// 1. Cold Request (Miss): Scans HTML once, stores pre-compiled metadata in Redis
+	// Cold Request (Miss): Scans HTML once, stores pre-compiled metadata in storage
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/full-page", nil)
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, req1)
@@ -411,7 +411,7 @@ func TestESI_FullDocument_ColdMissAndCacheHitIdentical(t *testing.T) {
 			pageCalls.Load(), headerCalls.Load(), userCalls.Load(), footerCalls.Load())
 	}
 
-	// 2. Cache Hit Request: Uses pre-compiled metadata from Redis (Zero HTML re-scanning)
+	// Cache Hit Request: Uses pre-compiled metadata from storage (zero HTML re-scanning)
 	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/full-page", nil)
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, req2)
@@ -583,7 +583,7 @@ func TestESI_LargePayloadSplicing_PositionOffsetsExact(t *testing.T) {
 		t.Fatalf("cold miss body mismatch:\nGot len:      %d\nExpected len: %d", len(coldBody), len(expectedOutput))
 	}
 
-	// 2. Cache Hit Request (Uses pre-compiled metadata from Redis)
+	// Cache Hit Request (uses pre-compiled metadata from storage)
 	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/large-page", nil)
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, req2)
@@ -805,7 +805,7 @@ func TestESI_RootIndex_AllAttributeCombinations(t *testing.T) {
 			rootCalls.Load(), navCalls.Load(), altCalls.Load(), footerCalls.Load())
 	}
 
-	// 2. Cache Hit Request (Uses pre-compiled metadata from Redis)
+	// Cache Hit Request (uses pre-compiled metadata from storage)
 	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, req2)
@@ -950,7 +950,7 @@ func BenchmarkESI_CacheHit(b *testing.B) {
 	)
 	handler := mw.testHandler(mux)
 
-	// Warm up cache once (Cold Miss compiles template & stores pre-compiled metadata in Redis)
+	// Warm up cache once (Cold Miss compiles template & stores pre-compiled metadata in storage)
 	warmReq := httptest.NewRequest(http.MethodGet, "http://example.com/bench-esi-hit", nil)
 	warmRec := httptest.NewRecorder()
 	handler.ServeHTTP(warmRec, warmReq)
@@ -1504,7 +1504,7 @@ func TestESI_PageWithoutESI_PreservesETagAndAllows304(t *testing.T) {
 
 // TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring verifies that when an origin response
 // is uncacheable (e.g. Cache-Control: private, no-store) but contains ESI tags, Titip splices fragments
-// on-the-fly, emits fwd=bypass, and does not store the uncacheable document in Redis.
+// on-the-fly, emits fwd=bypass, and does not store the uncacheable document in storage.
 func TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring(t *testing.T) {
 	var pageHits atomic.Int32
 	var fragHits atomic.Int32

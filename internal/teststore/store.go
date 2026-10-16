@@ -202,7 +202,7 @@ func (s *Store) SetVariant(ctx context.Context, primaryKey string, meta *pb.Cach
 		expiresAt = time.Now().Add(ttl)
 	}
 
-	// Update meta entry and reset soft-purged flag on fresh write (matching Redis HDEL _soft_purged)
+	// Update meta entry and reset soft-purged flag on fresh write
 	existingMeta, exists := s.meta[primaryKey]
 	if exists {
 		if expiresAt.After(existingMeta.expiresAt) {
@@ -414,7 +414,7 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// matchGlob performs Redis-style glob pattern matching (* matches any sequence including /, ? matches single char, \ escapes).
+// matchGlob performs glob pattern matching (* matches any sequence including /, ? matches single char, \ escapes).
 func matchGlob(pattern, s string) bool {
 	var sb strings.Builder
 	sb.WriteString("^")

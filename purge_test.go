@@ -306,7 +306,7 @@ func TestBuildPurgeOperation_Table(t *testing.T) {
 					t.Errorf("exact key parity mismatch:\n exact key:  %q\n primaryKey: %q", keys[0], primaryKey)
 				}
 			} else {
-				// Pattern match must match sampleKey via Redis glob matching!
+				// Pattern match must match sampleKey via glob matching!
 				matched := false
 				for _, p := range keys {
 					if matchGlob(p, primaryKey) {
@@ -374,7 +374,7 @@ func TestNormalizeHost(t *testing.T) {
 	}
 }
 
-// matchGlob performs Redis-style glob pattern matching (* matches any sequence including /, ? matches single char, \ escapes).
+// matchGlob performs glob pattern matching (* matches any sequence including /, ? matches single char, \ escapes).
 func matchGlob(pattern, s string) bool {
 	var sb strings.Builder
 	sb.WriteString("^")

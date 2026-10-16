@@ -88,7 +88,7 @@ func TestSingleflight_StampedeAndInitiatorCancellation(t *testing.T) {
 		time.Sleep(1 * time.Millisecond)
 	}
 
-	// Give adequate window for all 50 in-flight requests to complete Redis metadata lookup and enter singleflight.Do
+	// Give adequate window for all 50 in-flight requests to complete storage metadata lookup and enter singleflight.Do
 	time.Sleep(50 * time.Millisecond)
 
 	// Release origin execution to broadcast response
@@ -220,7 +220,7 @@ func TestSWR_AsyncRevalidation_OnHead(t *testing.T) {
 		t.Fatalf("Close error: %v", err)
 	}
 
-	// 3. New Titip instance using same Redis store to verify updated body
+	// New Titip instance using same storage store to verify updated body
 	_, _, mw2 := setupTestTitip(t)
 	handler2 := mw2.testHandler(originHandler)
 
