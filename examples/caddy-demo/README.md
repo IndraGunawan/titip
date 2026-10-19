@@ -2,7 +2,7 @@
 
 Demonstrates native Caddy HTTP reverse proxy caching with dynamic Redis storage and the Caddy Admin Purge API (`POST /titip/purge`).
 
-## 1. Quick Start (Single Command)
+## Quick Start
 
 ```bash
 cd examples/caddy-demo
@@ -23,22 +23,22 @@ Services provisioned:
 
 ---
 
-### Manual Setup (Step by Step)
+### Manual Setup
 
-#### Step 1: Start Redis 8
+#### Start Redis 8
 
 ```bash
 make redis-up
 ```
 
-#### Step 2: Build Custom Caddy Binary
+#### Build Custom Caddy Binary
 
 ```bash
 make build-caddy
 # Or manually: go build -o ./caddy ./cmd/caddy
 ```
 
-#### Step 3: Run Mock Origin & Caddy
+#### Run Mock Origin & Caddy
 
 ```bash
 # In Terminal 1:
@@ -48,9 +48,9 @@ make origin
 ./caddy run --config Caddyfile
 ```
 
-## 2. Testing HTTP Caching & ESI
+## Testing HTTP Caching & ESI
 
-### A. Edge Side Includes (ESI) Live Splicing
+### Edge Side Includes (ESI) Splicing
 
 Open `http://localhost:8080/esi-demo` in your browser or inspect via `curl`:
 
@@ -62,14 +62,14 @@ curl -i http://localhost:8080/esi-demo
 
 1. Caddy intercepts the origin HTML containing `<esi:include>`, `<esi:remove>`, `<esi:comment>`, and `<!--esi ... -->`.
 2. Concurrently dispatches in-process virtual subrequests to fetch `/api/esi/header`, `/api/esi/user`, and `/api/esi/footer`.
-3. Slices and splices the components together using pooled memory buffers.
+3. Assembles the document using pooled memory buffers.
 4. Forwards fragment `Set-Cookie` headers (`caddy_user_session`) directly to downstream clients.
 
 ---
 
-### B. Inspect Cache Hits & Multi-Variant `Vary` Header
+### Inspect Cache Hits & Multi-Variant `Vary` Header
 
-#### 1. Basic Single-Variant Freshness
+#### Single-Variant Freshness
 
 ```bash
 # 1st Request (Cold Miss -> Origin Execution #1)
@@ -81,7 +81,7 @@ curl -i http://localhost:8080/api/time
 # Header: Cache-Status: titip; hit; ttl=13
 ```
 
-#### 2. Multi-Variant Secondary Keys (`Vary: Accept-Language`)
+#### Multi-Variant Secondary Keys (`Vary: Accept-Language`)
 
 Titip supports RFC 9111 Section 4.1 content negotiation without cache pollution:
 
@@ -101,7 +101,7 @@ curl -i -H "Accept-Language: en-US" http://localhost:8080/api/vary
 
 ---
 
-### C. Trigger Invalidation via Caddy Admin Purge API (`:2019`)
+### Invalidation via Caddy Admin Purge API (`:2019`)
 
 Upstream backend applications or workers can purge cached items on demand:
 
@@ -128,7 +128,7 @@ curl -i -X POST http://localhost:2019/titip/purge \
 
 ---
 
-### D. Single-Target Mutual Exclusivity Enforcement
+### Purge Target Validation
 
 Mixing purge targets in a single request returns `400 Bad Request`:
 
@@ -141,7 +141,7 @@ curl -i -X POST http://localhost:2019/titip/purge \
 
 ---
 
-### E. Observability: Grafana Dashboard & Prometheus Metrics
+### Observability: Grafana Dashboard & Prometheus Metrics
 
 Titip provides full Prometheus telemetry out of the box with zero configuration:
 

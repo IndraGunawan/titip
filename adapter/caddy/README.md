@@ -2,7 +2,7 @@
 
 High-performance, RFC-compliant HTTP caching middleware module for the [Caddy Web Server](https://caddyserver.com/).
 
-## 1. Installation & Building with `xcaddy`
+## Installation & Building with `xcaddy`
 
 Because Titip decouples storage from the core handler, build Caddy with both the Caddy adapter and your desired storage module (e.g. Redis):
 
@@ -12,9 +12,9 @@ xcaddy build \
   --with github.com/indragunawan/titip/storage/redis/caddy
 ```
 
-## 2. Caddyfile Syntax & Configuration
+## Caddyfile Syntax & Configuration
 
-### Option A: Global Configuration (Recommended)
+### Global Configuration (Recommended)
 
 Configure shared storage and default cache policies in the global `{ ... }` block, then simply use `titip` in your site blocks:
 
@@ -52,7 +52,7 @@ Configure shared storage and default cache policies in the global `{ ... }` bloc
 }
 ```
 
-### Option B: Per-Site / Per-Route Configuration & Overrides
+### Per-Site / Per-Route Configuration & Overrides
 
 You can also configure `titip` locally or override specific settings per route:
 
@@ -83,16 +83,36 @@ You can also configure `titip` locally or override specific settings per route:
 }
 ```
 
+### Top-Level Directive Reference
+
+The `titip` directive supports the following options both globally (`titip { ... }` in the global options block) and within site or route blocks:
+
+| Directive | Default | Description |
+| :--- | :--- | :--- |
+| `storage <module>` | *(required)* | Configures the storage backend module (e.g. `storage redis { ... }`). |
+| `cache_status <mode>` | `simple` | Emitted status header format (`rfc9211`, `simple`, or `none`). |
+| `storage_compression <codec>` | `lz4` | Compression codec for stored variant bodies (`lz4`, `zstd`, or `none`). |
+| `background_fetch_timeout <dur>` | `125s` | Maximum timeout budget for background revalidations (`stale-while-revalidate`). |
+| `storage_timeout <dur>` | `5s` | Maximum time budget for storage reads/writes before fail-open bypass. |
+| `tag_header <string>` | `"Cache-Tag"` | Response header inspected for surrogate cache tags. |
+| `respect_client_cache_control <bool>` | `false` | When true, honors client request `Cache-Control: no-cache` / `no-store`. |
+| `auto_invalidate_mutating_methods <bool>` | `false` | RFC 9111 §4.4: Auto-purges URI cache when mutating requests (`POST`/`PUT`/`DELETE`/`PATCH`) succeed. |
+| `convert_head_to_get <bool>` | `true` | When true, converts origin `HEAD` cache misses to `GET` to prime the cache with body bytes. |
+| `use_rewritten_url <bool>` | `false` | When false (default), keys cache on the client's original URL (protecting rewritten routes like `try_files` from cache collisions). When true, keys on Caddy's rewritten URL. |
+| `server_timing [cookie <name> <val>]` | *(disabled)* | Enables `Server-Timing` header diagnostics, optionally gated by a cookie. |
+| `cache_key { ... }` | *(standard)* | Configures cache key assembly and query parameter rules (see subdirectives below). |
+| `esi { ... }` | *(disabled)* | Configures Edge Side Includes processing (see subdirectives below). |
+
 ### Storage Compression Directive
 
 | Directive Syntax | Default | Description |
 | :--- | :--- | :--- |
-| `storage_compression lz4` | `lz4` | High-speed compression (recommended for general web caching). |
-| `storage_compression zstd` | - | High-ratio compression with fast decompression (optimal for Redis memory savings). |
+| `storage_compression lz4` | `lz4` | Fast compression with minimal CPU overhead. |
+| `storage_compression zstd` | - | Higher compression ratio with fast decompression (reduces storage memory footprint). |
 | `storage_compression none` | - | Raw uncompressed payload storage. |
 
 > [!TIP]
-> Titip employs automatic smart auto-bypass: payloads under 256 bytes, origin-compressed streams (`Content-Encoding: gzip/br/zstd`), and inherently compressed media types (`image/*`, `video/*`, `application/zip`) automatically bypass compression (stored as raw `none`) regardless of the configured active compressor.
+> Titip automatically skips compression for payloads under 256 bytes, origin-compressed streams (`Content-Encoding: gzip/br/zstd`), and inherently compressed media types (`image/*`, `video/*`, `application/zip`), storing them uncompressed (`none`).
 
 ### Cache Key Directive Reference
 
@@ -139,13 +159,13 @@ Configure `Server-Timing` header generation (disabled by default) to measure cac
 | `server_timing false` | Disables `Server-Timing` explicitly. |
 | `server_timing cookie <name> <value>` | Enables `Server-Timing` only when the request contains the exact cookie name and value (recommended for production debugging). |
 
-## 3. Caddy Admin Purge API (`POST /titip/purge`)
+## Caddy Admin Purge API (`POST /titip/purge`)
 
 Titip exposes an Admin API endpoint on Caddy's private admin port (default `:2019`) to invalidate cache entries across all active instances.
 
-### Request Payloads (Single-Target Mutual Exclusivity)
+### Purge Request Payloads
 
-#### A. Purge by URLs
+#### Purge by URLs
 
 ```bash
 curl -X POST http://localhost:2019/titip/purge \
@@ -156,7 +176,7 @@ curl -X POST http://localhost:2019/titip/purge \
   }'
 ```
 
-#### B. Purge by Tags
+#### Purge by Tags
 
 ```bash
 curl -X POST http://localhost:2019/titip/purge \
@@ -167,7 +187,7 @@ curl -X POST http://localhost:2019/titip/purge \
   }'
 ```
 
-#### C. Purge Everything
+#### Purge Everything
 
 ```bash
 curl -X POST http://localhost:2019/titip/purge \
@@ -183,7 +203,20 @@ curl -X POST http://localhost:2019/titip/purge \
 * `"soft": true` (default for `urls` and `tags`): Marks cache entries as stale, allowing backend revalidation in the background without causing origin stampedes.
 * `"soft": false`: Hard-purges and evicts entries immediately from storage.
 
-## 4. Multi-Site & Graceful Reloads
+#### Success Response
+
+```json
+{
+  "success": true,
+  "purged": {
+    "type": "urls",
+    "count": 1,
+    "soft": true
+  }
+}
+```
+
+## Multi-Site & Graceful Reloads
 
 * **Multi-Site Routing**: Multiple `titip` directive blocks can run simultaneously across different virtual hosts or path prefixes.
 * **Graceful Dynamic Reloads**: Implements `caddy.CleanerUpper` to cleanly drain background revalidation tasks and close connections during `caddy reload`.

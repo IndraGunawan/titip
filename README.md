@@ -10,18 +10,19 @@ Designed for high-concurrency services, Titip reduces backend load by serving ca
 ## Key Features
 
 * **Low-Allocation Design**: Reuses internal memory buffers and decompression streams to minimize heap allocations under high concurrency.
+* **Storage Compression**: Built-in **LZ4** (default) and **Zstandard** (`zstd`) compression for stored variant bodies to reduce memory footprint and storage I/O, with pluggable custom codec support.
 * **Fail-Open Resilience**: Storage outages, decompression errors, or upstream panics safely bypass to the origin handler (`fwd=bypass`) or serve stale cache without terminating the process.
-* **Session & Privacy Protection**: Cold URL misses execute independently without singleflight coalescing, preventing accidental sharing of `Set-Cookie` or private session headers across concurrent callers.
+* **Strict Privacy & Explicit Opt-In**: Titip never caches heuristically. Responses must explicitly declare a freshness lifetime (`max-age`, `s-maxage`, or `Expires`). Cold URL misses execute independently without singleflight coalescing, and responses with `Set-Cookie` or `private` directives bypass caching unconditionally.
 * **RFC-7234, RFC-9111 & RFC-9213 Compliant**: Implements the official Age & Freshness calculation standard (apparent age, corrected initial age, resident time, clock-skew correction, and multi-variant `Vary` header negotiation).
 * **Tiered Cache-Control (RFC 9213)**: Supports targeted header resolution (`Titip-Cache-Control` → `CDN-Cache-Control` → `Cache-Control`), allowing backends to configure edge caching independently from browser caching.
 * **RFC-9211 `Cache-Status` Observability**: Structured diagnostics (`Cache-Status: titip; hit; ttl=295`, `fwd=stale`, `fwd=bypass`) with multi-tier cache chaining.
 * **Edge Side Includes (ESI)**: Concurrent fragment assembly, in-process routing, recursive loop protection, and SSRF prevention.
-* **Granular Cache Purge API**: Invalidation via programmatic Go API (exact URL, wildcard prefixes, surrogate `Cache-Tag`, soft-purge, or total cache wipeout).
+* **Granular Cache Purge API**: Invalidation via programmatic Go API (exact URL, wildcard prefixes, surrogate `Cache-Tag`, soft-purge, or full cache purge).
 * **Pluggable Architecture**: Standard `net/http` middleware with modular framework adapters and decoupled storage engines.
 
 ## Architecture
 
-Titip separates metadata from variant payloads to enable atomic multi-variant negotiation (`Vary`) and short-circuiting with **zero redundant body I/O**:
+Titip separates metadata from variant payloads to enable atomic multi-variant negotiation (`Vary`) and serve conditional responses (`304 Not Modified`) without reading the response body from storage:
 
 ```
 [ Incoming Request ] ──► (Primary Key: Scheme + Host + Path + Filtered Query)
@@ -39,15 +40,15 @@ Titip separates metadata from variant payloads to enable atomic multi-variant ne
       (Downstream 304 / HEAD)             (Cache Hit)
                │                               │
                ▼                               ▼
-    ┌─────────────────────┐       ┌──────────────────────────────┐
-    │ Serve 304 / Headers │       │ Stage 2: GetVariant(pk, vk)  │
-    │ (0 Body Payload I/O)│       │ Returns: Headers & Body      │
-    └─────────────────────┘       └──────────────┬───────────────┘
-                                                 │
-                                                 ▼
-                                  ┌──────────────────────────────┐
-                                  │Decompress & Stream (LZ4/Zstd)│
-                                  └──────────────────────────────┘
+    ┌──────────────────────┐       ┌──────────────────────────────┐
+    │ Serve 304 / Headers  │       │ Stage 2: GetVariant(pk, vk)  │
+    │ (No Body Read Needed)│       │ Returns: Headers & Body      │
+    └──────────────────────┘       └──────────────┬───────────────┘
+                                                  │
+                                                  ▼
+                                   ┌──────────────────────────────┐
+                                   │Decompress & Stream (LZ4/Zstd)│
+                                   └──────────────────────────────┘
 ```
 
 ## Modules & Ecosystem
@@ -87,7 +88,7 @@ import (
 )
 
 func main() {
-    // 1. Initialize Redis Client
+    // Initialize Redis client
     client, err := rueidis.NewClient(rueidis.ClientOption{
         InitAddress: []string{"127.0.0.1:6379"},
     })
@@ -96,35 +97,33 @@ func main() {
     }
     defer client.Close()
 
-    // 2. Create Titip Redis Storage
+    // Create Titip Redis storage
     store, err := storageRedis.New(client, storageRedis.WithKeyPrefix("titip:"))
     if err != nil {
         panic(err)
     }
 
-    // 3. Configure Titip Engine
+    // Configure Titip engine
     cache, err := titip.New(
         store,
         titip.WithCacheStatus(titip.CacheStatusRFC9211),
-        titip.WithBackgroundFetchTimeout(125*time.Second),
     )
     if err != nil {
         panic(err)
     }
     defer cache.Close(context.Background())
 
-    // 4. Wrap Standard HTTP Handler
-    mux := http.NewServeMux()
-    mux.HandleFunc("GET /api/data", func(w http.ResponseWriter, r *http.Request) {
+    // Wrap standard HTTP handler
+    origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "application/json")
         // Cache publicly for 60 seconds, allow serving stale for 5 minutes during revalidation
         w.Header().Set("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
         w.Header().Set("Cache-Tag", "catalog items")
-        w.Write([]byte(`{"message": "hello from origin", "timestamp": "` + time.Now().String() + `"}`))
+        w.Write([]byte(`{"message": "hello from origin", "timestamp": "` + time.Now().Format(time.RFC3339) + `"}`))
     })
 
     http.ListenAndServe(":8080", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        cache.ServeHTTP(w, r, mux)
+        cache.ServeHTTP(w, r, origin)
     }))
 }
 ```
@@ -159,28 +158,35 @@ Titip constructs normalized cache keys directly without expensive hashing. Use `
 cache, err := titip.New(
     store,
     titip.WithCacheKey(titip.CacheKey{
-        // Strips marketing query parameters (utm_*, fbclid, gclid, mc_eid, etc.)
+        // Strip marketing query parameters (utm_*, fbclid, gclid, mc_eid, etc.)
         ExcludeMarketingQueryParams: true,
         // Allowlist specific query parameters to include (or use ExcludedQueryParams for a denylist)
-        IncludedQueryParams:    []string{"page", "sort", "filter"},
+        IncludedQueryParams: []string{"page", "sort", "filter"},
     }),
 )
 ```
+
+### `CacheKey` Configuration Reference
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `IncludeProtocol` | `bool` | `false` | Includes scheme (`http://` vs `https://`) in the cache key. |
+| `ExcludeHost` | `bool` | `false` | Excludes hostname from the cache key so multiple domains share cache entries. |
+| `ExcludeQuery` | `bool` | `false` | Ignores all query parameters entirely. |
+| `PreserveQueryOrder` | `bool` | `false` | Preserves URL query parameter order instead of sorting alphabetically. |
+| `IncludedQueryParams` | `[]string` | *(all)* | Allowlist of query parameters to keep in the cache key. |
+| `ExcludedQueryParams` | `[]string` | *(none)* | Denylist of query parameters to exclude from the cache key. |
+| `ExcludeMarketingQueryParams` | `bool` | `false` | Strips tracking tags (`utm_*`, `fbclid`, `gclid`, `ttclid`, etc.). |
+| `IncludedQueryParamValues` | `map[string][]string` | *(none)* | Allowlists specific accepted values per query parameter. |
+| `IncludedHeaderNames` | `[]string` | *(none)* | Appends specific request header values to the primary key (e.g. `X-Region`). |
+| `IncludedCookieNames` | `[]string` | *(none)* | Appends specific cookie values to the primary key (e.g. `currency`, `theme`). |
+| `CaseInsensitivePath` | `bool` | `false` | Lowercases the URL path for case-insensitive matching. |
 
 ## Cache-Status Diagnostics
 
 Titip supports three `Cache-Status` modes configured via `WithCacheStatus`:
 
-### 1. `CacheStatusRFC9211` (Structured Header)
-
-Emits structured diagnostics compliant with RFC 9211, supporting multi-tier cache chaining:
-
-```http
-Cache-Status: titip; hit; ttl=240
-Cache-Status: "Fastly"; hit, titip; hit; ttl=240
-```
-
-### 2. `CacheStatusSimple` (Simple Status Header)
+### 1. `CacheStatusSimple` (Simple Status Header) -- default
 
 Emits a concise status header:
 
@@ -193,7 +199,15 @@ Emits a concise status header:
 | `UPDATING` | Stale cache entry served immediately while revalidating asynchronously in the background (`stale-while-revalidate`). |
 | `STALE` | Stale cache entry served as failover fallback due to origin error (`stale-if-error`). |
 | `BYPASS` | Caching explicitly bypassed (mutating method, client `no-store`, Range request, WebSocket). |
-| `DYNAMIC` | Evaluated for caching, but origin response is uncacheable (`Set-Cookie`, `private`, `no-store`). |
+| `DYNAMIC` | Evaluated for caching, but origin response is uncacheable (missing explicit `max-age`/`s-maxage`/`Expires`, or contains `Set-Cookie`, `private`, `no-store`). |
+
+### 2. `CacheStatusRFC9211` (Structured Header)
+
+Emits structured diagnostics compliant with RFC 9211, supporting multi-tier cache chaining:
+
+```http
+Cache-Status: titip; hit; ttl=240
+```
 
 ### 3. `CacheStatusNone`
 
@@ -201,10 +215,14 @@ Disables the `Cache-Status` response header completely.
 
 ## Server-Timing Diagnostics
 
-Titip supports the standard `Server-Timing` header to break down latency in browser DevTools (Chrome Network Timing tab), solving black-box TTFB:
+Titip supports the standard `Server-Timing` header to inspect cache lookup, decompression, and origin latency in browser DevTools (Network Timing):
 
 ```http
-Server-Timing: titip-status;desc="HIT", titip-meta;dur=1.49, titip-body;dur=3.39, titip;dur=4.95
+# Cache Hit (with LZ4 decompression)
+Server-Timing: titip-status;desc="HIT", titip-meta;dur=1.49, titip-body;dur=3.39;desc="lz4", titip;dur=4.95
+
+# Cache Miss (storing compressed variant)
+Server-Timing: titip-status;desc="MISS", titip-origin;dur=42.10, titip-store;dur=1.85;desc="lz4 (12.4KB -> 3.8KB, -69%)", titip;dur=44.15
 ```
 
 ### Metrics Reported
@@ -213,9 +231,9 @@ Server-Timing: titip-status;desc="HIT", titip-meta;dur=1.49, titip-body;dur=3.39
 | :--- | :--- |
 | `titip-status;desc="..."` | Cache status (`HIT`, `MISS`, `EXPIRED`, `REVALIDATED`, `STALE`, `DYNAMIC`, `BYPASS`). |
 | `titip-meta;dur=X` | Stage 1 metadata lookup duration in milliseconds. |
-| `titip-body;dur=X` | Stage 2 body retrieval and LZ4 decompression duration. |
+| `titip-body;dur=X[;desc="<codec>"]` | Stage 2 body retrieval and decompression duration. Appends `;desc="<codec>"` (e.g. `desc="lz4"`) when decompression is performed. |
 | `titip-origin;dur=X` | Upstream backend origin fetch duration (on misses or revalidations). |
-| `titip-store;dur=X` | Cache storage duration (LZ4 compression + storage write). |
+| `titip-store;dur=X[;desc="..."]` | Cache storage duration (compression + storage write). Reports codec, pre/post size, and reduction percentage: `desc="<codec> (<rawSize> -> <compSize>, <savedPct>%)"` (e.g. `desc="lz4 (12.4KB -> 3.8KB, -69%)"`), or `desc="none (<rawSize>)"`. |
 | `titip-esi;dur=X;desc="N fragments"` | Edge Side Includes processing duration and fragment count. |
 | `titip;dur=X` | Total Titip processing duration from request arrival. |
 
@@ -237,9 +255,9 @@ cache, err := titip.New(
 
 Titip supports configurable internal storage compression to optimize storage memory consumption (e.g. Redis RAM) and network transfer:
 
-* **`"lz4"` (default)**: Ultra-fast compression and decompression, ideal for general high-throughput caching.
-* **`"zstd"`**: High compression ratio powered by Zstandard with fast decompression (`SpeedFastest`, 512KB window). Ideal for significant Redis RAM savings on large JSON/HTML payloads.
-* **`"none"`**: Identity storage of uncompressed raw bytes. Zero compression CPU overhead.
+* **`"lz4"` (default)**: Ultra-fast compression and decompression with minimal CPU overhead.
+* **`"zstd"`**: Higher compression ratio with fast decompression and bounded memory footprint (512KB window).
+* **`"none"`**: Uncompressed byte storage with zero CPU overhead.
 * **Pluggable Codecs**: Custom algorithms implementing the `Compressor` interface registered via `WithStorageCompressor(comp)`.
 
 ```go
@@ -249,7 +267,7 @@ cache, err := titip.New(
 )
 ```
 
-### Zero-Knob Smart Auto-Bypass
+### Automatic Compression Bypass
 
 Regardless of the selected compression algorithm, Titip automatically bypasses compression (storing raw bytes with `"none"`) when:
 
@@ -259,25 +277,25 @@ Regardless of the selected compression algorithm, Titip automatically bypasses c
 
 ## Cache Invalidation & Purge API
 
-Titip provides a programmatic Go API for **Hierarchical Path Purging**, **Surrogate Tag Purging**, and **Namespace Invalidation**.
+Titip provides a programmatic Go API for **Hierarchical Path Purging**, **Prefix Purging**, **Surrogate Tag Purging**, and **Namespace Invalidation**. All purge methods return `(int64, error)`, reporting the total number of logical cache entries invalidated.
 
 ### Programmatic Go API
 
 ```go
-// 1. Path Purge (purges /api/products and all its query string variants)
-err := cache.Purge(ctx, "/api/products")
+// Path Purge (purges /api/products and all its query string variants)
+count, err := cache.Purge(ctx, "/api/products")
 
-// 2. Exact Query Invalidation (purges only ?id=10, leaves other queries intact)
-err := cache.Purge(ctx, "http://example.com/api/products?id=10", titip.WithSoftPurge())
+// Exact Query Invalidation (purges only ?id=10, leaves other queries intact)
+count, err := cache.Purge(ctx, "http://example.com/api/products?id=10", titip.WithSoftPurge())
 
-// 3. Directory Wildcard (purges all cached paths under /assets/)
-err := cache.Purge(ctx, "/assets/*")
+// Prefix Purge (purges all cached paths under /assets/, e.g. /assets/app.js)
+count, err := cache.PurgePrefix(ctx, "/assets/")
 
-// 4. Surrogate Tag Invalidation (invalidates all cached entries matching the tag)
-err := cache.PurgeTag(ctx, "catalog")
+// Surrogate Tag Invalidation (invalidates all cached entries matching the tag)
+count, err := cache.PurgeTag(ctx, "catalog")
 
-// 5. Namespace Invalidation (invalidates all cached entries under the configured prefix)
-err := cache.PurgeAll(ctx)
+// Invalidates all cached entries
+count, err := cache.PurgeAll(ctx)
 ```
 
 ## Tiered & Targeted Cache-Control (RFC 9213)
@@ -296,6 +314,15 @@ Cache-Control: private, no-store
 
 * **Titip (Intermediary)**: Caches the response in storage for 24 hours (`max-age=86400`), shielding the origin from load.
 * **Client (Browser)**: Receives `Cache-Control: private, no-store`, preventing sensitive data from persisting in local browser history.
+
+### Explicit Cache Opt-In
+
+Titip never caches heuristically. An origin response is only stored in cache and served fresh if it explicitly specifies a freshness lifetime:
+
+* `Cache-Control: max-age=<seconds>` or `s-maxage=<seconds>`
+* Or a future `Expires` date header
+
+Directives like `Cache-Control: public` without a `max-age` grant permission for shared caching, but have a freshness lifetime of 0 seconds and cannot serve fresh cache hits. Responses lacking an explicit freshness duration, or containing `Set-Cookie`, `Cache-Control: private`, or `no-store`, are treated as uncacheable (`DYNAMIC`) and served directly from origin without being saved to storage.
 
 ## Edge Side Includes (ESI)
 
@@ -383,9 +410,25 @@ titip_esi_fragments_total{status="success"} 230
 titip_esi_duration_seconds_bucket{mode="in_process",le="0.005"} 225
 ```
 
+## Graceful Shutdown
+
+Call `cache.Close(ctx)` during application teardown to cleanly drain background tasks:
+
+```go
+// Wait for all in-flight background SWR revalidations to complete
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+
+if err := cache.Close(ctx); err != nil {
+    log.Printf("cache close error: %v", err)
+}
+```
+
+`Close` blocks until all active background `stale-while-revalidate` (SWR) goroutines have finished or the context expires, and closes the underlying storage driver if it implements `storage.Closer` or `io.Closer`.
+
 ## Testing & Concurrency Standards
 
-Titip enforces continuous race detection and zero-leak concurrency standards:
+Titip is tested under continuous race detection and high-concurrency workloads:
 
 ```bash
 # Run all unit and concurrency stress tests with race detector
