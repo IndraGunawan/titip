@@ -28,7 +28,7 @@ Titip Redis Storage requires Hash field-level expiration (`HEXPIRE`) and dynamic
 Titip decouples cache storage into a **Two-Stage Resolution** model to optimize I/O and memory usage:
 
 1. **Two-Stage Resolution**:
-   - **Stage 1 (Metadata Hash)**: Fast lookup of metadata and variant descriptors to negotiate `Vary` headers, check freshness, and serve conditional `304 Not Modified` responses with zero body payload I/O.
+   - **Stage 1 (Metadata Hash)**: Fast lookup of metadata and variant descriptors to negotiate `Vary` headers, check freshness, and serve conditional `304 Not Modified` responses without reading the response body.
    - **Stage 2 (Variant Body)**: Compressed response payloads are fetched only when serving full cache hits (`200 OK`).
 
 2. **Field-Level Expiration (`HEXPIRE`)**:
@@ -54,7 +54,7 @@ import (
 )
 
 func main() {
-    // 1. Initialize Rueidis client
+    // Initialize Rueidis client
     client, err := rueidis.NewClient(rueidis.ClientOption{
         InitAddress: []string{"127.0.0.1:6379"},
     })
@@ -63,7 +63,7 @@ func main() {
     }
     defer client.Close()
 
-    // 2. Initialize Titip Redis Storage Engine
+    // Initialize Titip Redis storage engine
     store, err := storageRedis.New(
         client,
         storageRedis.WithKeyPrefix("myapp:cache:"),
@@ -72,7 +72,7 @@ func main() {
         log.Fatalf("failed to initialize storage: %v", err)
     }
 
-    // 3. Attach storage to Titip
+    // Attach storage to Titip
     cache, err := titip.New(
         store,
         titip.WithBackgroundFetchTimeout(125*time.Second),
@@ -84,6 +84,13 @@ func main() {
     defer cache.Close(context.Background())
 }
 ```
+
+### Configuration Options (`storageRedis.Option`)
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `WithKeyPrefix(prefix)` | `"titip:"` | Key prefix for all Redis keys (metadata hashes, variant bodies, and tag indices). |
+| `WithLogger(logger)` | `nil` | Structured `*slog.Logger` instance for diagnostic events. |
 
 ## Caddy Integration
 
@@ -99,17 +106,15 @@ xcaddy build \
 
 Titip Redis storage supports two mutually exclusive connection modes: **URL Mode** or **Discrete Mode**.
 
-#### Option A: URL Mode
+#### URL Mode
 
 ```caddyfile
 :8080 {
-    route {
-        titip {
-            storage redis {
-                url {$REDIS_URL}
-                key_prefix titip:
-                pipeline_multiplex 2
-            }
+    titip {
+        storage redis {
+            url {$REDIS_URL}
+            key_prefix titip:
+            pipeline_multiplex 2
         }
     }
 }
@@ -127,13 +132,14 @@ To see all supported URL options, schemes, and query parameters, see [rueidis `P
 > [!NOTE]
 > Setting `url` is mutually exclusive with discrete connection directives (`address`, `username`, `password`, `db`).
 
-#### Option B: Discrete Mode
+#### Discrete Mode
 
 ```caddyfile
 :8080 {
     route {
         titip {
             storage redis {
+                # Supports single or multiple comma-separated addresses for multi-node / cluster setups:
                 address {$REDIS_ADDRESS:localhost:6379}
                 username {$REDIS_USERNAME}
                 password {$REDIS_PASSWORD}

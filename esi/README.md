@@ -29,7 +29,7 @@ Package `github.com/indragunawan/titip/esi` provides an [Edge Side Includes (ESI
 | :--- | :---: | :--- | :--- |
 | `src` | **Yes** | Relative path (`/api/user`) or absolute URL (`https://...`) | Primary fragment target. Handled in-process when matched by [`WithInternalFetcher`](#configuration-options), otherwise outbound HTTP. |
 | `alt` | No | Relative path or absolute URL | Secondary fallback target attempted if `src` returns an error or non-2xx status. |
-| `timeout` | No | `500ms`, `2s`, `0.5` (seconds), `500` (ms) | Total SLA budget for the include slot (`src + alt`). Bounded by [`WithMaxTimeout`](#configuration-options) and the parent branch's remaining Tree Budget. |
+| `timeout` | No | `500ms`, `2s`, `0.5` (seconds), `500` (ms) | Timeout budget for the include slot (`src + alt`). Bounded by [`WithMaxTimeout`](#configuration-options) and the parent request timeout. |
 | `max-depth` | No | Integer (e.g. `2`) | Maximum recursion depth for nested includes within this fragment. **Bounded by** [`WithMaxDepth`](#configuration-options). |
 | `onerror` | No | `"continue"` | When `"continue"`, suppresses fetch failure and renders paired fallback content or empty string. If omitted, unhandled errors render [`WithIncludeErrorMarker`](#configuration-options). |
 
