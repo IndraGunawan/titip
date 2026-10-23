@@ -248,8 +248,8 @@ func stateServe412(t *Titip, ctx *requestContext) stateFn {
 
 // stateServeCachedHit fetches the compressed body from storage, decompresses, and writes the response.
 func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
-	// HEAD Request Handling (0 body I/O)
-	if ctx.r.Method == http.MethodHead {
+	// 0 body I/O: HEAD requests or 0-byte representations (e.g. 204 No Content, empty 200 OK)
+	if ctx.r.Method == http.MethodHead || ctx.varInfo.RawBodySize == 0 {
 		t.recordRequest(ctx, labelStatusHit)
 		ttlStr := strconv.FormatInt(int64(t.remainingTTL(ctx.meta.ExpiresAtUnixNano, ctx.nowNano)/time.Second), 10)
 		t.emitCacheStatus(ctx, statusHit, "hit; ttl="+ttlStr)
@@ -297,6 +297,17 @@ func stateServeCachedHit(t *Titip, ctx *requestContext) stateFn {
 
 // stateServeSWR serves the stale cached variant and triggers background revalidation.
 func stateServeSWR(t *Titip, ctx *requestContext) stateFn {
+	// 0 body I/O: HEAD requests or 0-byte representations
+	if ctx.r.Method == http.MethodHead || ctx.varInfo.RawBodySize == 0 {
+		t.recordRequest(ctx, labelStatusStaleHit)
+		t.copyProtoHeaders(ctx.w, ctx.varInfo.ResponseHeaders)
+		ctx.w.Header().Set(headerAge, calcAgeString(ctx.meta, ctx.nowNano))
+		t.emitCacheStatus(ctx, statusUpdating, "hit; stale; detail=swr")
+		ctx.w.WriteHeader(int(ctx.varInfo.StatusCode))
+		t.spawnSWR(ctx)
+		return nil
+	}
+
 	var t0 time.Time
 	if ctx.timing.enabled {
 		t0 = time.Now()
@@ -548,7 +559,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			varCtx, varCancel := context.WithTimeout(originCtx, t.config.storageTimeout)
 			latestVar, compBody, errVar := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 			varCancel()
-			if errVar == nil && latestVar != nil && len(compBody) > 0 {
+			if errVar == nil && latestVar != nil && (latestVar.RawBodySize == 0 || len(compBody) > 0) {
 				return &fetchResult{
 					statusCode: int(latestVar.StatusCode),
 					isFallback: true,
@@ -876,26 +887,28 @@ func (t *Titip) saveVariantToStorage(
 		fragments = esi.Scan(bodyBytes)
 	}
 
-	// Resolve storage compressor (smart auto-bypass or configured compressor)
-	configuredComp := t.config.compressors[t.config.storageCompression]
-	comp := resolveCompressor(configuredComp, headers, len(bodyBytes))
-
-	// Compress body payload
-	compBuf := getBuffer()
-	compName := comp.Name()
-	if err := comp.Compress(bodyBytes, compBuf); err != nil {
-		if t.logger != nil {
-			t.logger.WarnContext(r.Context(), "titip: compression failed, storing uncompressed",
-				slog.String("compression", compName),
-				slog.Any("error", err),
-			)
+	// Resolve storage compressor and compress body payload (skip for 0-byte bodies)
+	var compBytes []byte
+	compName := StorageCompressionNone
+	if len(bodyBytes) > 0 {
+		configuredComp := t.config.compressors[t.config.storageCompression]
+		comp := resolveCompressor(configuredComp, headers, len(bodyBytes))
+		compBuf := getBuffer()
+		compName = comp.Name()
+		if err := comp.Compress(bodyBytes, compBuf); err != nil {
+			if t.logger != nil {
+				t.logger.WarnContext(r.Context(), "titip: compression failed, storing uncompressed",
+					slog.String("compression", compName),
+					slog.Any("error", err),
+				)
+			}
+			compBuf.Reset()
+			_, _ = compBuf.Write(bodyBytes)
+			compName = StorageCompressionNone
 		}
-		compBuf.Reset()
-		_, _ = compBuf.Write(bodyBytes)
-		compName = StorageCompressionNone
+		compBytes = bytes.Clone(compBuf.Bytes())
+		putBuffer(compBuf)
 	}
-	compBytes := bytes.Clone(compBuf.Bytes())
-	putBuffer(compBuf)
 
 	// Build / update metadata
 	varNames := extractVaryHeaderNames(headers)

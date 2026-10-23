@@ -103,7 +103,7 @@ func (t *Titip) loadDecompressed(ctx *requestContext) (*pb.VariantInfo, *bytes.B
 	varCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
 	varInfo, compBody, err := t.storage.GetVariant(varCtx, ctx.primaryKey, ctx.variantKey)
 	cancel()
-	if err != nil || varInfo == nil || len(compBody) == 0 {
+	if err != nil || varInfo == nil || (varInfo.RawBodySize > 0 && len(compBody) == 0) {
 		return nil, nil, false
 	}
 

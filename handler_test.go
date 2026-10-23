@@ -834,5 +834,3 @@ func TestEmptyBody_200OK_CacheHit(t *testing.T) {
 		t.Fatalf("expected 1 origin call (cache hit), got %d (bypassed to origin)", originCalls.Load())
 	}
 }
-
-
