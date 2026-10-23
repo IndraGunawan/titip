@@ -755,3 +755,84 @@ func TestConditionalMiss_UncacheableOrigin_Serves304WithoutStoring(t *testing.T)
 		t.Fatalf("expected second request to hit origin (uncacheable), got %d origin calls", originCalls.Load())
 	}
 }
+
+// TestNoContent_CacheHit verifies that HTTP 204 No Content with a 0-byte body
+// is cached and served as a cache HIT on subsequent requests without bypassing to origin.
+func TestNoContent_CacheHit(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int32
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=120")
+		w.Header().Set("X-Custom-Header", "tested-204")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	handler := mw.testHandler(origin)
+
+	// 1. First request: Cold miss -> stores 204 response
+	doGet(t, handler, "http://example.com/api/no-content").
+		assertStatus(http.StatusNoContent).
+		assertEmptyBody().
+		assertHeader("X-Custom-Header", "tested-204").
+		assertCacheStatus("fwd=uri-miss")
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call on miss, got %d", originCalls.Load())
+	}
+
+	// 2. Second request: Must be a Cache HIT and must NOT bypass to origin!
+	doGet(t, handler, "http://example.com/api/no-content").
+		assertStatus(http.StatusNoContent).
+		assertEmptyBody().
+		assertHeader("X-Custom-Header", "tested-204").
+		assertCacheStatus("hit")
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call (cache hit), got %d (bypassed to origin)", originCalls.Load())
+	}
+}
+
+// TestEmptyBody_200OK_CacheHit verifies that HTTP 200 OK with a 0-byte body
+// is cached and served as a cache HIT on subsequent requests without bypassing to origin.
+func TestEmptyBody_200OK_CacheHit(t *testing.T) {
+	t.Parallel()
+	_, _, mw := setupTestTitip(t)
+
+	var originCalls atomic.Int32
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=120")
+		w.Header().Set("X-Custom-Header", "tested-empty-200")
+		w.WriteHeader(http.StatusOK)
+		// No w.Write call: 0-byte body
+	})
+
+	handler := mw.testHandler(origin)
+
+	// 1. First request: Cold miss
+	doGet(t, handler, "http://example.com/api/empty-200").
+		assertStatus(http.StatusOK).
+		assertEmptyBody().
+		assertHeader("X-Custom-Header", "tested-empty-200").
+		assertCacheStatus("fwd=uri-miss")
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call on miss, got %d", originCalls.Load())
+	}
+
+	// 2. Second request: Must be a Cache HIT and must NOT bypass to origin!
+	doGet(t, handler, "http://example.com/api/empty-200").
+		assertStatus(http.StatusOK).
+		assertEmptyBody().
+		assertHeader("X-Custom-Header", "tested-empty-200").
+		assertCacheStatus("hit")
+
+	if originCalls.Load() != 1 {
+		t.Fatalf("expected 1 origin call (cache hit), got %d (bypassed to origin)", originCalls.Load())
+	}
+}
+
+
