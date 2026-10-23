@@ -113,8 +113,10 @@ func (t *Titip) loadDecompressed(ctx *requestContext) (*pb.VariantInfo, *bytes.B
 	}
 	comp, ok := t.config.compressors[codec]
 	if !ok {
-		if t.logger.Enabled(ctx.r.Context(), slog.LevelWarn) {
-			t.logger.WarnContext(ctx.r.Context(), "unknown storage compression codec, failing open to origin",
+		// Do not purge: in a rolling deployment, another node may legitimately own this codec.
+		// Simply fail open to origin at debug level to avoid node thrashing.
+		if t.logger.Enabled(ctx.r.Context(), slog.LevelDebug) {
+			t.logger.DebugContext(ctx.r.Context(), "unknown storage compression codec, failing open to origin",
 				slog.String("codec", codec),
 				slog.String("key", ctx.primaryKey),
 			)
@@ -129,8 +131,15 @@ func (t *Titip) loadDecompressed(ctx *requestContext) (*pb.VariantInfo, *bytes.B
 	if err := comp.Decompress(compBody, buf); err != nil || int64(buf.Len()) != varInfo.RawBodySize {
 		gotBytes := buf.Len()
 		putBuffer(buf)
-		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
-			t.logger.ErrorContext(ctx.r.Context(), "decompression or size mismatch error, failing open to origin",
+
+		// Synchronously soft-purge the corrupted entry so subsequent requests coalesce
+		// via singleflight revalidation, preventing origin stampedes.
+		purgeCtx, purgeCancel := context.WithTimeout(context.WithoutCancel(ctx.r.Context()), t.config.storageTimeout)
+		_, _ = t.storage.Purge(purgeCtx, ctx.primaryKey, true) // soft: true
+		purgeCancel()
+
+		if t.logger.Enabled(ctx.r.Context(), slog.LevelWarn) {
+			t.logger.WarnContext(ctx.r.Context(), "corrupted cache payload detected, soft-purged and failing open to origin",
 				slog.Any("error", err),
 				slog.Int64("expected_bytes", varInfo.RawBodySize),
 				slog.Int("got_bytes", gotBytes),

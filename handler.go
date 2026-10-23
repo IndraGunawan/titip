@@ -131,8 +131,8 @@ func stateLookupMetadata(t *Titip, ctx *requestContext) stateFn {
 
 	if err != nil {
 		t.recordRequest(ctx, labelStatusError)
-		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
-			t.logger.ErrorContext(ctx.r.Context(), "storage error fetching metadata, bypassing to origin", "error", err, "key", ctx.primaryKey)
+		if t.logger.Enabled(ctx.r.Context(), slog.LevelWarn) {
+			t.logger.WarnContext(ctx.r.Context(), "storage error fetching metadata, bypassing to origin", "error", err, "key", ctx.primaryKey)
 		}
 		t.emitCacheStatus(ctx, statusBypass, "fwd=bypass; detail=storage-fallback")
 		return stateBypassOrigin
@@ -896,8 +896,8 @@ func (t *Titip) saveVariantToStorage(
 		compBuf := getBuffer()
 		compName = comp.Name()
 		if err := comp.Compress(bodyBytes, compBuf); err != nil {
-			if t.logger != nil {
-				t.logger.WarnContext(r.Context(), "titip: compression failed, storing uncompressed",
+			if t.logger.Enabled(r.Context(), slog.LevelWarn) {
+				t.logger.WarnContext(r.Context(), "compression failed, storing uncompressed",
 					slog.String("compression", compName),
 					slog.Any("error", err),
 				)
@@ -952,8 +952,8 @@ func (t *Titip) saveVariantToStorage(
 	}
 
 	if storeErr := t.storage.SetVariant(ctx, primaryKey, newMeta, newVariant, compBytes, storageTTL); storeErr != nil {
-		if t.logger.Enabled(ctx, slog.LevelError) {
-			t.logger.ErrorContext(ctx, "storage error saving variant", "error", storeErr, "key", primaryKey)
+		if t.logger.Enabled(ctx, slog.LevelWarn) {
+			t.logger.WarnContext(ctx, "storage error saving variant", "error", storeErr, "key", primaryKey)
 		}
 	}
 

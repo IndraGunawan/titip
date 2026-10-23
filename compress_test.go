@@ -925,6 +925,74 @@ func TestTruncatedBody_SizeMismatch_FailOpenAndSelfHeal(t *testing.T) {
 	}
 }
 
+// TestCorruptBody_EvictedOnFailure_UncacheableOrigin verifies that when origin returns an
+// uncacheable response, the corrupted cache entry is still evicted from storage so subsequent
+// requests become clean cold misses rather than re-failing decompression.
+func TestCorruptBody_EvictedOnFailure_UncacheableOrigin(t *testing.T) {
+	t.Parallel()
+
+	store := teststore.New()
+	mw, err := New(store, WithStorageCompression(StorageCompressionNone))
+	if err != nil {
+		t.Fatalf("failed to create Titip: %v", err)
+	}
+	defer func() { _ = mw.Close(context.Background()) }()
+
+	rawURL := "http://example.com/corrupt-uncacheable"
+	req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+	primaryKey := generatePrimaryKey(req, &CacheKey{})
+	now := time.Now()
+
+	// Seed corrupted entry in store
+	meta := &pb.CacheMetadata{
+		PrimaryKey:        primaryKey,
+		CreatedAtUnixNano: now.UnixNano(),
+		ExpiresAtUnixNano: now.Add(1 * time.Hour).UnixNano(),
+	}
+	varInfo := &pb.VariantInfo{
+		VariantKey:         defaultVariantKey,
+		StatusCode:         http.StatusOK,
+		RawBodySize:        100,
+		StorageCompression: StorageCompressionNone,
+	}
+	_ = store.SetVariant(context.Background(), primaryKey, meta, varInfo, []byte("short"), 1*time.Hour)
+
+	originCalls := 0
+	// Origin returns uncacheable (no-store) response
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls++
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("live dynamic uncacheable response"))
+	})
+
+	handler := mw.testHandler(origin)
+
+	// 1. First request fails decompression -> evicts corrupted entry -> fails open to origin
+	res1 := doReq(t, handler, req)
+	if res1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res1.Code)
+	}
+
+	// Verify corrupted entry was marked as soft-purged in storage to enable singleflight revalidation
+	m, isSoftPurged, _ := store.GetMeta(context.Background(), primaryKey)
+	if m == nil {
+		t.Fatalf("expected metadata to remain for singleflight protection, but got nil")
+	}
+	if !isSoftPurged {
+		t.Fatalf("expected entry to be marked as soft-purged, got softPurged=false")
+	}
+
+	// 2. Second request enters singleflight revalidation without serving corrupted data
+	res2 := doReq(t, handler, req)
+	if res2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res2.Code)
+	}
+	if originCalls != 2 {
+		t.Fatalf("expected 2 origin calls, got %d", originCalls)
+	}
+}
+
 func TestFailingCompressor_FallbackToUncompressed(t *testing.T) {
 	t.Parallel()
 

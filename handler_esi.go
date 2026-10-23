@@ -33,8 +33,8 @@ func (t *Titip) processESI(
 	if t.esiProcessor != nil {
 		res, err := t.esiProcessor.ProcessFragments(ctx.r.Context(), ctx.r, parentBody, fragments)
 		if err != nil {
-			if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
-				t.logger.ErrorContext(ctx.r.Context(), "esi: processing failed, serving unspliced body", "error", err)
+			if t.logger.Enabled(ctx.r.Context(), slog.LevelWarn) {
+				t.logger.WarnContext(ctx.r.Context(), "esi: processing failed, serving unspliced body", "error", err)
 			}
 			t.esiProcessor.ReconcileHeaders(reconciled, nil)
 		} else {

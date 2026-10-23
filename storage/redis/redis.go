@@ -558,8 +558,8 @@ func (s *RedisStorage) softPurgePattern(ctx context.Context, pattern string) (in
 		}
 		for _, key := range entry.Elements {
 			primaryKey := strings.TrimPrefix(key, s.prefix+"meta:")
-			if _, e := s.softPurge(ctx, primaryKey); e != nil && s.logger != nil {
-				s.logger.ErrorContext(ctx, "redis: soft purge pattern: failed to soft-purge key", slog.String("key", key), slog.Any("error", e))
+			if _, e := s.softPurge(ctx, primaryKey); e != nil && s.logger != nil && s.logger.Enabled(ctx, slog.LevelWarn) {
+				s.logger.WarnContext(ctx, "redis: soft purge pattern: failed to soft-purge key", slog.String("key", key), slog.Any("error", e))
 			}
 			count++
 		}
