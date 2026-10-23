@@ -749,7 +749,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			codec = StorageCompressionLZ4
 		}
 		comp, ok := t.config.compressors[codec]
-		if ok && comp.Decompress(res.fallback.body, dstBuf) == nil {
+		if ok && comp.Decompress(res.fallback.body, dstBuf) == nil && (res.fallback.varInfo == nil || int64(dstBuf.Len()) == res.fallback.varInfo.RawBodySize) {
 			if t.esiProcessor != nil && len(res.fallback.varInfo.EsiFragments) > 0 {
 				protoHeaders := protoHeadersToHTTP(res.fallback.varInfo.ResponseHeaders)
 				if res.fallback.meta != nil {

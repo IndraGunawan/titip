@@ -126,11 +126,14 @@ func (t *Titip) loadDecompressed(ctx *requestContext) (*pb.VariantInfo, *bytes.B
 	if varInfo.RawBodySize > 0 {
 		buf.Grow(int(varInfo.RawBodySize))
 	}
-	if err := comp.Decompress(compBody, buf); err != nil {
+	if err := comp.Decompress(compBody, buf); err != nil || int64(buf.Len()) != varInfo.RawBodySize {
+		gotBytes := buf.Len()
 		putBuffer(buf)
 		if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
-			t.logger.ErrorContext(ctx.r.Context(), "decompression error, failing open to origin",
+			t.logger.ErrorContext(ctx.r.Context(), "decompression or size mismatch error, failing open to origin",
 				slog.Any("error", err),
+				slog.Int64("expected_bytes", varInfo.RawBodySize),
+				slog.Int("got_bytes", gotBytes),
 				slog.String("codec", codec),
 				slog.String("key", ctx.primaryKey),
 			)

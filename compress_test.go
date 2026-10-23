@@ -850,6 +850,81 @@ func TestCorruptBody_FailOpenAndSelfHeal(t *testing.T) {
 	}
 }
 
+// TestTruncatedBody_SizeMismatch_FailOpenAndSelfHeal tests that a payload whose decompressed
+// size does not match RawBodySize (e.g. truncated uncompressed payload in storage)
+// fails open to origin and self-heals rather than serving truncated data.
+func TestTruncatedBody_SizeMismatch_FailOpenAndSelfHeal(t *testing.T) {
+	t.Parallel()
+
+	store := teststore.New()
+	mw, err := New(store, WithStorageCompression(StorageCompressionNone))
+	if err != nil {
+		t.Fatalf("failed to create Titip: %v", err)
+	}
+	defer func() { _ = mw.Close(context.Background()) }()
+
+	rawURL := "http://example.com/truncated-body-item"
+	req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+	primaryKey := generatePrimaryKey(req, &CacheKey{})
+	now := time.Now()
+
+	// Seed store with RawBodySize = 500 but only 20 bytes of body (simulating truncation in storage)
+	meta := &pb.CacheMetadata{
+		PrimaryKey:        primaryKey,
+		CreatedAtUnixNano: now.UnixNano(),
+		ExpiresAtUnixNano: now.Add(1 * time.Hour).UnixNano(),
+	}
+	varInfo := &pb.VariantInfo{
+		VariantKey: defaultVariantKey,
+		StatusCode: http.StatusOK,
+		ResponseHeaders: map[string]*pb.HeaderValues{
+			"Content-Type": {Values: []string{"text/plain"}},
+		},
+		RawBodySize:        500,
+		StorageCompression: StorageCompressionNone,
+	}
+
+	if err := store.SetVariant(context.Background(), primaryKey, meta, varInfo, []byte("short truncated data"), 1*time.Hour); err != nil {
+		t.Fatalf("failed to store variant: %v", err)
+	}
+
+	freshPayload := strings.Repeat("Fresh untruncated payload after recovering from size mismatch! ", 10)
+	originCalls := 0
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originCalls++
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(freshPayload))
+	})
+
+	handler := mw.testHandler(origin)
+
+	// Must fail open to origin because cached body is truncated (20 bytes != 500)
+	res1 := doReq(t, handler, req)
+	if res1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res1.Code)
+	}
+	if res1.Body.String() != freshPayload {
+		t.Fatalf("expected fresh origin payload, got truncated: %q", res1.Body.String())
+	}
+	if originCalls != 1 {
+		t.Fatalf("expected 1 origin call (fail-open), got %d", originCalls)
+	}
+
+	// Cache hit on re-request with self-healed payload
+	res2 := doReq(t, handler, req)
+	if res2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res2.Code)
+	}
+	if res2.Body.String() != freshPayload {
+		t.Fatalf("mismatch on cache hit")
+	}
+	if originCalls != 1 {
+		t.Fatalf("expected 0 extra origin calls, got %d", originCalls)
+	}
+}
+
 func TestFailingCompressor_FallbackToUncompressed(t *testing.T) {
 	t.Parallel()
 
