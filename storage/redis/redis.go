@@ -329,15 +329,9 @@ func (s *RedisStorage) hardPurge(ctx context.Context, primaryKey string) (int64,
 		}
 	}
 
-	delCmds := make([]rueidis.Completed, 0, len(delKeys))
-	for _, k := range delKeys {
-		delCmds = append(delCmds, s.client.B().Del().Key(k).Build())
-	}
-	resps := s.client.DoMulti(ctx, delCmds...)
-	for _, r := range resps {
-		if err := r.Error(); err != nil && !rueidis.IsRedisNil(err) {
-			return 0, fmt.Errorf("titip: redis: delete execute: %w", err)
-		}
+	unlinkCmd := s.client.B().Unlink().Key(delKeys...).Build()
+	if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
+		return 0, fmt.Errorf("titip: redis: delete execute: %w", err)
 	}
 
 	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
@@ -442,15 +436,9 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 				}
 
 				if len(delKeys) > 0 {
-					delCmds := make([]rueidis.Completed, len(delKeys))
-					for i, k := range delKeys {
-						delCmds[i] = s.client.B().Del().Key(k).Build()
-					}
-					delResps := s.client.DoMulti(ctx, delCmds...)
-					for _, r := range delResps {
-						if err := r.Error(); err != nil && !rueidis.IsRedisNil(err) {
-							return 0, fmt.Errorf("titip: redis: purge tag execute: %w", err)
-						}
+					unlinkCmd := s.client.B().Unlink().Key(delKeys...).Build()
+					if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
+						return 0, fmt.Errorf("titip: redis: purge tag execute: %w", err)
 					}
 				}
 			}
