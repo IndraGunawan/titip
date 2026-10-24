@@ -120,28 +120,42 @@ func (s *RedisStorage) GetMeta(ctx context.Context, primaryKey string) (*pb.Cach
 		return nil, false, fmt.Errorf("titip: redis: get meta: %w", err)
 	}
 
-	m, err := resp.AsStrMap()
+	m, err := resp.AsMap()
 	if err != nil || len(m) == 0 {
 		return nil, false, nil
 	}
 
-	indexStr, ok := m[indexField]
+	indexMsg, ok := m[indexField]
 	if !ok {
 		return nil, false, nil
 	}
 
+	indexBytes, err := indexMsg.AsBytes()
+	if err != nil {
+		return nil, false, nil
+	}
+
 	meta := &pb.CacheMetadata{}
-	if err := googleproto.Unmarshal([]byte(indexStr), meta); err != nil {
+	if err := googleproto.Unmarshal(indexBytes, meta); err != nil {
 		return nil, false, fmt.Errorf("titip: redis: unmarshal meta index: %w", err)
 	}
 
-	isSoftPurged := (m[softPurgedField] == "1")
+	isSoftPurged := false
+	if spMsg, ok := m[softPurgedField]; ok {
+		if bs, err := spMsg.AsBytes(); err == nil && len(bs) == 1 && bs[0] == '1' {
+			isSoftPurged = true
+		}
+	}
 
 	meta.Variants = make(map[string]*pb.VariantInfo)
-	for k, v := range m {
+	for k, msg := range m {
 		if after, ok0 := strings.CutPrefix(k, variantPrefix); ok0 {
+			varBytes, err := msg.AsBytes()
+			if err != nil {
+				continue
+			}
 			varInfo := &pb.VariantInfo{}
-			if err := googleproto.Unmarshal([]byte(v), varInfo); err == nil {
+			if err := googleproto.Unmarshal(varBytes, varInfo); err == nil {
 				meta.Variants[after] = varInfo
 			}
 		}

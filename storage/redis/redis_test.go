@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/redis/rueidis"
+	googleproto "google.golang.org/protobuf/proto"
 
 	pb "github.com/indragunawan/titip/proto"
 )
@@ -91,7 +92,7 @@ func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 		Tags:              []string{"products", "api"},
 	}
 
-	// 1. Variant 1: gzip
+	// Seed gzip variant
 	vGzip := &pb.VariantInfo{
 		VariantKey:      "gzip",
 		StatusCode:      200,
@@ -103,7 +104,7 @@ func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 		t.Fatalf("failed to set gzip variant: %v", err)
 	}
 
-	// 2. Variant 2: brotli
+	// Seed brotli variant
 	vBr := &pb.VariantInfo{
 		VariantKey:      "br",
 		StatusCode:      200,
@@ -115,7 +116,7 @@ func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 		t.Fatalf("failed to set br variant: %v", err)
 	}
 
-	// 3. Stage 1: GetMeta
+	// GetMeta
 	m, isSoftPurged, err := store.GetMeta(ctx, primaryKey)
 	if err != nil {
 		t.Fatalf("GetMeta failed: %v", err)
@@ -129,8 +130,17 @@ func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 	if m.PrimaryKey != primaryKey {
 		t.Errorf("expected primary key %s, got %s", primaryKey, m.PrimaryKey)
 	}
+	if len(m.Variants) != 2 {
+		t.Fatalf("expected 2 variants in metadata, got %d", len(m.Variants))
+	}
+	if m.Variants["gzip"] == nil || m.Variants["gzip"].StatusCode != 200 {
+		t.Fatalf("expected gzip variant in metadata, got %+v", m.Variants["gzip"])
+	}
+	if m.Variants["br"] == nil || m.Variants["br"].StatusCode != 200 {
+		t.Fatalf("expected br variant in metadata, got %+v", m.Variants["br"])
+	}
 
-	// 4. Stage 2: GetVariant
+	// GetVariant
 	varInfo, body, err := store.GetVariant(ctx, primaryKey, "gzip")
 	if err != nil {
 		t.Fatalf("GetVariant gzip failed: %v", err)
@@ -147,13 +157,19 @@ func TestSetAndGetVariant_MultipleVariants(t *testing.T) {
 		t.Fatalf("unexpected br payload: %v, %s", varInfoBr, string(bodyBrotli))
 	}
 
-	// 5. Non-existent variant
+	// Non-existent variant
 	vMissing, bMissing, err := store.GetVariant(ctx, primaryKey, "non-existent")
 	if err != nil {
 		t.Fatalf("unexpected error on missing variant: %v", err)
 	}
 	if vMissing != nil || bMissing != nil {
 		t.Fatal("expected nil for missing variant")
+	}
+
+	// Non-existent primary key
+	mMissing, spMissing, err := store.GetMeta(ctx, "https://example.com/non-existent-pk")
+	if err != nil || mMissing != nil || spMissing {
+		t.Fatalf("expected (nil, false, nil) for non-existent key, got (%v, %v, %v)", mMissing, spMissing, err)
 	}
 }
 
@@ -845,6 +861,61 @@ func TestNew_OptionsAndValidation(t *testing.T) {
 	}
 }
 
+func TestGetMeta_CorruptedData(t *testing.T) {
+	t.Parallel()
+	client, store, _ := setupTestRedis(t)
+	ctx := context.Background()
+
+	t.Run("missing index field", func(t *testing.T) {
+		pk := "https://example.com/missing-index"
+		cmd := client.B().Hset().Key(store.metaKey(pk)).FieldValue().FieldValue("some_field", "val").Build()
+		if err := client.Do(ctx, cmd).Error(); err != nil {
+			t.Fatalf("seed failed: %v", err)
+		}
+		m, isSP, err := store.GetMeta(ctx, pk)
+		if err != nil || m != nil || isSP {
+			t.Fatalf("expected (nil, false, nil), got (%v, %v, %v)", m, isSP, err)
+		}
+	})
+
+	t.Run("corrupted index protobuf", func(t *testing.T) {
+		pk := "https://example.com/corrupt-index"
+		cmd := client.B().Hset().Key(store.metaKey(pk)).FieldValue().FieldValue(indexField, "\x07").Build()
+		if err := client.Do(ctx, cmd).Error(); err != nil {
+			t.Fatalf("seed failed: %v", err)
+		}
+		m, isSP, err := store.GetMeta(ctx, pk)
+		if err == nil || m != nil || isSP {
+			t.Fatalf("expected unmarshal error, got m=%v, isSP=%v, err=%v", m, isSP, err)
+		}
+	})
+
+	t.Run("corrupted variant skipped", func(t *testing.T) {
+		pk := "https://example.com/corrupt-variant"
+		validMeta := &pb.CacheMetadata{PrimaryKey: pk}
+		metaBytes, _ := googleproto.Marshal(validMeta)
+		validVariant := &pb.VariantInfo{VariantKey: "gzip", StatusCode: 200}
+		varBytes, _ := googleproto.Marshal(validVariant)
+
+		cmd := client.B().Hset().Key(store.metaKey(pk)).FieldValue().
+			FieldValue(indexField, string(metaBytes)).
+			FieldValue(store.variantField("gzip"), string(varBytes)).
+			FieldValue(store.variantField("corrupted"), "\x07").
+			Build()
+		if err := client.Do(ctx, cmd).Error(); err != nil {
+			t.Fatalf("seed failed: %v", err)
+		}
+
+		m, _, err := store.GetMeta(ctx, pk)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m == nil || len(m.Variants) != 1 || m.Variants["gzip"] == nil {
+			t.Fatalf("expected valid gzip preserved and corrupted skipped, got %+v", m)
+		}
+	})
+}
+
 func BenchmarkStorage_SetAndGetVariant(b *testing.B) {
 	_, store, _ := setupTestRedis(b)
 
@@ -857,5 +928,49 @@ func BenchmarkStorage_SetAndGetVariant(b *testing.B) {
 	for b.Loop() {
 		_ = store.SetVariant(ctx, primaryKey, meta, v, body, 60*time.Second)
 		_, _, _ = store.GetVariant(ctx, primaryKey, "gzip")
+	}
+}
+
+func BenchmarkStorage_GetMeta(b *testing.B) {
+	_, store, _ := setupTestRedis(b)
+
+	ctx := context.Background()
+	primaryKey := "https://example.com/bench/meta"
+	meta := &pb.CacheMetadata{
+		PrimaryKey:                 primaryKey,
+		VaryHeaderNames:            []string{"Accept-Encoding", "User-Agent"},
+		CreatedAtUnixNano:          time.Now().UnixNano(),
+		ExpiresAtUnixNano:          time.Now().Add(1 * time.Hour).UnixNano(),
+		CorrectedInitialAgeSeconds: 0,
+		Tags:                       []string{"tag1", "tag2"},
+	}
+	v1 := &pb.VariantInfo{
+		VariantKey:      "gzip",
+		StatusCode:      200,
+		ResponseHeaders: map[string]*pb.HeaderValues{"Content-Type": {Values: []string{"application/json"}}},
+		RawBodySize:     1024,
+	}
+	v2 := &pb.VariantInfo{
+		VariantKey:      "br",
+		StatusCode:      200,
+		ResponseHeaders: map[string]*pb.HeaderValues{"Content-Type": {Values: []string{"application/json"}}},
+		RawBodySize:     800,
+	}
+
+	if err := store.SetVariant(ctx, primaryKey, meta, v1, []byte("body_gzip"), 1*time.Hour); err != nil {
+		b.Fatalf("seed failed: %v", err)
+	}
+	if err := store.SetVariant(ctx, primaryKey, meta, v2, []byte("body_br"), 1*time.Hour); err != nil {
+		b.Fatalf("seed failed: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for b.Loop() {
+		m, isSoftPurged, err := store.GetMeta(ctx, primaryKey)
+		if err != nil || m == nil || isSoftPurged || len(m.Variants) != 2 {
+			b.Fatalf("GetMeta failed: m=%v, isSoftPurged=%v, err=%v", m, isSoftPurged, err)
+		}
 	}
 }
