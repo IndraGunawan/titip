@@ -234,9 +234,9 @@ func isResponseCacheable(statusCode int, reqHeaders, respHeaders http.Header, di
 	}
 
 	// RFC 9111 §3.5: Shared cache MUST NOT store response to request containing Authorization
-	// unless response contains explicit public or s-maxage directive
+	// unless response contains explicit public, s-maxage, or must-revalidate directive
 	if reqHeaders != nil && reqHeaders.Get(headerAuthorization) != "" {
-		if !directives.Public && directives.SMaxAge < 0 {
+		if !directives.Public && directives.SMaxAge < 0 && !directives.MustRevalidate {
 			return false
 		}
 	}
