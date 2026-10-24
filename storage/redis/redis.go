@@ -365,6 +365,30 @@ func (s *RedisStorage) softPurge(ctx context.Context, primaryKey string) (int64,
 	return res, nil
 }
 
+func (s *RedisStorage) softPurgeKeys(ctx context.Context, metaKeys []string) (int, error) {
+	if len(metaKeys) == 0 {
+		return 0, nil
+	}
+	execs := make([]rueidis.LuaExec, len(metaKeys))
+	for i, k := range metaKeys {
+		execs[i] = rueidis.LuaExec{Keys: []string{k}}
+	}
+	resps := softPurgeScript.ExecMulti(ctx, s.client, execs...)
+	count := 0
+	var firstErr error
+	for _, r := range resps {
+		val, err := r.AsInt64()
+		if err != nil {
+			if !rueidis.IsRedisNil(err) && firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		count += int(val)
+	}
+	return count, firstErr
+}
+
 // PurgeByTag invalidates all primary metadata hashes and variant body keys matching a given tag.
 // Uses non-blocking HSCAN streaming to handle hashes of arbitrary size without blocking Redis.
 // The tag is treated as a literal string — use PurgeAll for namespace wipeout.
@@ -401,10 +425,12 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 
 		if len(primaryKeys) > 0 {
 			if soft {
-				for _, pk := range primaryKeys {
-					if _, err := s.softPurge(ctx, pk); err != nil {
-						return 0, err
-					}
+				metaKeys := make([]string, len(primaryKeys))
+				for i, pk := range primaryKeys {
+					metaKeys[i] = s.metaKey(pk)
+				}
+				if _, err := s.softPurgeKeys(ctx, metaKeys); err != nil {
+					return 0, fmt.Errorf("titip: redis: purge tag soft purge: %w", err)
 				}
 			} else {
 				// Hard purge: pipeline fetching variant keys for this batch
@@ -544,12 +570,12 @@ func (s *RedisStorage) softPurgePattern(ctx context.Context, pattern string) (in
 		if err != nil {
 			return 0, fmt.Errorf("titip: redis: scan entry: %w", err)
 		}
-		for _, key := range entry.Elements {
-			primaryKey := strings.TrimPrefix(key, s.prefix+"meta:")
-			if _, e := s.softPurge(ctx, primaryKey); e != nil && s.logger != nil && s.logger.Enabled(ctx, slog.LevelWarn) {
-				s.logger.WarnContext(ctx, "redis: soft purge pattern: failed to soft-purge key", slog.String("key", key), slog.Any("error", e))
+		if len(entry.Elements) > 0 {
+			n, err := s.softPurgeKeys(ctx, entry.Elements)
+			count += n
+			if err != nil && s.logger != nil && s.logger.Enabled(ctx, slog.LevelWarn) {
+				s.logger.WarnContext(ctx, "redis: soft purge pattern: failed to soft-purge batch", slog.Any("error", err))
 			}
-			count++
 		}
 		cursor = entry.Cursor
 		if cursor == 0 {
