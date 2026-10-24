@@ -831,7 +831,7 @@ func TestNew_OptionsAndValidation(t *testing.T) {
 
 	// 1. nil client validation
 	_, err := New(nil)
-	if err == nil || err.Error() != "titip: redis: client is required" {
+	if err == nil || err.Error() != "redis: client is required" {
 		t.Fatalf("expected client is required error, got: %v", err)
 	}
 
@@ -851,13 +851,16 @@ func TestNew_OptionsAndValidation(t *testing.T) {
 		t.Errorf("expected logger to match configured instance")
 	}
 
-	// 3. Default prefix when WithKeyPrefix not specified
+	// 3. Default prefix and logger when not specified
 	defaultStore, err := New(client)
 	if err != nil {
 		t.Fatalf("New with default prefix failed: %v", err)
 	}
 	if defaultStore.prefix != defaultPrefix {
 		t.Errorf("expected default prefix %q, got %q", defaultPrefix, defaultStore.prefix)
+	}
+	if defaultStore.logger != slog.Default() {
+		t.Errorf("expected default logger to be slog.Default(), got %v", defaultStore.logger)
 	}
 }
 
