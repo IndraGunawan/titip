@@ -366,6 +366,9 @@ func TestRFC_Authorization_Guards(t *testing.T) {
 		case "/auth-s-maxage":
 			w.Header().Set("Cache-Control", "s-maxage=60")
 			_, _ = w.Write([]byte("auth-s-maxage-payload"))
+		case "/auth-must-revalidate":
+			w.Header().Set("Cache-Control", "must-revalidate, max-age=60")
+			_, _ = w.Write([]byte("auth-must-revalidate-payload"))
 		}
 	})
 	handler := mw.testHandler(origin)
@@ -385,6 +388,18 @@ func TestRFC_Authorization_Guards(t *testing.T) {
 	doGet(t, handler, "http://example.com/auth-public", "Authorization", "Bearer user-token")
 
 	doGet(t, handler, "http://example.com/auth-public").
+		assertCacheStatus("hit")
+
+	// 3. Request with Authorization and origin returning s-maxage MUST be cached (RFC 9111 §3.5)
+	doGet(t, handler, "http://example.com/auth-s-maxage", "Authorization", "Bearer user-token")
+
+	doGet(t, handler, "http://example.com/auth-s-maxage").
+		assertCacheStatus("hit")
+
+	// 4. Request with Authorization and origin returning must-revalidate MUST be cached (RFC 9111 §3.5)
+	doGet(t, handler, "http://example.com/auth-must-revalidate", "Authorization", "Bearer user-token")
+
+	doGet(t, handler, "http://example.com/auth-must-revalidate").
 		assertCacheStatus("hit")
 }
 

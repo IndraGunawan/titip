@@ -265,10 +265,10 @@ func TestIsResponseCacheable_StrictRules(t *testing.T) {
 	if info := calculateFreshness(http.StatusOK, reqAuth, hAuthMaxAge, time.Now(), time.Now(), time.Now()); info.IsCacheable {
 		t.Fatal("expected IsCacheable=false for Authorization request without public/s-maxage")
 	}
-	// With must-revalidate alone in shared cache: uncacheable without public/s-maxage to prevent cross-user leak
+	// With must-revalidate: cacheable per RFC 9111 §3.5
 	hAuthMustReval := http.Header{"Cache-Control": []string{"must-revalidate, max-age=300"}}
-	if info := calculateFreshness(http.StatusOK, reqAuth, hAuthMustReval, time.Now(), time.Now(), time.Now()); info.IsCacheable {
-		t.Fatal("expected IsCacheable=false for Authorization request with only must-revalidate in shared cache")
+	if info := calculateFreshness(http.StatusOK, reqAuth, hAuthMustReval, time.Now(), time.Now(), time.Now()); !info.IsCacheable {
+		t.Fatal("expected IsCacheable=true for Authorization request with must-revalidate directive")
 	}
 	// With public: cacheable (RFC 9111 §3.5)
 	hAuthPublic := http.Header{"Cache-Control": []string{"public, max-age=300"}}
