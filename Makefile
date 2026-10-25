@@ -1,8 +1,11 @@
 .PHONY: test bench race vet fmt lint fix tidy update-deps help
 
-# Automatically discover all Go modules in workspace (excluding examples and hidden directories)
-MODULE_PATHS := $(shell find . -name "go.mod" -not -path "*/examples/*" -not -path "*/.*" -exec dirname {} \; | sort)
-MODULE_PKGS  := $(foreach dir,$(MODULE_PATHS),$(dir)/...)
+# Modules for library development (excluding examples and hidden directories)
+MODULE_PATHS     := $(shell find . -name "go.mod" -not -path "*/examples/*" -not -path "*/.*" -exec dirname {} \; | sort)
+MODULE_PKGS      := $(foreach dir,$(MODULE_PATHS),$(dir)/...)
+
+# All modules in repository (including examples) for workspace tidy and checksum verification
+ALL_MODULE_PATHS := $(shell find . -name "go.mod" -not -path "*/.*" -exec dirname {} \; | sort)
 
 help: ## Show help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -31,7 +34,8 @@ fix: ## Run go fix across all workspace modules
 	go fix $(MODULE_PKGS)
 
 tidy: ## Run go mod tidy across all workspace modules
-	@for dir in $(MODULE_PATHS); do \
+	go work sync
+	@for dir in $(ALL_MODULE_PATHS); do \
 		echo "Tidying $$dir..."; \
 		(cd $$dir && go mod tidy) || exit 1; \
 	done
