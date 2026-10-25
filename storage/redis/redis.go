@@ -72,7 +72,7 @@ var _ storage.Storage = (*RedisStorage)(nil)
 // New creates a new RedisStorage instance backed by the provided rueidis.Client.
 func New(client rueidis.Client, opts ...Option) (*RedisStorage, error) {
 	if client == nil {
-		return nil, fmt.Errorf("titip: redis: client is required")
+		return nil, fmt.Errorf("redis: client is required")
 	}
 
 	cfg := &config{
@@ -82,10 +82,15 @@ func New(client rueidis.Client, opts ...Option) (*RedisStorage, error) {
 		opt(cfg)
 	}
 
+	logger := cfg.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	return &RedisStorage{
 		client: client,
 		prefix: cfg.prefix,
-		logger: cfg.logger,
+		logger: logger,
 	}, nil
 }
 
@@ -117,31 +122,45 @@ func (s *RedisStorage) GetMeta(ctx context.Context, primaryKey string) (*pb.Cach
 		return nil, false, nil
 	}
 	if err := resp.Error(); err != nil {
-		return nil, false, fmt.Errorf("titip: redis: get meta: %w", err)
+		return nil, false, fmt.Errorf("redis: get meta: %w", err)
 	}
 
-	m, err := resp.AsStrMap()
+	m, err := resp.AsMap()
 	if err != nil || len(m) == 0 {
 		return nil, false, nil
 	}
 
-	indexStr, ok := m[indexField]
+	indexMsg, ok := m[indexField]
 	if !ok {
 		return nil, false, nil
 	}
 
-	meta := &pb.CacheMetadata{}
-	if err := googleproto.Unmarshal([]byte(indexStr), meta); err != nil {
-		return nil, false, fmt.Errorf("titip: redis: unmarshal meta index: %w", err)
+	indexBytes, err := indexMsg.AsBytes()
+	if err != nil {
+		return nil, false, nil
 	}
 
-	isSoftPurged := (m[softPurgedField] == "1")
+	meta := &pb.CacheMetadata{}
+	if err := googleproto.Unmarshal(indexBytes, meta); err != nil {
+		return nil, false, fmt.Errorf("redis: unmarshal meta index: %w", err)
+	}
+
+	isSoftPurged := false
+	if spMsg, ok := m[softPurgedField]; ok {
+		if bs, err := spMsg.AsBytes(); err == nil && len(bs) == 1 && bs[0] == '1' {
+			isSoftPurged = true
+		}
+	}
 
 	meta.Variants = make(map[string]*pb.VariantInfo)
-	for k, v := range m {
+	for k, msg := range m {
 		if after, ok0 := strings.CutPrefix(k, variantPrefix); ok0 {
+			varBytes, err := msg.AsBytes()
+			if err != nil {
+				continue
+			}
 			varInfo := &pb.VariantInfo{}
-			if err := googleproto.Unmarshal([]byte(v), varInfo); err == nil {
+			if err := googleproto.Unmarshal(varBytes, varInfo); err == nil {
 				meta.Variants[after] = varInfo
 			}
 		}
@@ -165,25 +184,25 @@ func (s *RedisStorage) GetVariant(ctx context.Context, primaryKey, variantKey st
 	}
 
 	if err := resps[0].Error(); err != nil {
-		return nil, nil, fmt.Errorf("titip: redis: get variant meta: %w", err)
+		return nil, nil, fmt.Errorf("redis: get variant meta: %w", err)
 	}
 	if err := resps[1].Error(); err != nil {
-		return nil, nil, fmt.Errorf("titip: redis: get variant body: %w", err)
+		return nil, nil, fmt.Errorf("redis: get variant body: %w", err)
 	}
 
 	varBytes, err := resps[0].AsBytes()
 	if err != nil {
-		return nil, nil, fmt.Errorf("titip: redis: parse variant meta bytes: %w", err)
+		return nil, nil, fmt.Errorf("redis: parse variant meta bytes: %w", err)
 	}
 
 	varInfo := &pb.VariantInfo{}
 	if err := googleproto.Unmarshal(varBytes, varInfo); err != nil {
-		return nil, nil, fmt.Errorf("titip: redis: unmarshal variant info: %w", err)
+		return nil, nil, fmt.Errorf("redis: unmarshal variant info: %w", err)
 	}
 
 	bodyBytes, err := resps[1].AsBytes()
 	if err != nil {
-		return nil, nil, fmt.Errorf("titip: redis: parse variant body bytes: %w", err)
+		return nil, nil, fmt.Errorf("redis: parse variant body bytes: %w", err)
 	}
 
 	return varInfo, bodyBytes, nil
@@ -207,12 +226,12 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 
 	indexBytes, err := googleproto.Marshal(leanMeta)
 	if err != nil {
-		return fmt.Errorf("titip: redis: marshal meta index: %w", err)
+		return fmt.Errorf("redis: marshal meta index: %w", err)
 	}
 
 	varBytes, err := googleproto.Marshal(variant)
 	if err != nil {
-		return fmt.Errorf("titip: redis: marshal variant: %w", err)
+		return fmt.Errorf("redis: marshal variant: %w", err)
 	}
 
 	ttlSeconds := max(int64(ttl.Seconds()), 1)
@@ -285,7 +304,7 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 	resps := s.client.DoMulti(ctx, cmds...)
 	for i, r := range resps {
 		if err := r.Error(); err != nil && !rueidis.IsRedisNil(err) {
-			return fmt.Errorf("titip: redis: set variant pipeline error at op %d: %w", i, err)
+			return fmt.Errorf("redis: set variant pipeline error at op %d: %w", i, err)
 		}
 	}
 
@@ -313,7 +332,7 @@ func (s *RedisStorage) hardPurge(ctx context.Context, primaryKey string) (int64,
 		return 0, nil
 	}
 	if err := resp.Error(); err != nil {
-		return 0, fmt.Errorf("titip: redis: delete fetch keys: %w", err)
+		return 0, fmt.Errorf("redis: delete fetch keys: %w", err)
 	}
 
 	keys, err := resp.AsStrSlice()
@@ -329,19 +348,13 @@ func (s *RedisStorage) hardPurge(ctx context.Context, primaryKey string) (int64,
 		}
 	}
 
-	delCmds := make([]rueidis.Completed, 0, len(delKeys))
-	for _, k := range delKeys {
-		delCmds = append(delCmds, s.client.B().Del().Key(k).Build())
-	}
-	resps := s.client.DoMulti(ctx, delCmds...)
-	for _, r := range resps {
-		if err := r.Error(); err != nil && !rueidis.IsRedisNil(err) {
-			return 0, fmt.Errorf("titip: redis: delete execute: %w", err)
-		}
+	unlinkCmd := s.client.B().Unlink().Key(delKeys...).Build()
+	if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
+		return 0, fmt.Errorf("redis: delete execute: %w", err)
 	}
 
-	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "redis: purged cache keys",
+	if s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "purged cache keys",
 			slog.String("primary_key", primaryKey),
 			slog.Int("keys_count", len(delKeys)),
 			slog.Any("keys", delKeys),
@@ -358,17 +371,41 @@ func (s *RedisStorage) softPurge(ctx context.Context, primaryKey string) (int64,
 		if rueidis.IsRedisNil(err) {
 			return 0, nil
 		}
-		return 0, fmt.Errorf("titip: redis: soft purge: %w", err)
+		return 0, fmt.Errorf("redis: soft purge: %w", err)
 	}
 
-	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) && res > 0 {
-		s.logger.DebugContext(ctx, "redis: soft-purged cache entry",
+	if res > 0 && s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "soft-purged cache entry",
 			slog.String("primary_key", primaryKey),
 			slog.String("meta_key", metaKey),
 		)
 	}
 
 	return res, nil
+}
+
+func (s *RedisStorage) softPurgeKeys(ctx context.Context, metaKeys []string) (int, error) {
+	if len(metaKeys) == 0 {
+		return 0, nil
+	}
+	execs := make([]rueidis.LuaExec, len(metaKeys))
+	for i, k := range metaKeys {
+		execs[i] = rueidis.LuaExec{Keys: []string{k}}
+	}
+	resps := softPurgeScript.ExecMulti(ctx, s.client, execs...)
+	count := 0
+	var firstErr error
+	for _, r := range resps {
+		val, err := r.AsInt64()
+		if err != nil {
+			if !rueidis.IsRedisNil(err) && firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		count += int(val)
+	}
+	return count, firstErr
 }
 
 // PurgeByTag invalidates all primary metadata hashes and variant body keys matching a given tag.
@@ -391,12 +428,12 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 			break
 		}
 		if err := resp.Error(); err != nil {
-			return 0, fmt.Errorf("titip: redis: purge tag hscan: %w", err)
+			return 0, fmt.Errorf("redis: purge tag hscan: %w", err)
 		}
 
 		scanEntry, err := resp.AsScanEntry()
 		if err != nil {
-			return 0, fmt.Errorf("titip: redis: purge tag scan entry: %w", err)
+			return 0, fmt.Errorf("redis: purge tag scan entry: %w", err)
 		}
 		// HSCAN returns alternating [field, value, field, value...]
 		rawElements := scanEntry.Elements
@@ -407,10 +444,12 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 
 		if len(primaryKeys) > 0 {
 			if soft {
-				for _, pk := range primaryKeys {
-					if _, err := s.softPurge(ctx, pk); err != nil {
-						return 0, err
-					}
+				metaKeys := make([]string, len(primaryKeys))
+				for i, pk := range primaryKeys {
+					metaKeys[i] = s.metaKey(pk)
+				}
+				if _, err := s.softPurgeKeys(ctx, metaKeys); err != nil {
+					return 0, fmt.Errorf("redis: purge tag soft purge: %w", err)
 				}
 			} else {
 				// Hard purge: pipeline fetching variant keys for this batch
@@ -426,11 +465,11 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 						continue
 					}
 					if err := r.Error(); err != nil {
-						return 0, fmt.Errorf("titip: redis: purge tag fetch keys: %w", err)
+						return 0, fmt.Errorf("redis: purge tag fetch keys: %w", err)
 					}
 					varKeys, err := r.AsStrSlice()
 					if err != nil {
-						return 0, fmt.Errorf("titip: redis: purge tag keys parse: %w", err)
+						return 0, fmt.Errorf("redis: purge tag keys parse: %w", err)
 					}
 					pk := primaryKeys[i]
 					delKeys = append(delKeys, s.metaKey(pk))
@@ -442,15 +481,9 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 				}
 
 				if len(delKeys) > 0 {
-					delCmds := make([]rueidis.Completed, len(delKeys))
-					for i, k := range delKeys {
-						delCmds[i] = s.client.B().Del().Key(k).Build()
-					}
-					delResps := s.client.DoMulti(ctx, delCmds...)
-					for _, r := range delResps {
-						if err := r.Error(); err != nil && !rueidis.IsRedisNil(err) {
-							return 0, fmt.Errorf("titip: redis: purge tag execute: %w", err)
-						}
+					unlinkCmd := s.client.B().Unlink().Key(delKeys...).Build()
+					if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
+						return 0, fmt.Errorf("redis: purge tag execute: %w", err)
 					}
 				}
 			}
@@ -468,8 +501,8 @@ func (s *RedisStorage) PurgeByTag(ctx context.Context, tag string, soft bool) (i
 		_ = s.client.Do(ctx, s.client.B().Unlink().Key(tagKey).Build())
 	}
 
-	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "redis: purge tag complete",
+	if s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "purge tag complete",
 			slog.String("tag", tag),
 			slog.Bool("soft", soft),
 			slog.Int("processed_count", processed),
@@ -485,16 +518,16 @@ func (s *RedisStorage) scanAndUnlink(ctx context.Context, matchPattern string) (
 		scanCmd := s.client.B().Scan().Cursor(cursor).Match(matchPattern).Count(scanBatchSize).Build()
 		resp := s.client.Do(ctx, scanCmd)
 		if err := resp.Error(); err != nil {
-			return deleted, primaryDeleted, fmt.Errorf("titip: redis: scan: %w", err)
+			return deleted, primaryDeleted, fmt.Errorf("redis: scan: %w", err)
 		}
 		entry, err := resp.AsScanEntry()
 		if err != nil {
-			return deleted, primaryDeleted, fmt.Errorf("titip: redis: scan entry: %w", err)
+			return deleted, primaryDeleted, fmt.Errorf("redis: scan entry: %w", err)
 		}
 		if len(entry.Elements) > 0 {
 			unlinkCmd := s.client.B().Unlink().Key(entry.Elements...).Build()
 			if err := s.client.Do(ctx, unlinkCmd).Error(); err != nil && !rueidis.IsRedisNil(err) {
-				return deleted, primaryDeleted, fmt.Errorf("titip: redis: unlink: %w", err)
+				return deleted, primaryDeleted, fmt.Errorf("redis: unlink: %w", err)
 			}
 			deleted += len(entry.Elements)
 			for _, key := range entry.Elements {
@@ -536,8 +569,8 @@ func (s *RedisStorage) hardPurgePattern(ctx context.Context, pattern string) (in
 		deleted += d
 		primaryDeleted += pd
 	}
-	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "redis: delete pattern complete", slog.String("pattern", pattern), slog.Int("deleted_count", deleted), slog.Int("primary_deleted_count", primaryDeleted))
+	if s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "delete pattern complete", slog.String("pattern", pattern), slog.Int("deleted_count", deleted), slog.Int("primary_deleted_count", primaryDeleted))
 	}
 	return int64(primaryDeleted), nil
 }
@@ -550,26 +583,26 @@ func (s *RedisStorage) softPurgePattern(ctx context.Context, pattern string) (in
 		scanCmd := s.client.B().Scan().Cursor(cursor).Match(fullPattern).Count(scanBatchSize).Build()
 		resp := s.client.Do(ctx, scanCmd)
 		if err := resp.Error(); err != nil {
-			return 0, fmt.Errorf("titip: redis: scan: %w", err)
+			return 0, fmt.Errorf("redis: scan: %w", err)
 		}
 		entry, err := resp.AsScanEntry()
 		if err != nil {
-			return 0, fmt.Errorf("titip: redis: scan entry: %w", err)
+			return 0, fmt.Errorf("redis: scan entry: %w", err)
 		}
-		for _, key := range entry.Elements {
-			primaryKey := strings.TrimPrefix(key, s.prefix+"meta:")
-			if _, e := s.softPurge(ctx, primaryKey); e != nil && s.logger != nil && s.logger.Enabled(ctx, slog.LevelWarn) {
-				s.logger.WarnContext(ctx, "redis: soft purge pattern: failed to soft-purge key", slog.String("key", key), slog.Any("error", e))
+		if len(entry.Elements) > 0 {
+			n, err := s.softPurgeKeys(ctx, entry.Elements)
+			count += n
+			if err != nil && s.logger.Enabled(ctx, slog.LevelWarn) {
+				s.logger.WarnContext(ctx, "soft purge pattern: failed to soft-purge batch", slog.Any("error", err))
 			}
-			count++
 		}
 		cursor = entry.Cursor
 		if cursor == 0 {
 			break
 		}
 	}
-	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "redis: soft purge pattern complete", slog.String("pattern", fullPattern), slog.Int("soft_purged_count", count))
+	if s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "soft purge pattern complete", slog.String("pattern", fullPattern), slog.Int("soft_purged_count", count))
 	}
 	return int64(count), nil
 }
@@ -580,8 +613,8 @@ func (s *RedisStorage) PurgeAll(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if s.logger != nil && s.logger.Enabled(ctx, slog.LevelDebug) {
-		s.logger.DebugContext(ctx, "redis: purge all complete", slog.String("prefix", s.prefix), slog.Int("deleted_count", deleted), slog.Int("primary_deleted_count", primaryDeleted))
+	if s.logger.Enabled(ctx, slog.LevelDebug) {
+		s.logger.DebugContext(ctx, "purge all complete", slog.String("prefix", s.prefix), slog.Int("deleted_count", deleted), slog.Int("primary_deleted_count", primaryDeleted))
 	}
 	return int64(primaryDeleted), nil
 }
