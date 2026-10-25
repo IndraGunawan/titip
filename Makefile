@@ -1,4 +1,4 @@
-.PHONY: test bench race vet fmt lint fix help
+.PHONY: test bench race vet fmt lint fix tidy update-deps help
 
 # Automatically discover all Go modules in workspace (excluding examples and hidden directories)
 MODULE_PATHS := $(shell find . -name "go.mod" -not -path "*/examples/*" -not -path "*/.*" -exec dirname {} \; | sort)
@@ -29,3 +29,17 @@ lint: ## Run golangci-lint across workspace
 
 fix: ## Run go fix across all workspace modules
 	go fix $(MODULE_PKGS)
+
+tidy: ## Run go mod tidy across all workspace modules
+	@for dir in $(MODULE_PATHS); do \
+		echo "Tidying $$dir..."; \
+		(cd $$dir && go mod tidy) || exit 1; \
+	done
+	go work sync
+
+update-deps: ## Update dependencies and tidy across all workspace modules
+	@for dir in $(MODULE_PATHS); do \
+		echo "Updating dependencies in $$dir..."; \
+		(cd $$dir && go get -u ./...) || exit 1; \
+	done
+	$(MAKE) tidy
