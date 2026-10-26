@@ -113,7 +113,7 @@ func WithAutoInvalidateMutatingMethods() Option {
 func WithMetrics(reg prometheus.Registerer) Option {
 	return func(c *config) error {
 		if reg == nil {
-			return fmt.Errorf("%w: metrics registerer cannot be nil", ErrInvalidOption)
+			return errors.New("metrics registerer cannot be nil")
 		}
 		c.metrics = reg
 		return nil
@@ -124,7 +124,7 @@ func WithMetrics(reg prometheus.Registerer) Option {
 func WithStorageTimeout(d time.Duration) Option {
 	return func(c *config) error {
 		if d <= 0 {
-			return fmt.Errorf("%w: storage timeout must be positive, got %v", ErrInvalidOption, d)
+			return fmt.Errorf("storage timeout must be positive, got %v", d)
 		}
 		c.storageTimeout = d
 		return nil
@@ -135,7 +135,7 @@ func WithStorageTimeout(d time.Duration) Option {
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) error {
 		if l == nil {
-			return fmt.Errorf("%w: logger cannot be nil", ErrInvalidOption)
+			return errors.New("logger cannot be nil")
 		}
 		c.logger = l
 		return nil
@@ -146,7 +146,7 @@ func WithLogger(l *slog.Logger) Option {
 func WithCacheStatus(mode CacheStatusMode) Option {
 	return func(c *config) error {
 		if mode < CacheStatusSimple || mode > CacheStatusNone {
-			return fmt.Errorf("%w: invalid cache status mode %v", ErrInvalidOption, mode)
+			return fmt.Errorf("invalid cache status mode %v", mode)
 		}
 		c.cacheStatusMode = mode
 		return nil
@@ -180,7 +180,7 @@ func WithTagHeader(name string) Option {
 	return func(c *config) error {
 		trimmed := strings.TrimSpace(name)
 		if trimmed == "" {
-			return fmt.Errorf("%w: tag header name cannot be empty", ErrInvalidOption)
+			return errors.New("tag header name cannot be empty")
 		}
 		c.tagHeaderName = trimmed
 		return nil
@@ -193,7 +193,7 @@ func WithTagHeader(name string) Option {
 func WithBackgroundFetchTimeout(d time.Duration) Option {
 	return func(c *config) error {
 		if d < 0 {
-			return fmt.Errorf("%w: background fetch timeout cannot be negative, got %v", ErrInvalidOption, d)
+			return fmt.Errorf("background fetch timeout cannot be negative, got %v", d)
 		}
 		c.backgroundFetchTimeout = d
 		return nil
@@ -206,7 +206,7 @@ func WithESI(opts ...esi.Option) Option {
 	return func(c *config) error {
 		for _, opt := range opts {
 			if opt == nil {
-				return fmt.Errorf("%w: ESI option cannot be nil", ErrInvalidOption)
+				return errors.New("ESI option cannot be nil")
 			}
 		}
 		if c.esiOptions == nil {
@@ -231,7 +231,7 @@ func WithServerTimingCookie(name, value string) Option {
 		trimmedName := strings.TrimSpace(name)
 		trimmedVal := strings.TrimSpace(value)
 		if trimmedName == "" || trimmedVal == "" {
-			return fmt.Errorf("%w: server timing cookie name and value cannot be empty", ErrInvalidOption)
+			return errors.New("server timing cookie name and value cannot be empty")
 		}
 		c.serverTiming.active = true
 		c.serverTiming.cookieName = trimmedName
@@ -247,7 +247,7 @@ func WithStorageCompression(name string) Option {
 	return func(c *config) error {
 		trimmed := strings.ToLower(strings.TrimSpace(name))
 		if trimmed == "" {
-			return fmt.Errorf("%w: storage compression name cannot be empty", ErrInvalidOption)
+			return errors.New("storage compression name cannot be empty")
 		}
 		c.storageCompression = trimmed
 		return nil
@@ -261,14 +261,14 @@ func WithStorageCompression(name string) Option {
 func WithStorageCompressor(comp Compressor) Option {
 	return func(c *config) error {
 		if comp == nil {
-			return fmt.Errorf("%w: compressor cannot be nil", ErrInvalidOption)
+			return errors.New("compressor cannot be nil")
 		}
 		name := strings.ToLower(strings.TrimSpace(comp.Name()))
 		if name == "" {
-			return fmt.Errorf("%w: compressor name cannot be empty", ErrInvalidOption)
+			return errors.New("compressor name cannot be empty")
 		}
 		if _, exists := c.compressors[name]; exists {
-			return fmt.Errorf("%w: compressor %q already registered", ErrInvalidOption, name)
+			return fmt.Errorf("compressor %q already registered", name)
 		}
 		c.compressors[name] = comp
 		return nil

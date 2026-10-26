@@ -63,7 +63,7 @@ func WithHeaderRequired() Option {
 func WithInternalFetcher(fetcher InternalFetcherFunc) Option {
 	return func(c *config) error {
 		if fetcher == nil {
-			return fmt.Errorf("%w: internal fetcher cannot be nil", ErrInvalidOption)
+			return errors.New("internal fetcher cannot be nil")
 		}
 		c.internalFetcher = fetcher
 		return nil
@@ -74,7 +74,7 @@ func WithInternalFetcher(fetcher InternalFetcherFunc) Option {
 func WithMaxDepth(depth uint32) Option {
 	return func(c *config) error {
 		if depth == 0 {
-			return fmt.Errorf("%w: max depth must be greater than 0, got %d", ErrInvalidOption, depth)
+			return fmt.Errorf("max depth must be greater than 0, got %d", depth)
 		}
 		c.maxDepth = depth
 		return nil
@@ -85,7 +85,7 @@ func WithMaxDepth(depth uint32) Option {
 func WithMaxTimeout(timeout time.Duration) Option {
 	return func(c *config) error {
 		if timeout <= 0 {
-			return fmt.Errorf("%w: max timeout must be positive, got %v", ErrInvalidOption, timeout)
+			return fmt.Errorf("max timeout must be positive, got %v", timeout)
 		}
 		c.maxTimeout = timeout
 		return nil
@@ -96,7 +96,7 @@ func WithMaxTimeout(timeout time.Duration) Option {
 func WithMaxConcurrentRequests(limit int) Option {
 	return func(c *config) error {
 		if limit <= 0 {
-			return fmt.Errorf("%w: max concurrent requests must be positive, got %d", ErrInvalidOption, limit)
+			return fmt.Errorf("max concurrent requests must be positive, got %d", limit)
 		}
 		c.maxConcurrentRequests = limit
 		return nil
@@ -117,7 +117,7 @@ func WithAllowedHosts(hosts ...string) Option {
 	return func(c *config) error {
 		for _, h := range hosts {
 			if strings.TrimSpace(h) == "" {
-				return fmt.Errorf("%w: allowed host cannot be empty", ErrInvalidOption)
+				return errors.New("allowed host cannot be empty")
 			}
 		}
 		c.allowedHosts = hosts
@@ -137,7 +137,7 @@ func WithAllowPrivateIPsForAllowedHosts() Option {
 func WithMaxResponseSize(size int64) Option {
 	return func(c *config) error {
 		if size < 0 {
-			return fmt.Errorf("%w: max response size cannot be negative, got %d", ErrInvalidOption, size)
+			return fmt.Errorf("max response size cannot be negative, got %d", size)
 		}
 		c.maxResponseSize = size
 		return nil
@@ -174,7 +174,7 @@ func WithPreserveETag() Option {
 func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) error {
 		if logger == nil {
-			return fmt.Errorf("%w: logger cannot be nil", ErrInvalidOption)
+			return errors.New("logger cannot be nil")
 		}
 		c.logger = logger
 		return nil
@@ -185,7 +185,7 @@ func WithLogger(logger *slog.Logger) Option {
 func WithMetrics(reg prometheus.Registerer) Option {
 	return func(c *config) error {
 		if reg == nil {
-			return fmt.Errorf("%w: metrics registerer cannot be nil", ErrInvalidOption)
+			return errors.New("metrics registerer cannot be nil")
 		}
 		c.metrics = reg
 		return nil
@@ -196,7 +196,7 @@ func WithMetrics(reg prometheus.Registerer) Option {
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *config) error {
 		if client == nil {
-			return fmt.Errorf("%w: http client cannot be nil", ErrInvalidOption)
+			return errors.New("http client cannot be nil")
 		}
 		c.httpClient = client
 		return nil
