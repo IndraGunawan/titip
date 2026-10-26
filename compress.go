@@ -2,6 +2,7 @@ package titip
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -68,24 +69,24 @@ func (c *lz4Compressor) Name() string {
 
 func (c *lz4Compressor) Compress(src []byte, dst *bytes.Buffer) error {
 	if dst == nil {
-		return fmt.Errorf("titip: compress: destination buffer is nil")
+		return errors.New("compress: destination buffer is nil")
 	}
 	zw := lz4WriterPool.Get().(*lz4.Writer)
 	defer lz4WriterPool.Put(zw)
 
 	zw.Reset(dst)
 	if _, err := zw.Write(src); err != nil {
-		return fmt.Errorf("titip: compress: lz4 write error: %w", err)
+		return fmt.Errorf("compress: lz4 write error: %w", err)
 	}
 	if err := zw.Close(); err != nil {
-		return fmt.Errorf("titip: compress: lz4 close error: %w", err)
+		return fmt.Errorf("compress: lz4 close error: %w", err)
 	}
 	return nil
 }
 
 func (c *lz4Compressor) Decompress(src []byte, dst *bytes.Buffer) error {
 	if dst == nil {
-		return fmt.Errorf("titip: decompress: destination buffer is nil")
+		return errors.New("decompress: destination buffer is nil")
 	}
 	zr := lz4ReaderPool.Get().(*lz4.Reader)
 	defer lz4ReaderPool.Put(zr)
@@ -99,7 +100,7 @@ func (c *lz4Compressor) Decompress(src []byte, dst *bytes.Buffer) error {
 
 	zr.Reset(br)
 	if _, err := dst.ReadFrom(zr); err != nil {
-		return fmt.Errorf("titip: decompress: lz4 read error: %w", err)
+		return fmt.Errorf("decompress: lz4 read error: %w", err)
 	}
 	return nil
 }
@@ -119,22 +120,22 @@ func (c *noneCompressor) Name() string {
 
 func (c *noneCompressor) Compress(src []byte, dst *bytes.Buffer) error {
 	if dst == nil {
-		return fmt.Errorf("titip: compress: destination buffer is nil")
+		return errors.New("compress: destination buffer is nil")
 	}
 	_, err := dst.Write(src)
 	if err != nil {
-		return fmt.Errorf("titip: compress: write error: %w", err)
+		return fmt.Errorf("compress: write error: %w", err)
 	}
 	return nil
 }
 
 func (c *noneCompressor) Decompress(src []byte, dst *bytes.Buffer) error {
 	if dst == nil {
-		return fmt.Errorf("titip: decompress: destination buffer is nil")
+		return errors.New("decompress: destination buffer is nil")
 	}
 	_, err := dst.Write(src)
 	if err != nil {
-		return fmt.Errorf("titip: decompress: write error: %w", err)
+		return fmt.Errorf("decompress: write error: %w", err)
 	}
 	return nil
 }
@@ -176,24 +177,24 @@ func (c *zstdCompressor) Name() string {
 
 func (c *zstdCompressor) Compress(src []byte, dst *bytes.Buffer) error {
 	if dst == nil {
-		return fmt.Errorf("titip: compress: destination buffer is nil")
+		return errors.New("compress: destination buffer is nil")
 	}
 	zw := zstdWriterPool.Get().(*zstd.Encoder)
 	defer zstdWriterPool.Put(zw)
 
 	zw.Reset(dst)
 	if _, err := zw.Write(src); err != nil {
-		return fmt.Errorf("titip: compress: zstd write error: %w", err)
+		return fmt.Errorf("compress: zstd write error: %w", err)
 	}
 	if err := zw.Close(); err != nil {
-		return fmt.Errorf("titip: compress: zstd close error: %w", err)
+		return fmt.Errorf("compress: zstd close error: %w", err)
 	}
 	return nil
 }
 
 func (c *zstdCompressor) Decompress(src []byte, dst *bytes.Buffer) error {
 	if dst == nil {
-		return fmt.Errorf("titip: decompress: destination buffer is nil")
+		return errors.New("decompress: destination buffer is nil")
 	}
 	zr := zstdReaderPool.Get().(*zstd.Decoder)
 	defer zstdReaderPool.Put(zr)
@@ -206,10 +207,10 @@ func (c *zstdCompressor) Decompress(src []byte, dst *bytes.Buffer) error {
 	}()
 
 	if err := zr.Reset(br); err != nil {
-		return fmt.Errorf("titip: decompress: zstd reset error: %w", err)
+		return fmt.Errorf("decompress: zstd reset error: %w", err)
 	}
 	if _, err := dst.ReadFrom(zr); err != nil {
-		return fmt.Errorf("titip: decompress: zstd read error: %w", err)
+		return fmt.Errorf("decompress: zstd read error: %w", err)
 	}
 	return nil
 }

@@ -1,7 +1,7 @@
 package titip
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"net/url"
 	"path"
@@ -154,7 +154,7 @@ func buildPurgeOperation(target string, cfg *CacheKey) (isExact bool, keys []str
 //   - ""                                  → error: empty prefix not allowed
 func buildPurgePrefixOperation(prefix string, cfg *CacheKey) ([]string, error) {
 	if prefix == "" {
-		return nil, fmt.Errorf("titip: PurgePrefix does not accept empty prefix")
+		return nil, errors.New("empty prefix is not allowed")
 	}
 	if cfg == nil {
 		cfg = &CacheKey{}
