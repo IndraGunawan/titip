@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **Titip**!
 
-Titip is designed as a high-performance, low-allocation, RFC-7234, RFC-9111 & RFC-9211 compliant HTTP caching middleware in Go. To maintain rock-solid reliability and sub-millisecond latency, all components adhere to strict architectural standards.
+Titip is designed as a high-performance, low-allocation, RFC-compliant (RFC 9111, RFC 9211, RFC 9213, RFC 5861, RFC 9110) HTTP caching middleware in Go. To maintain rock-solid reliability and sub-millisecond latency, all components adhere to strict architectural standards.
 
 > [!NOTE]
 > **Prerequisites**: A Go toolchain (matching the version declared in [`go.mod`](go.mod)) and **Docker** (for running the local Redis test container).
