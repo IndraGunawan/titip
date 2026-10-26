@@ -129,7 +129,8 @@ Helpers for upstream capability negotiation and downstream response reconciliati
 - `proc.AddSurrogateCapability(header http.Header, deviceToken string)`: Advertises `Surrogate-Capability: <deviceToken>="ESI/1.0"` to upstream origin servers (nil-safe no-op).
 - `proc.CanProcess(header http.Header) bool`: Reports whether response headers meet ESI processing requirements (requires `Surrogate-Control` containing `ESI/1.0` unless `WithoutSurrogateControlRequirement` is configured).
 - `proc.ShouldPreserveETag() bool`: Reports whether downstream ETag (weakened) and Last-Modified headers are preserved based on `WithPreserveETag`.
-- `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI specifications (removes `Surrogate-Control`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
+- `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI specifications (strips ESI directives from `Surrogate-Control` via `CleanSurrogateControl`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
+- `esi.CleanSurrogateControl(header http.Header)`: Strips all directives containing `ESI/1.0` (case-insensitive) from `Surrogate-Control` per W3C Edge Architecture §3.4, preserving unrelated surrogate directives (such as `max-age=...`) or removing the header if no directives remain.
 
 ## Memory Management
 

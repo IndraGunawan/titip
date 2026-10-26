@@ -31,7 +31,7 @@ lint: ## Run golangci-lint across workspace
 	golangci-lint run $(MODULE_PKGS)
 
 fix: ## Run go fix across all workspace modules
-	go fix $(MODULE_PKGS)
+	go fix $(ALL_MODULE_PATHS)
 
 tidy: ## Run go mod tidy across all workspace modules
 	go work sync

@@ -451,7 +451,7 @@ func TestProcessor_ScanAndProcessFragments(t *testing.T) {
 		WithInternalFetcher(HandlerFetcher(mux)),
 	)
 
-	// 1. Document with ESI tags: should scan and splice in one step
+	// Document with ESI tags: should scan and splice in one step
 	docWithESI := []byte(`<div>User: <esi:include src="/user" /></div>`)
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/page", nil)
 	res1, err := testProcess(proc, context.Background(), req, docWithESI)
@@ -465,7 +465,7 @@ func TestProcessor_ScanAndProcessFragments(t *testing.T) {
 		t.Errorf("got %q, want %q", string(res1.Body()), expected)
 	}
 
-	// 2. Document without ESI tags: returns body untouched with zero buffer allocation
+	// Document without ESI tags: returns body untouched with zero buffer allocation
 	docWithoutESI := []byte(`<div>Plain HTML content without any ESI tags</div>`)
 	res2, err := testProcess(proc, context.Background(), req, docWithoutESI)
 	if err != nil {
@@ -492,6 +492,9 @@ func TestProcessor_CanProcess(t *testing.T) {
 		{http.Header{"Surrogate-Control": []string{"max-age=3600"}}, false},
 		{http.Header{"Surrogate-Control": []string{"content=\"ESI/1.0\""}}, true},
 		{http.Header{"Surrogate-Control": []string{"abc, content=\"ESI/1.0\", max-age=60"}}, true},
+		{http.Header{"Surrogate-Control": []string{"max-age=3600", "content=\"ESI/1.0\""}}, true},
+		{http.Header{"Surrogate-Control": []string{"content=\"esi/1.0\""}}, true},
+		{http.Header{"surrogate-control": []string{"content=\"ESI/1.0\""}}, true},
 	}
 
 	procDefault := newTestProcessor(t)
@@ -507,10 +510,122 @@ func TestProcessor_CanProcess(t *testing.T) {
 	}
 }
 
+func TestCleanSurrogateControl(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    http.Header
+		expected string // empty string means header should be absent
+	}{
+		{
+			name:     "nil header",
+			input:    nil,
+			expected: "",
+		},
+		{
+			name:     "empty header",
+			input:    http.Header{},
+			expected: "",
+		},
+		{
+			name:     "pure ESI standard directive",
+			input:    http.Header{"Surrogate-Control": []string{`content="ESI/1.0"`}},
+			expected: "",
+		},
+		{
+			name:     "pure ESI custom directive",
+			input:    http.Header{"Surrogate-Control": []string{`string=esi/1.0`}},
+			expected: "",
+		},
+		{
+			name:     "mixed directives single line",
+			input:    http.Header{"Surrogate-Control": []string{`max-age=3600, content="ESI/1.0"`}},
+			expected: "max-age=3600",
+		},
+		{
+			name:     "mixed directives multiple non-ESI",
+			input:    http.Header{"Surrogate-Control": []string{`max-age=3600, no-store-remote, content="ESI/1.0"`}},
+			expected: "max-age=3600, no-store-remote",
+		},
+		{
+			name:     "multiple header lines",
+			input:    http.Header{"Surrogate-Control": []string{"max-age=3600", `content="ESI/1.0"`}},
+			expected: "max-age=3600",
+		},
+		{
+			name:     "non-ESI only preserved",
+			input:    http.Header{"Surrogate-Control": []string{"max-age=3600"}},
+			expected: "max-age=3600",
+		},
+		{
+			name:     "targeted directive",
+			input:    http.Header{"Surrogate-Control": []string{`titip="content=ESI/1.0", cdn="max-age=60"`}},
+			expected: `cdn="max-age=60"`,
+		},
+		{
+			name:     "non-canonical lowercase key pure ESI",
+			input:    http.Header{"surrogate-control": []string{`content="esi/1.0"`}},
+			expected: "",
+		},
+		{
+			name:     "non-canonical lowercase key mixed",
+			input:    http.Header{"surrogate-control": []string{`max-age=3600, string=esi/1.0`}},
+			expected: "max-age=3600",
+		},
+		{
+			name:     "ESI directive first",
+			input:    http.Header{"Surrogate-Control": []string{`content="ESI/1.0", max-age=3600`}},
+			expected: "max-age=3600",
+		},
+		{
+			name:     "ESI directive in middle with SWR",
+			input:    http.Header{"Surrogate-Control": []string{`max-age=3600, content="ESI/1.0", stale-while-revalidate=60`}},
+			expected: "max-age=3600, stale-while-revalidate=60",
+		},
+		{
+			name:     "ESI directive with parameter",
+			input:    http.Header{"Surrogate-Control": []string{`content="ESI/1.0; gzip", max-age=86400`}},
+			expected: "max-age=86400",
+		},
+		{
+			name:     "irregular whitespace between directives",
+			input:    http.Header{"Surrogate-Control": []string{`max-age=3600  ,   content="ESI/1.0"   ,  stale-if-error=300`}},
+			expected: "max-age=3600, stale-if-error=300",
+		},
+		{
+			name:     "double and trailing commas",
+			input:    http.Header{"Surrogate-Control": []string{`max-age=3600, , content="ESI/1.0",`}},
+			expected: "max-age=3600",
+		},
+		{
+			name:     "Fastly surrogate TTL extension",
+			input:    http.Header{"Surrogate-Control": []string{`max-age=3600+600, content="ESI/1.0"`}},
+			expected: "max-age=3600+600",
+		},
+		{
+			name:     "preserves no-store and no-store-remote",
+			input:    http.Header{"Surrogate-Control": []string{`no-store, no-store-remote, content="ESI/1.0"`}},
+			expected: "no-store, no-store-remote",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			CleanSurrogateControl(tt.input)
+			if tt.input == nil {
+				return
+			}
+			got := tt.input.Get("Surrogate-Control")
+			if got != tt.expected {
+				t.Errorf("CleanSurrogateControl() got %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestProcessor_SurrogateCapability(t *testing.T) {
 	proc := newTestProcessor(t)
 
-	// 1. Nil processor does not add capability
+	// Nil processor does not add capability
 	var nilProc *Processor
 	nilHeader := make(http.Header)
 	nilProc.AddSurrogateCapability(nilHeader, "titip")
@@ -518,23 +633,23 @@ func TestProcessor_SurrogateCapability(t *testing.T) {
 		t.Errorf("expected nil processor to not set capability, got %q", got)
 	}
 
-	// 2. Nil header safe
+	// Nil header safe
 	proc.AddSurrogateCapability(nil, "titip")
 
-	// 3. Empty header sets capability
+	// Empty header sets capability
 	h := make(http.Header)
 	proc.AddSurrogateCapability(h, "titip")
 	if got := h.Get(headerSurrogateCapability); got != `titip="ESI/1.0"` {
 		t.Errorf("expected %q, got %q", `titip="ESI/1.0"`, got)
 	}
 
-	// 4. Already present token is not duplicated
+	// Already present token is not duplicated
 	proc.AddSurrogateCapability(h, "titip")
 	if got := h.Get(headerSurrogateCapability); got != `titip="ESI/1.0"` {
 		t.Errorf("expected no duplicate, got %q", got)
 	}
 
-	// 5. Appends to existing capability from downstream
+	// Appends to existing capability from downstream
 	h2 := make(http.Header)
 	h2.Set(headerSurrogateCapability, `cdn="ESI/1.0"`)
 	proc.AddSurrogateCapability(h2, "titip")
@@ -543,7 +658,7 @@ func TestProcessor_SurrogateCapability(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, got)
 	}
 
-	// 6. Default deviceID when empty is "esi"
+	// Default deviceID when empty is "esi"
 	h3 := make(http.Header)
 	proc.AddSurrogateCapability(h3, "")
 	if got := h3.Get(headerSurrogateCapability); got != `esi="ESI/1.0"` {

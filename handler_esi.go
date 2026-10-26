@@ -5,8 +5,20 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/indragunawan/titip/esi"
 	pb "github.com/indragunawan/titip/proto"
 )
+
+// inspectAndPrepareESI checks if the origin response satisfies ESI processing criteria.
+// If so, it strips ESI directives from Surrogate-Control in-place and scans the body
+// for ESI fragments, returning the parsed fragments.
+func (t *Titip) inspectAndPrepareESI(h http.Header, body []byte) []*pb.EsiFragment {
+	if t.esiProcessor == nil || !t.esiProcessor.CanProcess(h) {
+		return nil
+	}
+	esi.CleanSurrogateControl(h)
+	return esi.Scan(body)
+}
 
 // processESI delegates ESI fragment resolution, concurrent fetching,
 // recursion, and document splicing to esi.Processor, reconciles response headers,
@@ -50,7 +62,7 @@ func (t *Titip) processESI(
 			}
 		}
 	} else {
-		reconciled.Del(headerSurrogateControl)
+		esi.CleanSurrogateControl(reconciled)
 	}
 
 	for k, vv := range reconciled {

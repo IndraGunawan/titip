@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/indragunawan/titip/esi"
 	pb "github.com/indragunawan/titip/proto"
 	"github.com/pquerna/cachecontrol/cacheobject"
 )
@@ -437,6 +436,9 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		return nil
 	}
 
+	// ESI inspection and cleaning on origin response
+	fragments := t.inspectAndPrepareESI(headersClone, bodyBytes)
+
 	freshness := calculateFreshness(rec.Code, ctx.r.Header, headersClone, reqTime, respTime, respTime)
 
 	// Cache if eligible and not closed (skip saving 0-byte variant if HEAD and ConvertHeadToGet is disabled)
@@ -445,33 +447,31 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 		shouldCache = false
 	}
 	if shouldCache {
-		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime, &ctx.timing)
+		t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, fragments, freshness, respTime, &ctx.timing)
 	}
 
 	// ESI Processing on Cold Miss
-	if t.canProcessESI(headersClone) {
-		if fragments := esi.Scan(bodyBytes); len(fragments) > 0 {
-			var simpleStatus, rfc9211Detail string
-			missReason := "fwd=uri-miss"
-			if ctx.isVaryMiss {
-				missReason = "fwd=vary-miss"
-			}
-			if shouldCache && freshness.EffectiveTTL > 0 {
-				t.recordRequest(ctx, labelStatusMiss)
-				simpleStatus = statusMiss
-				if t.config.cacheStatusMode == CacheStatusRFC9211 {
-					rfc9211Detail = missReason + "; fwd-status=" + strconv.Itoa(rec.Code) + "; stored; ttl=" + strconv.Itoa(int(freshness.EffectiveTTL.Seconds()))
-				}
-			} else {
-				t.recordRequest(ctx, labelStatusBypass)
-				simpleStatus = statusDynamic
-				if t.config.cacheStatusMode == CacheStatusRFC9211 {
-					rfc9211Detail = "fwd=bypass; fwd-status=" + strconv.Itoa(rec.Code)
-				}
-			}
-			t.processESI(ctx, bodyBytes, fragments, rec.Code, headersClone, simpleStatus, rfc9211Detail)
-			return nil
+	if len(fragments) > 0 {
+		var simpleStatus, rfc9211Detail string
+		missReason := "fwd=uri-miss"
+		if ctx.isVaryMiss {
+			missReason = "fwd=vary-miss"
 		}
+		if shouldCache && freshness.EffectiveTTL > 0 {
+			t.recordRequest(ctx, labelStatusMiss)
+			simpleStatus = statusMiss
+			if t.config.cacheStatusMode == CacheStatusRFC9211 {
+				rfc9211Detail = missReason + "; fwd-status=" + strconv.Itoa(rec.Code) + "; stored; ttl=" + strconv.Itoa(int(freshness.EffectiveTTL.Seconds()))
+			}
+		} else {
+			t.recordRequest(ctx, labelStatusBypass)
+			simpleStatus = statusDynamic
+			if t.config.cacheStatusMode == CacheStatusRFC9211 {
+				rfc9211Detail = "fwd=bypass; fwd-status=" + strconv.Itoa(rec.Code)
+			}
+		}
+		t.processESI(ctx, bodyBytes, fragments, rec.Code, headersClone, simpleStatus, rfc9211Detail)
+		return nil
 	}
 
 	// Serve Response to Client
@@ -670,19 +670,23 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 			}, nil
 		}
 
+		// ESI inspection and cleaning on origin revalidation response
+		fragments := t.inspectAndPrepareESI(headersClone, bodyBytes)
+
 		freshness := calculateFreshness(rec.Code, ctx.r.Header, headersClone, reqTime, respTime, respTime)
 		shouldCache := freshness.IsCacheable && !t.closed.Load()
 		if ctx.r.Method == http.MethodHead && !t.config.convertHeadToGet {
 			shouldCache = false
 		}
 		if shouldCache {
-			t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, freshness, respTime, &ctx.timing)
+			t.saveVariantToStorage(originCtx, ctx.primaryKey, ctx.variantKey, rec.Code, ctx.r, headersClone, bodyBytes, fragments, freshness, respTime, &ctx.timing)
 		}
 
 		return &fetchResult{
 			statusCode: rec.Code,
 			headers:    headersClone,
 			body:       bodyBytes,
+			fragments:  fragments,
 			ttl:        freshness.EffectiveTTL,
 		}, nil
 	})
@@ -801,16 +805,14 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 	}
 
 	// ESI Processing on fresh revalidation
-	if t.canProcessESI(res.headers) {
-		if fragments := esi.Scan(res.body); len(fragments) > 0 {
-			t.recordRequest(ctx, labelStatusMiss)
-			detail := ""
-			if t.config.cacheStatusMode == CacheStatusRFC9211 {
-				detail = "fwd=stale; fwd-status=" + strconv.Itoa(res.statusCode) + collapsedToken + "; stored; detail=soft-refreshed"
-			}
-			t.processESI(ctx, res.body, fragments, res.statusCode, res.headers, statusExpired, detail)
-			return nil
+	if len(res.fragments) > 0 {
+		t.recordRequest(ctx, labelStatusMiss)
+		detail := ""
+		if t.config.cacheStatusMode == CacheStatusRFC9211 {
+			detail = "fwd=stale; fwd-status=" + strconv.Itoa(res.statusCode) + collapsedToken + "; stored; detail=soft-refreshed"
 		}
+		t.processESI(ctx, res.body, res.fragments, res.statusCode, res.headers, statusExpired, detail)
+		return nil
 	}
 
 	// Serve fresh origin response
@@ -860,6 +862,7 @@ type fetchResult struct {
 	fallback    *staleFallback
 	headers     http.Header
 	body        []byte
+	fragments   []*pb.EsiFragment
 	ttl         time.Duration
 }
 
@@ -870,6 +873,7 @@ func (t *Titip) saveVariantToStorage(
 	r *http.Request,
 	headers http.Header,
 	bodyBytes []byte,
+	fragments []*pb.EsiFragment,
 	freshness freshnessInfo,
 	respTime time.Time,
 	timing *serverTimingRecorder,
@@ -880,12 +884,6 @@ func (t *Titip) saveVariantToStorage(
 	}
 
 	tags := extractTags(headers, t.config.tagHeaderName)
-
-	// Check for ESI directives in body
-	var fragments []*pb.EsiFragment
-	if t.canProcessESI(headers) {
-		fragments = esi.Scan(bodyBytes)
-	}
 
 	// Resolve storage compressor and compress body payload (skip for 0-byte bodies)
 	var compBytes []byte
@@ -1005,13 +1003,16 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	headers := rec.Header().Clone()
 	bodyBytes := bytes.Clone(rec.Body.Bytes())
 
+	// ESI inspection and cleaning on async revalidation response
+	fragments := t.inspectAndPrepareESI(headers, bodyBytes)
+
 	freshness := calculateFreshness(rec.Code, r.Header, headers, reqTime, respTime, respTime)
 	shouldCache := freshness.IsCacheable && !t.closed.Load()
 	if r.Method == http.MethodHead && !t.config.convertHeadToGet {
 		shouldCache = false
 	}
 	if shouldCache {
-		t.saveVariantToStorage(bgCtx, primaryKey, variantKey, rec.Code, r, headers, bodyBytes, freshness, respTime, nil)
+		t.saveVariantToStorage(bgCtx, primaryKey, variantKey, rec.Code, r, headers, bodyBytes, fragments, freshness, respTime, nil)
 	}
 }
 
@@ -1248,11 +1249,4 @@ func protoHeadersToHTTP(protoHeaders map[string]*pb.HeaderValues) http.Header {
 		}
 	}
 	return h
-}
-
-func (t *Titip) canProcessESI(h http.Header) bool {
-	if t.esiProcessor == nil {
-		return false
-	}
-	return t.esiProcessor.CanProcess(h)
 }
