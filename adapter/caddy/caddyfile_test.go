@@ -192,7 +192,7 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 		storage test
 		esi {
 			enabled true
-			header_required false
+			require_surrogate_control false
 			max_depth 3
 			max_timeout 15s
 			max_concurrent_requests 4
@@ -216,6 +216,9 @@ func TestCaddyHandler_UnmarshalCaddyfile_ESI(t *testing.T) {
 	}
 	if h.ESI.Enabled == nil || !*h.ESI.Enabled {
 		t.Errorf("expected ESI.Enabled to be true")
+	}
+	if h.ESI.RequireSurrogateControl == nil || *h.ESI.RequireSurrogateControl != false {
+		t.Errorf("expected RequireSurrogateControl false, got %v", h.ESI.RequireSurrogateControl)
 	}
 	if h.ESI.PreserveETag == nil || !*h.ESI.PreserveETag {
 		t.Errorf("expected PreserveETag true, got %v", h.ESI.PreserveETag)

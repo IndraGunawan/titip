@@ -331,7 +331,7 @@ Directives like `Cache-Control: public` without a `max-age` grant permission for
 Titip includes a high-performance **Edge Side Includes (ESI)** engine featuring pre-parsed template indexing:
 
 * **Zero Rescan on Cache Hits**: Document structure and fragment byte offsets are parsed once upon storage and preserved in cache metadata (`VariantInfo.EsiFragments`). Cache hits stream spliced fragments directly from memory pools without rescanning the template body.
-* **Surrogate Handshake**: Titip advertises `Surrogate-Capability: titip="ESI/1.0"` to upstream origins, and optionally activates processing only when the origin responds with `Surrogate-Control: content="ESI/1.0"` (`WithHeaderRequired()`), bypassing unnecessary body parsing for non-ESI content.
+* **Surrogate Handshake**: Titip advertises `Surrogate-Capability: titip="ESI/1.0"` to upstream origins, and by default activates processing only when the origin response `Surrogate-Control` contains `ESI/1.0` (e.g. `content="ESI/1.0"`), protecting against ESI injection and bypassing unnecessary body parsing for non-ESI content.
 * **Concurrency & Safety**: Parallel fragment fetching with circular loop protection, strict timeouts, and SSRF filtering for external URLs.
 
 For standalone package documentation and options reference, see [**ESI Package Guide**](esi/README.md).
@@ -356,13 +356,13 @@ cache, err := titip.New(
 | `<esi:include src="...">Fallback HTML</esi:include>` | Paired include with inline fallback block. |
 | `<!--esi <div>Visible only when ESI active</div> -->` | Unescapes enclosed HTML comments when ESI is enabled. |
 | `<esi:remove><p>Placeholder</p></esi:remove>` | Strips placeholder content intended for non-ESI clients. |
-| `<!--esi-comment text="..." -->` | Strips internal comments without emitting bytes. |
+| `<esi:comment text="..." />` | Strips internal comments without emitting bytes. |
 
 ### ESI Functional Options (`esi.Option`)
 
 | Option Builder | Default | Description |
 | :--- | :--- | :--- |
-| `esi.WithHeaderRequired()` | *(disabled)* | Process ESI only when origin sets `Surrogate-Control: content="ESI/1.0"`. |
+| `esi.WithoutSurrogateControlRequirement()` | *(enabled by default)* | Disables the requirement for origin `Surrogate-Control` header containing `ESI/1.0`, processing ESI tags on all origin responses unconditionally. |
 | `esi.WithInternalFetcher(fn)` | `nil` | Custom hook for in-memory virtual subrequests (e.g. `esi.HandlerFetcher(r)`). |
 | `esi.WithMaxDepth(uint32)` | `3` | Maximum nesting depth for recursive ESI includes. |
 | `esi.WithMaxTimeout(duration)` | `30s` | Maximum time budget per fragment include fetch. |

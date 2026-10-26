@@ -137,7 +137,7 @@ Configure cache key assembly inside the `cache_key { ... }` block:
 | Subdirective | Default | Description |
 | :--- | :--- | :--- |
 | `enabled <bool>` | `false` | Enable ESI fragment parsing and parallel splicing. |
-| `header_required <bool>` | `false` | Process ESI only if origin sends `Surrogate-Control: content="ESI/1.0"`. |
+| `require_surrogate_control <bool>` | `true` | Process ESI only if origin response `Surrogate-Control` contains `ESI/1.0` (e.g. `content="ESI/1.0"`). Set to false to parse all origin responses. |
 | `max_depth <int>` | `3` | Maximum recursion depth for nested `<esi:include>`. |
 | `max_timeout <duration>` | `30s` | Maximum time budget for fetching individual fragment includes. |
 | `max_concurrent_requests <int>` | `8` | Maximum concurrent fetch goroutines per document. |

@@ -187,11 +187,12 @@ type Processor struct {
 // NewProcessor constructs a new ESI Processor from the provided options.
 func NewProcessor(opts ...Option) (*Processor, error) {
 	config := config{
-		maxDepth:              3,
-		maxTimeout:            30 * time.Second,
-		maxConcurrentRequests: 8,
-		maxResponseSize:       10 * 1024 * 1024,
-		logger:                slog.Default(),
+		requireSurrogateControl: true,
+		maxDepth:                3,
+		maxTimeout:              30 * time.Second,
+		maxConcurrentRequests:   8,
+		maxResponseSize:         10 * 1024 * 1024,
+		logger:                  slog.Default(),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -255,18 +256,91 @@ func (p *Processor) AddSurrogateCapability(h http.Header, deviceToken string) {
 	}
 }
 
+// containsESI reports whether s contains "ESI/1.0" or "esi/1.0".
+func containsESI(s string) bool {
+	return strings.Contains(s, "ESI/1.0") || strings.Contains(s, "esi/1.0")
+}
+
 // CanProcess reports whether the response headers satisfy ESI processing criteria.
-// By default, it returns true; when WithHeaderRequired() is configured, it verifies
-// that Surrogate-Control contains "ESI/1.0".
+// By default, it verifies that Surrogate-Control contains "ESI/1.0" (case-insensitive).
+// It inspects all Surrogate-Control header lines and values without heap allocations.
+// When WithoutSurrogateControlRequirement() is configured, it returns true unconditionally.
 func (p *Processor) CanProcess(h http.Header) bool {
-	if !p.config.headerRequired {
+	if !p.config.requireSurrogateControl {
 		return true
 	}
-	return h != nil && strings.Contains(h.Get(headerSurrogateControl), "ESI/1.0")
+	if len(h) == 0 {
+		return false
+	}
+	// Direct canonical map lookup (fast path, 0 allocs)
+	if vals, ok := h[headerSurrogateControl]; ok {
+		return slices.ContainsFunc(vals, containsESI)
+	}
+	// Fallback for non-canonical keys
+	for k, vv := range h {
+		if strings.EqualFold(k, headerSurrogateControl) {
+			return slices.ContainsFunc(vv, containsESI)
+		}
+	}
+	return false
+}
+
+// CleanSurrogateControl strips all directives containing "ESI/1.0" (case-insensitive)
+// from the Surrogate-Control header per W3C Edge Architecture Specification §3.4.
+// If remaining directives exist (e.g. "max-age=3600"), Surrogate-Control is updated with them.
+// If no directives remain, the Surrogate-Control header is completely removed from h.
+// Fast-paths return immediately with zero allocations when no ESI directives exist.
+func CleanSurrogateControl(h http.Header) {
+	if len(h) == 0 {
+		return
+	}
+
+	vals, ok := h[headerSurrogateControl]
+	key := headerSurrogateControl
+	if !ok {
+		for k, vv := range h {
+			if strings.EqualFold(k, headerSurrogateControl) {
+				vals = vv
+				key = k
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok || len(vals) == 0 {
+		return
+	}
+
+	if !slices.ContainsFunc(vals, containsESI) {
+		return
+	}
+
+	var remaining []string
+	for _, val := range vals {
+		if !containsESI(val) {
+			remaining = append(remaining, val)
+			continue
+		}
+		for part := range strings.SplitSeq(val, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" && !containsESI(trimmed) {
+				remaining = append(remaining, trimmed)
+			}
+		}
+	}
+
+	if key != headerSurrogateControl {
+		delete(h, key)
+	}
+	if len(remaining) == 0 {
+		delete(h, headerSurrogateControl)
+	} else {
+		h[headerSurrogateControl] = []string{strings.Join(remaining, ", ")}
+	}
 }
 
 // ReconcileHeaders updates h in-place per ESI (§3.2) and RFC 9110 specifications:
-// - Removes Surrogate-Control header
+// - Strips ESI directives from Surrogate-Control (or removes header if empty)
 // - Weakens or removes ETag and Last-Modified according to PreserveETag
 // - Updates Content-Length if present to match the spliced body length
 // - Appends fragment Set-Cookie headers from res
@@ -277,7 +351,7 @@ func (p *Processor) ReconcileHeaders(h http.Header, res *Result) {
 		return
 	}
 
-	h.Del(headerSurrogateControl)
+	CleanSurrogateControl(h)
 
 	if p.ShouldPreserveETag() {
 		if etag := h.Get(headerETag); etag != "" {

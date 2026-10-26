@@ -55,7 +55,10 @@ import (
 )
 
 func main() {
-    proc := esi.NewProcessor()
+    proc, err := esi.NewProcessor()
+    if err != nil {
+        panic(err)
+    }
 
     html := []byte(`
         <html>
@@ -107,7 +110,7 @@ If the handler returns 404, the processor falls back to outbound HTTP.
 | Option | Default | Description |
 | :--- | :--- | :--- |
 | `WithInternalFetcher(fn)` | `nil` | In-process subrequest handler. Use `esi.HandlerFetcher(router)` to adapt an `http.Handler`. |
-| `WithHeaderRequired()` | *(disabled)* | Documents are only processed if origin response `Surrogate-Control` contains `ESI/1.0`. |
+| `WithoutSurrogateControlRequirement()` | *(enabled by default)* | Disables the requirement for origin `Surrogate-Control` header containing `ESI/1.0`, processing ESI tags on all origin responses. |
 | `WithMaxDepth(uint32)` | `3` | Maximum nesting depth for recursive includes. |
 | `WithMaxTimeout(time.Duration)` | `30s` | Timeout per fragment request. |
 | `WithMaxConcurrentRequests(int)` | `8` | Maximum concurrent fragment requests per document. |
@@ -127,9 +130,10 @@ If the handler returns 404, the processor falls back to outbound HTTP.
 Helpers for upstream capability negotiation and downstream response reconciliation defined in the Edge Side Includes (ESI) specification and RFC 9110:
 
 - `proc.AddSurrogateCapability(header http.Header, deviceToken string)`: Advertises `Surrogate-Capability: <deviceToken>="ESI/1.0"` to upstream origin servers (nil-safe no-op).
-- `proc.CanProcess(header http.Header) bool`: Reports whether response headers meet ESI processing requirements based on `WithHeaderRequired`.
+- `proc.CanProcess(header http.Header) bool`: Reports whether response headers meet ESI processing requirements (requires `Surrogate-Control` containing `ESI/1.0` unless `WithoutSurrogateControlRequirement` is configured).
 - `proc.ShouldPreserveETag() bool`: Reports whether downstream ETag (weakened) and Last-Modified headers are preserved based on `WithPreserveETag`.
-- `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI specifications (removes `Surrogate-Control`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
+- `proc.ReconcileHeaders(header http.Header, result *Result)`: Modifies response headers in-place according to ESI specifications (strips ESI directives from `Surrogate-Control` via `CleanSurrogateControl`, adjusts `ETag` and `Last-Modified` per `WithPreserveETag`, updates `Content-Length`, and appends fragment `Set-Cookie` headers).
+- `esi.CleanSurrogateControl(header http.Header)`: Strips all directives containing `ESI/1.0` (case-insensitive) from `Surrogate-Control` per W3C Edge Architecture §3.4, preserving unrelated surrogate directives (such as `max-age=...`) or removing the header if no directives remain.
 
 ## Memory Management
 

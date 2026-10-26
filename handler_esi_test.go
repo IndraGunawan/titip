@@ -129,6 +129,7 @@ func TestESI_SamePageDeduplication(t *testing.T) {
 	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<header><esi:include src="/api/nav" /></header><sidebar><esi:include src="/api/nav" /></sidebar><footer><esi:include src="/api/nav" /></footer>`))
 	})
@@ -173,6 +174,7 @@ func TestESI_SSRFProtection(t *testing.T) {
 	mux.HandleFunc("/ssrf-test", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="http://169.254.169.254/latest/meta-data/" onerror="continue"><span>Cloud Metadata Blocked</span></esi:include><esi:include src="file:///etc/passwd" onerror="continue"><span>File Scheme Blocked</span></esi:include></div>`))
 	})
@@ -206,6 +208,7 @@ func TestESI_FallbackOnErrorAndAlt(t *testing.T) {
 	mux.HandleFunc("/fail-test", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/api/broken1" alt="/api/backup" /> | <esi:include src="/api/broken2"><span>Inline Fallback</span></esi:include> | <esi:include src="/api/broken3" onerror="continue"><span>Omit Me</span></esi:include></div>`))
 	})
@@ -261,6 +264,7 @@ func TestESI_MaxDepthAndCircularLoop(t *testing.T) {
 	mux.HandleFunc("/page-a", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div>Page A <esi:include src="/page-b" onerror="continue"><span>Loop Caught</span></esi:include></div>`))
 	})
@@ -268,6 +272,7 @@ func TestESI_MaxDepthAndCircularLoop(t *testing.T) {
 	mux.HandleFunc("/page-b", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div>Page B <esi:include src="/page-a" onerror="continue"><span>Loop Caught</span></esi:include></div>`))
 	})
@@ -299,6 +304,7 @@ func TestESI_WorkerPanicRecovery(t *testing.T) {
 	mux.HandleFunc("/panic-page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/panic-fragment"><span>Panic Fallback</span></esi:include></div>`))
 	})
@@ -357,6 +363,7 @@ func TestESI_FullDocument_ColdMissAndCacheHitIdentical(t *testing.T) {
 		pageCalls.Add(1)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(rawTemplate))
 	})
@@ -443,6 +450,7 @@ func TestESI_ConcurrentFetchDuration_MaxOfFragments(t *testing.T) {
 	mux.HandleFunc("/slow-page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div>[<esi:include src="/api/slow1" />][<esi:include src="/api/slow2" />][<esi:include src="/api/slow3" />]</div>`))
 	})
@@ -557,6 +565,7 @@ func TestESI_LargePayloadSplicing_PositionOffsetsExact(t *testing.T) {
 	mux.HandleFunc("/large-page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(rawTemplate))
 	})
@@ -621,6 +630,7 @@ func TestESI_ContentLengthHeaderPreservation(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(raw)
 	})
@@ -630,6 +640,7 @@ func TestESI_ContentLengthHeaderPreservation(t *testing.T) {
 		raw := []byte(`<div><esi:include src="/frag-cl" /></div>`)
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(raw)
 	})
@@ -713,6 +724,7 @@ func TestESI_RootIndex_AllAttributeCombinations(t *testing.T) {
 		rootCalls.Add(1)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(rootTemplate))
 	})
@@ -842,6 +854,7 @@ func TestESI_SameHostAndExternalDomainIncludes(t *testing.T) {
 	mux.HandleFunc("/same-host-test", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		// Template containing:
 		// 1. Relative include: src="/frag/relative"
@@ -891,6 +904,7 @@ func BenchmarkESI_ColdMiss(b *testing.B) {
 	mux.HandleFunc("/bench-esi-cold", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "no-store") // always cold
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><header><esi:include src="/frag-h" /></header><main><esi:include src="/frag-u" /></main></div>`))
 	})
@@ -927,6 +941,7 @@ func BenchmarkESI_CacheHit(b *testing.B) {
 	mux.HandleFunc("/bench-esi-hit", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=3600") // cached parent
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><header><esi:include src="/frag-h2" /></header><main><esi:include src="/frag-u2" /></main></div>`))
 	})
@@ -968,6 +983,7 @@ func TestESI_CustomInternalFetcher(t *testing.T) {
 	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/custom-hook" /></div>`))
 	})
@@ -1036,6 +1052,7 @@ func TestESI_InternalFetcher_FallbackToOutboundHTTP_On404(t *testing.T) {
 	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="` + extServer.URL + `/esi-parts" /></div>`))
 	})
@@ -1091,6 +1108,7 @@ func TestESI_InternalFetcher_Non404Error_DoesNotFallback(t *testing.T) {
 	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/error-part" onerror="continue" /></div>`))
 	})
@@ -1149,6 +1167,7 @@ func TestESI_ESIHandlerFetcher_404_FallbackToOutbound(t *testing.T) {
 	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/local-part" /> | <esi:include src="/remote-part" /></div>`))
 	})
@@ -1222,6 +1241,7 @@ func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T)
 	parentMux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		tmpl := fmt.Sprintf(`<div><esi:include src="/same-fragment" /> | <esi:include src="%s/cross-fragment" /></div>`, crossHostServer.URL)
 		_, _ = w.Write([]byte(tmpl))
@@ -1274,9 +1294,7 @@ func TestESI_OutboundHTTP_CredentialForwarding_SameHostVsCrossHost(t *testing.T)
 
 func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
 	_, _, mw := setupTestTitip(t,
-		WithESI(
-			esi.WithHeaderRequired(),
-		),
+		WithESI(),
 	)
 
 	if mw.esiProcessor == nil {
@@ -1284,13 +1302,22 @@ func TestESI_DefaultsPreservedWithPartialOptions(t *testing.T) {
 	}
 	scHeader := http.Header{"Surrogate-Control": []string{`content="ESI/1.0"`}}
 	if !mw.esiProcessor.CanProcess(scHeader) {
-		t.Errorf("expected CanProcess to be true with Surrogate-Control")
+		t.Errorf("expected CanProcess to be true with Surrogate-Control by default")
 	}
 	if mw.esiProcessor.CanProcess(http.Header{}) {
-		t.Errorf("expected CanProcess to be false without Surrogate-Control when WithHeaderRequired")
+		t.Errorf("expected CanProcess to be false without Surrogate-Control by default")
 	}
 	if mw.esiProcessor.ShouldPreserveETag() {
 		t.Errorf("expected default ShouldPreserveETag=false, got true")
+	}
+
+	_, _, mwNoReq := setupTestTitip(t,
+		WithESI(
+			esi.WithoutSurrogateControlRequirement(),
+		),
+	)
+	if !mwNoReq.esiProcessor.CanProcess(http.Header{}) {
+		t.Errorf("expected CanProcess to be true without Surrogate-Control when WithoutSurrogateControlRequirement configured")
 	}
 }
 
@@ -1306,6 +1333,7 @@ func TestESI_PreserveETag_Default_StripsHeadersAndBypasses304(t *testing.T) {
 		pageHits.Add(1)
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.Header().Set("ETag", `"dash-v1"`)
 		w.Header().Set("Last-Modified", lastMod)
 		w.WriteHeader(http.StatusOK)
@@ -1388,6 +1416,7 @@ func TestESI_PreserveETag_True_WeakensETagAndAllows304(t *testing.T) {
 		pageHits.Add(1)
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.Header().Set("ETag", `"dash-v1"`)
 		w.Header().Set("Last-Modified", lastMod)
 		w.WriteHeader(http.StatusOK)
@@ -1514,6 +1543,7 @@ func TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring(t *testing.T) {
 		pageHits.Add(1)
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<html><body><h1>Dynamic</h1><esi:include src="/api/counter" /></body></html>`))
 	})
@@ -1535,7 +1565,7 @@ func TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring(t *testing.T) {
 
 	handler := mw.testHandler(mux)
 
-	// 1. First Request: Uncacheable page with ESI include
+	// First Request: Uncacheable page with ESI include
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/dynamic-page", nil)
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, req1)
@@ -1549,8 +1579,11 @@ func TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring(t *testing.T) {
 	if status := rec1.Header().Get("Cache-Status"); !strings.Contains(status, "fwd=bypass") {
 		t.Errorf("expected Cache-Status to indicate bypass, got: %s", status)
 	}
+	if sc := rec1.Header().Get("Surrogate-Control"); sc != "" {
+		t.Errorf("expected Surrogate-Control stripped from uncacheable response, got: %s", sc)
+	}
 
-	// 2. Second Request: Must re-hit origin (not stored in cache) and re-splice fresh fragment
+	// Second Request: Must re-hit origin (not stored in cache) and re-splice fresh fragment
 	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/dynamic-page", nil)
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, req2)
@@ -1561,11 +1594,64 @@ func TestESI_UncacheableResponse_SplicesFragmentsWithoutStoring(t *testing.T) {
 	if !strings.Contains(rec2.Body.String(), "<span>Count: 2</span>") {
 		t.Errorf("expected fresh spliced fragment Count: 2, got: %s", rec2.Body.String())
 	}
+	if sc := rec2.Header().Get("Surrogate-Control"); sc != "" {
+		t.Errorf("expected Surrogate-Control stripped from uncacheable 2nd response, got: %s", sc)
+	}
 	if pageHits.Load() != 2 {
 		t.Errorf("expected origin to be called twice (not cached), got %d hits", pageHits.Load())
 	}
 	if fragHits.Load() != 2 {
 		t.Errorf("expected fragment to be invoked twice, got %d hits", fragHits.Load())
+	}
+
+	// Uncacheable page with Surrogate-Control but ZERO ESI tags: stripped, origin called each time
+	var uncacheableNoTagsHits atomic.Int32
+	mux.HandleFunc("/dynamic-no-tags", func(w http.ResponseWriter, r *http.Request) {
+		uncacheableNoTagsHits.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Surrogate-Control", `content="ESI/1.0"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div>Uncacheable static body</div>`))
+	})
+
+	for i := 1; i <= 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/dynamic-no-tags", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", rec.Code)
+		}
+		if sc := rec.Header().Get("Surrogate-Control"); sc != "" {
+			t.Errorf("iteration %d: expected Surrogate-Control stripped, got %q", i, sc)
+		}
+		if rec.Body.String() != `<div>Uncacheable static body</div>` {
+			t.Errorf("iteration %d: unexpected body %q", i, rec.Body.String())
+		}
+	}
+	if uncacheableNoTagsHits.Load() != 2 {
+		t.Errorf("expected uncacheable zero-tag page to hit origin twice, got %d", uncacheableNoTagsHits.Load())
+	}
+
+	// Uncacheable page with mixed directives: max-age preserved, ESI stripped
+	mux.HandleFunc("/dynamic-mixed", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Surrogate-Control", `max-age=1800, content="ESI/1.0"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div>Uncacheable mixed directives</div>`))
+	})
+
+	reqMixed := httptest.NewRequest(http.MethodGet, "http://example.com/dynamic-mixed", nil)
+	recMixed := httptest.NewRecorder()
+	handler.ServeHTTP(recMixed, reqMixed)
+
+	if recMixed.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recMixed.Code)
+	}
+	if sc := recMixed.Header().Get("Surrogate-Control"); sc != "max-age=1800" {
+		t.Errorf("expected Surrogate-Control to preserve max-age=1800 for uncacheable response, got %q", sc)
 	}
 }
 
@@ -1587,12 +1673,14 @@ func TestESI_MaxResponseSize_InProcessAndOutbound(t *testing.T) {
 	mux.HandleFunc("/test-inproc", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		_, _ = w.Write([]byte(`<main><esi:include src="/in-process-frag" onerror="continue" /></main>`))
 	})
 
 	mux.HandleFunc("/test-outbound", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		_, _ = fmt.Fprintf(w, `<main><esi:include src="%s/frag" onerror="continue" /></main>`, extServer.URL)
 	})
 
@@ -1657,6 +1745,7 @@ func TestESI_InnerContentFallback_ZeroDuplication(t *testing.T) {
 	mux.HandleFunc("/page-with-fallback", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/failing-api"><span class="fallback">Default Fallback Content</span></esi:include></div>`))
 	})
@@ -1702,6 +1791,7 @@ func TestESI_SharedSrc_DifferentFallbacks(t *testing.T) {
 	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(
 			`<header><esi:include src="/api/failing"><span>Header Fallback</span></esi:include></header>` +
@@ -1973,7 +2063,7 @@ func TestESI_OriginLowerCaseWireHeaders_EndToEnd(t *testing.T) {
 	})
 }
 
-func TestESI_HeaderRequired_EndToEnd(t *testing.T) {
+func TestESI_RequireSurrogateControl_EndToEnd(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/frag", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -1993,16 +2083,52 @@ func TestESI_HeaderRequired_EndToEnd(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/frag" /></div>`))
 	})
+	mux.HandleFunc("/page-multi-header", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Add("Surrogate-Control", "max-age=3600")
+		w.Header().Add("Surrogate-Control", `content="ESI/1.0"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/frag" /></div>`))
+	})
+	mux.HandleFunc("/page-lowercase-token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", `content="esi/1.0"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/frag" /></div>`))
+	})
+	mux.HandleFunc("/page-custom-token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", `max-age=1800, string=esi/1.0`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/frag" /></div>`))
+	})
+	mux.HandleFunc("/page-pure-non-esi", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", `max-age=7200`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div><esi:include src="/frag" /></div>`))
+	})
+	mux.HandleFunc("/page-sc-no-esi-tags", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", `content="ESI/1.0"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<div>Static Page With Zero ESI Tags</div>`))
+	})
 
+	// By default, ESI requires Surrogate-Control header
 	_, _, mw := setupTestTitip(t,
 		WithESI(
-			esi.WithHeaderRequired(),
 			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
 		),
 	)
 	handler := mw.testHandler(mux)
 
-	// 1. Request to page WITHOUT Surrogate-Control: ESI should be bypassed
+	// Request to page WITHOUT Surrogate-Control: ESI should be bypassed
 	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/page-without-sc", nil)
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, req1)
@@ -2018,7 +2144,7 @@ func TestESI_HeaderRequired_EndToEnd(t *testing.T) {
 		t.Errorf("expected fragment to NOT be processed when Surrogate-Control missing")
 	}
 
-	// 2. Request to page WITH Surrogate-Control: ESI should be executed
+	// Request to page WITH Surrogate-Control: ESI should be executed
 	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/page-with-sc", nil)
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, req2)
@@ -2034,6 +2160,152 @@ func TestESI_HeaderRequired_EndToEnd(t *testing.T) {
 	if sc := rec2.Header().Get("Surrogate-Control"); sc != "" {
 		t.Errorf("expected Surrogate-Control to be stripped from client response, got %q", sc)
 	}
+
+	// Cache Hit on page WITH Surrogate-Control: ESI executed, Surrogate-Control stripped
+	req2Hit := httptest.NewRequest(http.MethodGet, "http://example.com/page-with-sc", nil)
+	rec2Hit := httptest.NewRecorder()
+	handler.ServeHTTP(rec2Hit, req2Hit)
+
+	if rec2Hit.Code != http.StatusOK {
+		t.Fatalf("expected 200 on hit, got %d", rec2Hit.Code)
+	}
+	if rec2Hit.Body.String() != expectedProcessed {
+		t.Errorf("expected %q on hit, got %q", expectedProcessed, rec2Hit.Body.String())
+	}
+	if sc := rec2Hit.Header().Get("Surrogate-Control"); sc != "" {
+		t.Errorf("expected Surrogate-Control stripped on cache hit, got %q", sc)
+	}
+
+	// Page with Surrogate-Control: content="ESI/1.0" but ZERO ESI tags: Surrogate-Control stripped on both miss and hit
+	reqNoTags := httptest.NewRequest(http.MethodGet, "http://example.com/page-sc-no-esi-tags", nil)
+	recNoTags := httptest.NewRecorder()
+	handler.ServeHTTP(recNoTags, reqNoTags)
+
+	if recNoTags.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recNoTags.Code)
+	}
+	if sc := recNoTags.Header().Get("Surrogate-Control"); sc != "" {
+		t.Errorf("expected Surrogate-Control stripped on cold miss for page with zero ESI tags, got %q", sc)
+	}
+
+	reqNoTagsHit := httptest.NewRequest(http.MethodGet, "http://example.com/page-sc-no-esi-tags", nil)
+	recNoTagsHit := httptest.NewRecorder()
+	handler.ServeHTTP(recNoTagsHit, reqNoTagsHit)
+
+	if recNoTagsHit.Code != http.StatusOK {
+		t.Fatalf("expected 200 on hit, got %d", recNoTagsHit.Code)
+	}
+	if sc := recNoTagsHit.Header().Get("Surrogate-Control"); sc != "" {
+		t.Errorf("expected Surrogate-Control stripped on cache hit for page with zero ESI tags, got %q", sc)
+	}
+
+	// Request with multiple Surrogate-Control header lines: ESI should be executed
+	reqMulti := httptest.NewRequest(http.MethodGet, "http://example.com/page-multi-header", nil)
+	recMulti := httptest.NewRecorder()
+	handler.ServeHTTP(recMulti, reqMulti)
+
+	if recMulti.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recMulti.Code)
+	}
+	if recMulti.Body.String() != expectedProcessed {
+		t.Errorf("expected %q for multi-header, got %q", expectedProcessed, recMulti.Body.String())
+	}
+	if sc := recMulti.Header().Get("Surrogate-Control"); sc != "max-age=3600" {
+		t.Errorf("expected Surrogate-Control to preserve max-age=3600, got %q", sc)
+	}
+
+	reqMultiHit := httptest.NewRequest(http.MethodGet, "http://example.com/page-multi-header", nil)
+	recMultiHit := httptest.NewRecorder()
+	handler.ServeHTTP(recMultiHit, reqMultiHit)
+
+	if recMultiHit.Code != http.StatusOK {
+		t.Fatalf("expected 200 on hit, got %d", recMultiHit.Code)
+	}
+	if recMultiHit.Body.String() != expectedProcessed {
+		t.Errorf("expected %q for multi-header on hit, got %q", expectedProcessed, recMultiHit.Body.String())
+	}
+	if sc := recMultiHit.Header().Get("Surrogate-Control"); sc != "max-age=3600" {
+		t.Errorf("expected Surrogate-Control to preserve max-age=3600 on cache hit, got %q", sc)
+	}
+
+	// Request with custom directive max-age=1800, string=esi/1.0: ESI executed, max-age preserved
+	reqCustom := httptest.NewRequest(http.MethodGet, "http://example.com/page-custom-token", nil)
+	recCustom := httptest.NewRecorder()
+	handler.ServeHTTP(recCustom, reqCustom)
+
+	if recCustom.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recCustom.Code)
+	}
+	if recCustom.Body.String() != expectedProcessed {
+		t.Errorf("expected %q for custom directive, got %q", expectedProcessed, recCustom.Body.String())
+	}
+	if sc := recCustom.Header().Get("Surrogate-Control"); sc != "max-age=1800" {
+		t.Errorf("expected Surrogate-Control to preserve max-age=1800, got %q", sc)
+	}
+
+	reqCustomHit := httptest.NewRequest(http.MethodGet, "http://example.com/page-custom-token", nil)
+	recCustomHit := httptest.NewRecorder()
+	handler.ServeHTTP(recCustomHit, reqCustomHit)
+
+	if recCustomHit.Code != http.StatusOK {
+		t.Fatalf("expected 200 on hit, got %d", recCustomHit.Code)
+	}
+	if recCustomHit.Body.String() != expectedProcessed {
+		t.Errorf("expected %q for custom directive on hit, got %q", expectedProcessed, recCustomHit.Body.String())
+	}
+	if sc := recCustomHit.Header().Get("Surrogate-Control"); sc != "max-age=1800" {
+		t.Errorf("expected Surrogate-Control to preserve max-age=1800 on cache hit, got %q", sc)
+	}
+
+	// Request with non-ESI Surrogate-Control (max-age=7200): ESI bypassed, directive preserved
+	reqNonESI := httptest.NewRequest(http.MethodGet, "http://example.com/page-pure-non-esi", nil)
+	recNonESI := httptest.NewRecorder()
+	handler.ServeHTTP(recNonESI, reqNonESI)
+
+	if recNonESI.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recNonESI.Code)
+	}
+	if !strings.Contains(recNonESI.Body.String(), `<esi:include src="/frag" />`) {
+		t.Errorf("expected ESI include tag unparsed for non-ESI Surrogate-Control, got %q", recNonESI.Body.String())
+	}
+	if sc := recNonESI.Header().Get("Surrogate-Control"); sc != "max-age=7200" {
+		t.Errorf("expected Surrogate-Control max-age=7200 preserved, got %q", sc)
+	}
+
+	// Request with lowercase token content="esi/1.0": ESI should be executed
+	reqLower := httptest.NewRequest(http.MethodGet, "http://example.com/page-lowercase-token", nil)
+	recLower := httptest.NewRecorder()
+	handler.ServeHTTP(recLower, reqLower)
+
+	if recLower.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recLower.Code)
+	}
+	if recLower.Body.String() != expectedProcessed {
+		t.Errorf("expected %q for lowercase token, got %q", expectedProcessed, recLower.Body.String())
+	}
+	if sc := recLower.Header().Get("Surrogate-Control"); sc != "" {
+		t.Errorf("expected Surrogate-Control stripped from lowercase token response, got %q", sc)
+	}
+
+	// When configured with WithoutSurrogateControlRequirement(), page WITHOUT header is processed
+	_, _, mwNoReq := setupTestTitip(t,
+		WithESI(
+			esi.WithoutSurrogateControlRequirement(),
+			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
+		),
+	)
+	handlerNoReq := mwNoReq.testHandler(mux)
+
+	req3 := httptest.NewRequest(http.MethodGet, "http://example.com/page-without-sc", nil)
+	rec3 := httptest.NewRecorder()
+	handlerNoReq.ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec3.Code)
+	}
+	if rec3.Body.String() != expectedProcessed {
+		t.Errorf("expected %q, got %q", expectedProcessed, rec3.Body.String())
+	}
 }
 
 // TestESIMemoryPoolRecycling verifies that all response recorders and splicing byte buffers
@@ -2044,6 +2316,7 @@ func TestESIMemoryPoolRecycling(t *testing.T) {
 	mux.HandleFunc("/pool-esi-page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/f1" /><esi:include src="/f2" /></div>`))
 	})
@@ -2095,6 +2368,7 @@ func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
 	mux.HandleFunc("/bench-pool-esi", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<div><esi:include src="/b1" /><esi:include src="/b2" /></div>`))
 	})
