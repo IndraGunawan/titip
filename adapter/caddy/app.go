@@ -2,6 +2,7 @@ package caddy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -75,7 +76,7 @@ func (a *App) Provision(ctx caddy.Context) error {
 		}
 		sm, ok := mod.(StorageModule)
 		if !ok {
-			return fmt.Errorf("global storage module does not implement StorageModule")
+			return errors.New("global storage module does not implement StorageModule")
 		}
 		a.storageMod = sm
 	}

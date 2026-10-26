@@ -39,7 +39,7 @@ func stateCheckBypass(t *Titip, ctx *requestContext) stateFn {
 	defer func() {
 		if p := recover(); p != nil {
 			if t.logger.Enabled(ctx.r.Context(), slog.LevelError) {
-				t.logger.ErrorContext(ctx.r.Context(), "handler panic recovered", "panic", p)
+				t.logger.ErrorContext(ctx.r.Context(), "handler panic recovered", slog.Any("panic", p))
 			}
 			http.Error(ctx.w, "Internal Server Error", http.StatusInternalServerError)
 		}
@@ -378,7 +378,7 @@ func stateFetchOriginMiss(t *Titip, ctx *requestContext) stateFn {
 			if p := recover(); p != nil {
 				panicked = true
 				if t.logger.Enabled(originCtx, slog.LevelError) {
-					t.logger.ErrorContext(originCtx, "origin handler panic", "panic", p)
+					t.logger.ErrorContext(originCtx, "origin handler panic", slog.Any("panic", p))
 				}
 			}
 		}()
@@ -592,7 +592,7 @@ func stateFetchOriginRevalidate(t *Titip, ctx *requestContext) stateFn {
 				if p := recover(); p != nil {
 					panicked = true
 					if t.logger.Enabled(originCtx, slog.LevelError) {
-						t.logger.ErrorContext(originCtx, "singleflight origin panic", "panic", p)
+						t.logger.ErrorContext(originCtx, "singleflight origin panic", slog.Any("panic", p))
 					}
 				}
 			}()
@@ -969,7 +969,7 @@ func (t *Titip) revalidateOriginAsync(r *http.Request, next http.Handler, primar
 	defer func() {
 		if p := recover(); p != nil {
 			if t.logger.Enabled(context.Background(), slog.LevelError) {
-				t.logger.ErrorContext(context.Background(), "background revalidation panic", "panic", p)
+				t.logger.ErrorContext(context.Background(), "background revalidation panic", slog.Any("panic", p))
 			}
 		}
 	}()
