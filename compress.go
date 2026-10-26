@@ -76,10 +76,10 @@ func (c *lz4Compressor) Compress(src []byte, dst *bytes.Buffer) error {
 
 	zw.Reset(dst)
 	if _, err := zw.Write(src); err != nil {
-		return fmt.Errorf("compress: lz4 write error: %w", err)
+		return fmt.Errorf("compress: lz4 write: %w", err)
 	}
 	if err := zw.Close(); err != nil {
-		return fmt.Errorf("compress: lz4 close error: %w", err)
+		return fmt.Errorf("compress: lz4 close: %w", err)
 	}
 	return nil
 }
@@ -100,7 +100,7 @@ func (c *lz4Compressor) Decompress(src []byte, dst *bytes.Buffer) error {
 
 	zr.Reset(br)
 	if _, err := dst.ReadFrom(zr); err != nil {
-		return fmt.Errorf("decompress: lz4 read error: %w", err)
+		return fmt.Errorf("decompress: lz4 read: %w", err)
 	}
 	return nil
 }
@@ -124,7 +124,7 @@ func (c *noneCompressor) Compress(src []byte, dst *bytes.Buffer) error {
 	}
 	_, err := dst.Write(src)
 	if err != nil {
-		return fmt.Errorf("compress: write error: %w", err)
+		return fmt.Errorf("compress: write: %w", err)
 	}
 	return nil
 }
@@ -135,7 +135,7 @@ func (c *noneCompressor) Decompress(src []byte, dst *bytes.Buffer) error {
 	}
 	_, err := dst.Write(src)
 	if err != nil {
-		return fmt.Errorf("decompress: write error: %w", err)
+		return fmt.Errorf("decompress: write: %w", err)
 	}
 	return nil
 }
@@ -184,10 +184,10 @@ func (c *zstdCompressor) Compress(src []byte, dst *bytes.Buffer) error {
 
 	zw.Reset(dst)
 	if _, err := zw.Write(src); err != nil {
-		return fmt.Errorf("compress: zstd write error: %w", err)
+		return fmt.Errorf("compress: zstd write: %w", err)
 	}
 	if err := zw.Close(); err != nil {
-		return fmt.Errorf("compress: zstd close error: %w", err)
+		return fmt.Errorf("compress: zstd close: %w", err)
 	}
 	return nil
 }
@@ -207,10 +207,10 @@ func (c *zstdCompressor) Decompress(src []byte, dst *bytes.Buffer) error {
 	}()
 
 	if err := zr.Reset(br); err != nil {
-		return fmt.Errorf("decompress: zstd reset error: %w", err)
+		return fmt.Errorf("decompress: zstd reset: %w", err)
 	}
 	if _, err := dst.ReadFrom(zr); err != nil {
-		return fmt.Errorf("decompress: zstd read error: %w", err)
+		return fmt.Errorf("decompress: zstd read: %w", err)
 	}
 	return nil
 }

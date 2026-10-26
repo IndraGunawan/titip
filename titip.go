@@ -107,7 +107,7 @@ func New(store storage.Storage, opts ...Option) (*Titip, error) {
 		processorOpts = append(processorOpts, cfg.esiOptions...)
 		proc, err := esi.NewProcessor(processorOpts...)
 		if err != nil {
-			return nil, fmt.Errorf("%w: ESI configuration error: %w", ErrInvalidOption, err)
+			return nil, fmt.Errorf("%w: ESI configuration: %w", ErrInvalidOption, err)
 		}
 		t.esiProcessor = proc
 	}

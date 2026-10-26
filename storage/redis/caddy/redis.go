@@ -88,7 +88,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 
 	client, err := rueidis.NewClient(opt)
 	if err != nil {
-		return fmt.Errorf("connect error: %w", err)
+		return fmt.Errorf("connect: %w", err)
 	}
 	r.client = client
 
@@ -99,7 +99,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	)
 	if err != nil {
 		client.Close()
-		return fmt.Errorf("init storage error: %w", err)
+		return fmt.Errorf("init storage: %w", err)
 	}
 	r.store = store
 

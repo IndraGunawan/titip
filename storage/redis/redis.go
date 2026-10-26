@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -72,7 +73,7 @@ var _ storage.Storage = (*RedisStorage)(nil)
 // New creates a new RedisStorage instance backed by the provided rueidis.Client.
 func New(client rueidis.Client, opts ...Option) (*RedisStorage, error) {
 	if client == nil {
-		return nil, fmt.Errorf("redis: client is required")
+		return nil, errors.New("redis: client is required")
 	}
 
 	cfg := &config{
@@ -304,7 +305,7 @@ func (s *RedisStorage) SetVariant(ctx context.Context, primaryKey string, meta *
 	resps := s.client.DoMulti(ctx, cmds...)
 	for i, r := range resps {
 		if err := r.Error(); err != nil && !rueidis.IsRedisNil(err) {
-			return fmt.Errorf("redis: set variant pipeline error at op %d: %w", i, err)
+			return fmt.Errorf("redis: set variant pipeline at op %d: %w", i, err)
 		}
 	}
 
