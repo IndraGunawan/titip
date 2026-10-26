@@ -28,7 +28,7 @@ type InternalFetcherFunc func(ctx context.Context, targetPath string, r *http.Re
 
 // config defines the configuration options for Edge Side Includes (ESI) processing.
 type config struct {
-	headerRequired                 bool
+	requireSurrogateControl        bool
 	internalFetcher                InternalFetcherFunc
 	maxDepth                       uint32
 	maxTimeout                     time.Duration
@@ -49,12 +49,12 @@ type config struct {
 // Option configures ESI processor parameters.
 type Option func(*config) error
 
-// WithHeaderRequired requires origin responses to explicitly advertise ESI capability
-// via Surrogate-Control: content="ESI/1.0" before fragment tags are processed.
-// By default, ESI tags are processed unconditionally.
-func WithHeaderRequired() Option {
+// WithoutSurrogateControlRequirement disables the requirement for origin responses
+// to include "Surrogate-Control" with "ESI/1.0" before fragment tags are processed.
+// By default, ESI tags are only processed when the origin response explicitly contains this header.
+func WithoutSurrogateControlRequirement() Option {
 	return func(c *config) error {
-		c.headerRequired = true
+		c.requireSurrogateControl = false
 		return nil
 	}
 }

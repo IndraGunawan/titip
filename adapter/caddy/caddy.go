@@ -126,7 +126,7 @@ type CacheKey struct {
 // ESIConfig defines ESI parameters in Caddy.
 type ESIConfig struct {
 	Enabled                        *bool    `json:"enabled,omitempty"`
-	HeaderRequired                 *bool    `json:"header_required,omitempty"`
+	RequireSurrogateControl        *bool    `json:"require_surrogate_control,omitempty"`
 	MaxDepth                       *uint32  `json:"max_depth,omitempty"`
 	MaxTimeout                     string   `json:"max_timeout,omitempty"`
 	MaxConcurrentRequests          *int     `json:"max_concurrent_requests,omitempty"`
@@ -695,16 +695,16 @@ func (e *ESIConfig) unmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 			}
 			e.Enabled = &val
-		case "header_required":
+		case "require_surrogate_control":
 			val := true
 			if d.NextArg() {
 				var err error
 				val, err = strconv.ParseBool(d.Val())
 				if err != nil {
-					return d.Errf("invalid boolean value for esi header_required: %v", err)
+					return d.Errf("invalid boolean value for esi require_surrogate_control: %v", err)
 				}
 			}
-			e.HeaderRequired = &val
+			e.RequireSurrogateControl = &val
 		case "max_depth":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -845,8 +845,8 @@ func applyESIConfig(opts *[]esi.Option, src *ESIConfig) error {
 	if src == nil {
 		return nil
 	}
-	if src.HeaderRequired != nil && *src.HeaderRequired {
-		*opts = append(*opts, esi.WithHeaderRequired())
+	if src.RequireSurrogateControl != nil && !*src.RequireSurrogateControl {
+		*opts = append(*opts, esi.WithoutSurrogateControlRequirement())
 	}
 	if src.MaxDepth != nil {
 		*opts = append(*opts, esi.WithMaxDepth(*src.MaxDepth))

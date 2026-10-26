@@ -14,10 +14,11 @@ import (
 
 func TestConfig_Options(t *testing.T) {
 	cfg := config{
-		maxDepth:              3,
-		maxTimeout:            30 * time.Second,
-		maxConcurrentRequests: 8,
-		maxResponseSize:       10 * 1024 * 1024,
+		requireSurrogateControl: true,
+		maxDepth:                3,
+		maxTimeout:              30 * time.Second,
+		maxConcurrentRequests:   8,
+		maxResponseSize:         10 * 1024 * 1024,
 	}
 
 	dummyFetcher := func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
@@ -28,7 +29,7 @@ func TestConfig_Options(t *testing.T) {
 	httpClient := &http.Client{}
 	reg := prometheus.NewRegistry()
 	opts := []Option{
-		WithHeaderRequired(),
+		WithoutSurrogateControlRequirement(),
 		WithInternalFetcher(dummyFetcher),
 		WithMaxDepth(5),
 		WithMaxTimeout(10 * time.Second),
@@ -51,8 +52,8 @@ func TestConfig_Options(t *testing.T) {
 		}
 	}
 
-	if !cfg.headerRequired {
-		t.Errorf("expected headerRequired to be true")
+	if cfg.requireSurrogateControl {
+		t.Errorf("expected requireSurrogateControl to be false")
 	}
 	if cfg.internalFetcher == nil {
 		t.Errorf("expected internalFetcher to be non-nil")

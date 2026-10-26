@@ -88,6 +88,7 @@ func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 		case "/page":
 			w.Header().Set("Content-Type", "text/html")
 			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprint(w, `<div>Page Content: <esi:include src="/api/fragment" /></div>`)
 		case "/api/fragment":
@@ -108,6 +109,7 @@ func TestCaddyHandler_ESI_MultiRouteResolution(t *testing.T) {
 		if r.URL.Path == "/page" {
 			w.Header().Set("Content-Type", "text/html")
 			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprint(w, `<div>Page Content: <esi:include src="/api/fragment" /></div>`)
 			return nil
@@ -152,6 +154,7 @@ func TestCaddyHandler_ESI_ConcurrentReplacerSafety(t *testing.T) {
 		case "/multi-frag":
 			w.Header().Set("Content-Type", "text/html")
 			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprint(w, `<doc><esi:include src="/f1" /><esi:include src="/f2" /><esi:include src="/f3" /><esi:include src="/f4" /></doc>`)
 		case "/f1":
@@ -250,6 +253,7 @@ func TestCaddyHandler_ESI_Subrequest404_FallbackToOutbound(t *testing.T) {
 		if r.URL.Path == "/hybrid-page" {
 			w.Header().Set("Content-Type", "text/html")
 			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprint(w, `<div><esi:include src="/local-part" /> + <esi:include src="/remote-alb-part" /></div>`)
 			return nil
@@ -279,5 +283,52 @@ func TestCaddyHandler_ESI_Subrequest404_FallbackToOutbound(t *testing.T) {
 
 	if outboundCalls.Load() != 1 {
 		t.Errorf("expected 1 outbound call to ALB for 404 subrequest, got %d", outboundCalls.Load())
+	}
+}
+
+func TestCaddyHandler_ESI_RequireSurrogateControl_False(t *testing.T) {
+	t.Parallel()
+	caddyfileInput := `titip {
+		storage test
+		esi {
+			enabled true
+			require_surrogate_control false
+		}
+	}`
+
+	h, cleanup := parseAndProvisionHandler(t, caddyfileInput)
+	defer cleanup()
+
+	rootServer := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		switch r.URL.Path {
+		case "/no-header-page":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			// Explicitly omit Surrogate-Control
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<div><esi:include src="/sub-frag" /></div>`)
+		case "/sub-frag":
+			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `<span>Parsed Without Header</span>`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+		return nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/no-header-page", nil)
+	ctx := context.WithValue(req.Context(), caddyhttp.ServerCtxKey, rootServer)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	if err := h.ServeHTTP(rec, req, rootServer); err != nil {
+		t.Fatalf("serve failed: %v", err)
+	}
+
+	expected := `<div><span>Parsed Without Header</span></div>`
+	if rec.Body.String() != expected {
+		t.Fatalf("expected %q, got %q", expected, rec.Body.String())
 	}
 }

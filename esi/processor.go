@@ -187,11 +187,12 @@ type Processor struct {
 // NewProcessor constructs a new ESI Processor from the provided options.
 func NewProcessor(opts ...Option) (*Processor, error) {
 	config := config{
-		maxDepth:              3,
-		maxTimeout:            30 * time.Second,
-		maxConcurrentRequests: 8,
-		maxResponseSize:       10 * 1024 * 1024,
-		logger:                slog.Default(),
+		requireSurrogateControl: true,
+		maxDepth:                3,
+		maxTimeout:              30 * time.Second,
+		maxConcurrentRequests:   8,
+		maxResponseSize:         10 * 1024 * 1024,
+		logger:                  slog.Default(),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -256,10 +257,10 @@ func (p *Processor) AddSurrogateCapability(h http.Header, deviceToken string) {
 }
 
 // CanProcess reports whether the response headers satisfy ESI processing criteria.
-// By default, it returns true; when WithHeaderRequired() is configured, it verifies
-// that Surrogate-Control contains "ESI/1.0".
+// By default, it verifies that Surrogate-Control contains "ESI/1.0".
+// When WithoutSurrogateControlRequirement() is configured, it returns true unconditionally.
 func (p *Processor) CanProcess(h http.Header) bool {
-	if !p.config.headerRequired {
+	if !p.config.requireSurrogateControl {
 		return true
 	}
 	return h != nil && strings.Contains(h.Get(headerSurrogateControl), "ESI/1.0")

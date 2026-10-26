@@ -485,7 +485,7 @@ func TestProcessor_ScanAndProcessFragments(t *testing.T) {
 func TestProcessor_CanProcess(t *testing.T) {
 	tests := []struct {
 		header   http.Header
-		required bool
+		expected bool
 	}{
 		{nil, false},
 		{http.Header{}, false},
@@ -495,14 +495,14 @@ func TestProcessor_CanProcess(t *testing.T) {
 	}
 
 	procDefault := newTestProcessor(t)
-	procRequired := newTestProcessor(t, WithHeaderRequired())
+	procWithoutReq := newTestProcessor(t, WithoutSurrogateControlRequirement())
 
 	for _, tt := range tests {
-		if !procDefault.CanProcess(tt.header) {
-			t.Errorf("procDefault.CanProcess(%v) = false, want true", tt.header)
+		if got := procDefault.CanProcess(tt.header); got != tt.expected {
+			t.Errorf("procDefault.CanProcess(%v) = %v, want %v", tt.header, got, tt.expected)
 		}
-		if got := procRequired.CanProcess(tt.header); got != tt.required {
-			t.Errorf("procRequired.CanProcess(%v) = %v, want %v", tt.header, got, tt.required)
+		if !procWithoutReq.CanProcess(tt.header) {
+			t.Errorf("procWithoutReq.CanProcess(%v) = false, want true", tt.header)
 		}
 	}
 }

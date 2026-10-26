@@ -219,6 +219,7 @@ func TestCaddy_ESI(t *testing.T) {
 		w.Header().Set("Cache-Control", "public, max-age=60")
 		switch r.URL.Path {
 		case "/page":
+			w.Header().Set("Surrogate-Control", "content=\"ESI/1.0\"")
 			_, _ = fmt.Fprint(w, `<div>Page: <esi:include src="/fragment" /></div>`)
 		case "/fragment":
 			_, _ = fmt.Fprint(w, `<span>Dynamic Fragment</span>`)
