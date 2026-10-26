@@ -107,7 +107,7 @@ func New(store storage.Storage, opts ...Option) (*Titip, error) {
 		processorOpts = append(processorOpts, cfg.esiOptions...)
 		proc, err := esi.NewProcessor(processorOpts...)
 		if err != nil {
-			return nil, fmt.Errorf("%w: ESI configuration error: %w", ErrInvalidOption, err)
+			return nil, fmt.Errorf("%w: ESI configuration: %w", ErrInvalidOption, err)
 		}
 		t.esiProcessor = proc
 	}
@@ -142,7 +142,7 @@ func (t *Titip) Purge(ctx context.Context, target string, opts ...PurgeOption) (
 	isExact, keys, err := buildPurgeOperation(target, &t.config.cacheKey)
 	if err != nil {
 		t.metrics.recordPurge("url", mode, "error", 0)
-		return 0, fmt.Errorf("titip: purge parse error: %w", err)
+		return 0, fmt.Errorf("titip: purge parse: %w", err)
 	}
 	if len(keys) == 0 {
 		return 0, nil
@@ -204,7 +204,7 @@ func (t *Titip) PurgePrefix(ctx context.Context, prefix string, opts ...PurgeOpt
 	keys, err := buildPurgePrefixOperation(prefix, &t.config.cacheKey)
 	if err != nil {
 		t.metrics.recordPurge("prefix", mode, "error", 0)
-		return 0, fmt.Errorf("titip: purge prefix error: %w", err)
+		return 0, fmt.Errorf("titip: purge prefix: %w", err)
 	}
 	if len(keys) == 0 {
 		return 0, nil
@@ -307,7 +307,7 @@ func (t *Titip) Close(ctx context.Context) error {
 	}
 
 	if closeErr != nil {
-		closeErr = fmt.Errorf("titip: storage close error: %w", closeErr)
+		closeErr = fmt.Errorf("titip: storage close: %w", closeErr)
 	}
 	return errors.Join(waitErr, closeErr)
 }

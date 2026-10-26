@@ -157,8 +157,12 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
 
 ## 6. Error Handling, Logging & Panic Recovery Standards
 
-1. **Structured Error Wrapping**:
-   - Prefix all internal errors consistently: `fmt.Errorf("titip: <subsystem>: <operation>: %w", err)` (e.g. `fmt.Errorf("titip: storage: get metadata: %w", err)`).
+1. **Structured Error Wrapping & Prefix Layering**:
+   - **Sentinel Errors**: Exported package sentinels must have the package prefix (e.g. `ErrInvalidOption = errors.New("titip: invalid option")`, `ErrStorageRequired = errors.New("titip: storage is required")`).
+   - **Top-Level Public API Boundary**: Public entrypoint methods on exported types (e.g. `*Titip.Purge`, `*Titip.Close`) wrap errors returned to callers with the package name and operation: `fmt.Errorf("titip: <operation>: %w", err)`.
+   - **Submodules & Packages**: Submodules (e.g. `storage/redis`, `esi`) prefix with their own subsystem name (`fmt.Errorf("redis: <operation>: %w", err)`), allowing callers to wrap cleanly with operational context without prefix collisions.
+   - **Internal Helpers & Components**: Leaf functions, parser helpers, and internal engine structs (e.g. compressors, purge URL builder) describe the specific operational failure without hardcoding top-level package prefix `titip:` to prevent double-prefix stutter (`titip: ...: titip: ...`).
+   - **Clean Verbiage**: Prefer `titip: <operation>: %w` (e.g. `titip: purge prefix: %w`) over redundant `error` suffixes (e.g. `titip: purge prefix error: %w`).
 2. **Zero `fmt.Print` / Standard `log` in Library Code**:
    - Never use `fmt.Println` or the standard `log` package in core code.
    - Always log through the configured `*slog.Logger` with structured key-value attributes (`slog.String("key", key)`, `slog.Duration("dur", elapsed)`).

@@ -198,7 +198,10 @@ func NewProcessor(opts ...Option) (*Processor, error) {
 			return nil, fmt.Errorf("%w: option cannot be nil", ErrInvalidOption)
 		}
 		if err := opt(&config); err != nil {
-			return nil, err
+			if errors.Is(err, ErrInvalidOption) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w: %w", ErrInvalidOption, err)
 		}
 	}
 

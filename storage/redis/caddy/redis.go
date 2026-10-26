@@ -2,6 +2,7 @@ package caddy
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -48,7 +49,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 
 	if r.URL != "" {
 		if len(r.Address) > 0 || r.Username != "" || r.Password != "" || r.dbSet || r.DB != 0 {
-			return fmt.Errorf("cannot combine \"url\" with discrete connection parameters (address, username, password, db); specify connection parameters inside the URL (e.g. redis://user:pass@host:port/db)")
+			return errors.New("cannot combine \"url\" with discrete connection parameters (address, username, password, db); specify connection parameters inside the URL (e.g. redis://user:pass@host:port/db)")
 		}
 
 		parsedOpt, err := rueidis.ParseURL(r.URL)
@@ -67,7 +68,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 			}
 		}
 		if len(addrs) == 0 {
-			return fmt.Errorf("connection configuration required (specify either 'url' or 'address')")
+			return errors.New("connection configuration required (specify either 'url' or 'address')")
 		}
 
 		opt = rueidis.ClientOption{
@@ -88,7 +89,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 
 	client, err := rueidis.NewClient(opt)
 	if err != nil {
-		return fmt.Errorf("connect error: %w", err)
+		return fmt.Errorf("connect: %w", err)
 	}
 	r.client = client
 
@@ -99,7 +100,7 @@ func (r *RedisStorage) Provision(ctx caddy.Context) error {
 	)
 	if err != nil {
 		client.Close()
-		return fmt.Errorf("init storage error: %w", err)
+		return fmt.Errorf("init storage: %w", err)
 	}
 	r.store = store
 

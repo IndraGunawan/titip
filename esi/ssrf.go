@@ -45,14 +45,14 @@ func validateURLScheme(rawURL string) (*url.URL, error) {
 	if strings.HasPrefix(rawURL, "/") {
 		parsed, err := url.Parse(rawURL)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", errInvalidScheme, err)
+			return nil, fmt.Errorf("%w: %w", errInvalidScheme, err)
 		}
 		return parsed, nil
 	}
 
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errInvalidScheme, err)
+		return nil, fmt.Errorf("%w: %w", errInvalidScheme, err)
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)

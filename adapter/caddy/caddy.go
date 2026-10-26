@@ -203,18 +203,18 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 		sMod, ok := val.(StorageModule)
 		if !ok {
-			return fmt.Errorf("module does not implement StorageModule")
+			return errors.New("module does not implement StorageModule")
 		}
 		h.storageMod = sMod
 		store = sMod.Storage()
 	} else if app != nil && app.storageMod != nil {
 		store = app.storageMod.Storage()
 	} else {
-		return fmt.Errorf("storage configuration is required (neither route nor global storage provided)")
+		return errors.New("storage configuration is required (neither route nor global storage provided)")
 	}
 
 	if store == nil {
-		return fmt.Errorf("storage backend failed to initialize")
+		return errors.New("storage backend failed to initialize")
 	}
 
 	// 2. Configure Titip options
@@ -430,7 +430,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // Validate ensures the handler is configured properly.
 func (h *Handler) Validate() error {
 	if h.instance == nil {
-		return fmt.Errorf("instance was not provisioned")
+		return errors.New("instance was not provisioned")
 	}
 	return nil
 }
