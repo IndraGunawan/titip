@@ -55,7 +55,10 @@ import (
 )
 
 func main() {
-    proc := esi.NewProcessor()
+    proc, err := esi.NewProcessor()
+    if err != nil {
+        panic(err)
+    }
 
     html := []byte(`
         <html>

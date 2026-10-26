@@ -356,7 +356,7 @@ cache, err := titip.New(
 | `<esi:include src="...">Fallback HTML</esi:include>` | Paired include with inline fallback block. |
 | `<!--esi <div>Visible only when ESI active</div> -->` | Unescapes enclosed HTML comments when ESI is enabled. |
 | `<esi:remove><p>Placeholder</p></esi:remove>` | Strips placeholder content intended for non-ESI clients. |
-| `<!--esi-comment text="..." -->` | Strips internal comments without emitting bytes. |
+| `<esi:comment text="..." />` | Strips internal comments without emitting bytes. |
 
 ### ESI Functional Options (`esi.Option`)
 
