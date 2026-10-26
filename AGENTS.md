@@ -1,7 +1,7 @@
 # AGENTS.md — AI Agent Guidelines & Operating Manual
 
 > **Repository**: `github.com/indragunawan/titip`
-> **Mission**: Build a high-performance, low-allocation, RFC-7234 & RFC-9211 compliant HTTP caching middleware in Go.
+> **Mission**: Build a high-performance, low-allocation, RFC-compliant (RFC 9111, RFC 9211, RFC 9213, RFC 5861, RFC 9110) HTTP caching middleware in Go.
 
 ---
 
@@ -44,7 +44,7 @@
 ### What AI Agent MUST ALWAYS Do (Required Behaviors)
 
 1. **Adhere to Master Specifications & Architecture**:
-   - Always refer to [README.md](README.md) and standard RFC specifications (RFC 7234, RFC 9111, RFC 9211) as the source of truth for architecture and specifications.
+   - Always refer to [README.md](README.md) and standard RFC specifications (RFC 9111, RFC 7234, RFC 9211, RFC 9213, RFC 5861, RFC 9110) as the source of truth for architecture and specifications.
 2. **Practice Test-Driven Development (TDD) & Zero-Race Concurrency**:
    - Write automated unit, concurrency, and race condition tests for every feature before declaring it complete.
    - Run tests with continuous race detection: `go test -race -count=100 ./...`.

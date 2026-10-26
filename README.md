@@ -9,16 +9,18 @@ Designed for high-concurrency services, Titip reduces backend load by serving ca
 
 ## Key Features
 
-* **Low-Allocation Design**: Reuses internal memory buffers and decompression streams to minimize heap allocations under high concurrency.
-* **Storage Compression**: Built-in **LZ4** (default) and **Zstandard** (`zstd`) compression for stored variant bodies to reduce memory footprint and storage I/O, with pluggable custom codec support.
-* **Fail-Open Resilience**: Storage outages, decompression errors, or upstream panics safely bypass to the origin handler (`fwd=bypass`) or serve stale cache without terminating the process.
-* **Strict Privacy & Explicit Opt-In**: Titip never caches heuristically. Responses must explicitly declare a freshness lifetime (`max-age`, `s-maxage`, or `Expires`). Cold URL misses execute independently without singleflight coalescing, and responses with `Set-Cookie` or `private` directives bypass caching unconditionally.
-* **RFC-7234, RFC-9111 & RFC-9213 Compliant**: Implements the official Age & Freshness calculation standard (apparent age, corrected initial age, resident time, clock-skew correction, and multi-variant `Vary` header negotiation).
-* **Tiered Cache-Control (RFC 9213)**: Supports targeted header resolution (`Titip-Cache-Control` → `CDN-Cache-Control` → `Cache-Control`), allowing backends to configure edge caching independently from browser caching.
-* **RFC-9211 `Cache-Status` Observability**: Structured diagnostics (`Cache-Status: titip; hit; ttl=295`, `fwd=stale`, `fwd=bypass`) with multi-tier cache chaining.
-* **Edge Side Includes (ESI)**: Concurrent fragment assembly, in-process routing, recursive loop protection, and SSRF prevention.
-* **Granular Cache Purge API**: Invalidation via programmatic Go API (exact URL, wildcard prefixes, surrogate `Cache-Tag`, soft-purge, or full cache purge).
-* **Pluggable Architecture**: Standard `net/http` middleware with modular framework adapters and decoupled storage engines.
+* **Core HTTP Caching (RFC 9111 & RFC 7234)**: Full Age & Freshness calculation algorithms (apparent age, corrected initial age, resident time, clock-skew correction), multi-variant `Vary` negotiation, authenticated caching, and mutating method invalidation.
+* **Stale Content & Background Revalidation (RFC 5861)**: Non-blocking asynchronous origin revalidation (`stale-while-revalidate`) and graceful fallback on origin errors, timeouts, or panics (`stale-if-error`).
+* **Tiered & Targeted Cache-Control (RFC 9213)**: Targeted header precedence (`Titip-Cache-Control` → `CDN-Cache-Control` → `Cache-Control`), allowing edge caching to be configured independently from browser caching.
+* **Cache-Status Observability (RFC 9211)**: Structured diagnostics (`Cache-Status: titip; hit; ttl=295`, `fwd=stale`, `fwd=bypass`) with multi-tier cache chaining.
+* **Conditional Requests & Instant 304s (RFC 9110 & RFC 7232)**: Downstream `If-None-Match` and `If-Modified-Since` validation evaluated directly from cached metadata without reading body bytes.
+* **Low-Allocation & Streaming Engine**: Buffer recycling, zero per-request hashing, and streaming decompression minimize heap allocations under high concurrency.
+* **Storage Compression**: Built-in **LZ4** (default) and **Zstandard** (`zstd`) compression for stored variant bodies, with automatic compression bypass for pre-compressed media formats and pluggable custom codecs.
+* **Strict Privacy & Anti-Leak Safety**: Zero heuristic caching. Cold URL misses execute independently without singleflight coalescing, and responses with `Set-Cookie` or `private` directives bypass caching unconditionally.
+* **Fail-Open Resilience**: Storage outages, decompression errors, or upstream panics safely bypass to the origin handler (`fwd=bypass`) or serve stale cache without crashing the process.
+* **Granular Cache Purge API**: Invalidation via programmatic Go API (exact URL, wildcard prefixes, surrogate `Cache-Tag`, soft-purge, or namespace-wide purge).
+* **Edge Side Includes (ESI)**: Pre-parsed template indexing (zero rescanning on cache hits), concurrent fragment assembly, in-process routing, and SSRF prevention.
+* **Pluggable Architecture**: Standard `net/http` middleware with modular framework adapters (native Caddy web server integration) and decoupled storage drivers (Redis 7.4+, Valkey 9.0+, DragonflyDB).
 
 ## Architecture
 
@@ -326,9 +328,11 @@ Directives like `Cache-Control: public` without a `max-age` grant permission for
 
 ## Edge Side Includes (ESI)
 
-Titip includes an **Edge Side Includes (ESI)** engine with parallel fragment fetching, circular loop protection, and SSRF prevention.
+Titip includes a high-performance **Edge Side Includes (ESI)** engine featuring pre-parsed template indexing:
 
-When ESI is active, Titip advertises capability to upstream origins by sending `Surrogate-Capability: titip="ESI/1.0"` per Edge Side Includes (ESI) specifications. Origins can respond with `Surrogate-Control: content="ESI/1.0"` to direct ESI processing.
+* **Zero Rescan on Cache Hits**: Document structure and fragment byte offsets are parsed once upon storage and preserved in cache metadata (`VariantInfo.EsiFragments`). Cache hits stream spliced fragments directly from memory pools without rescanning the template body.
+* **Surrogate Handshake**: Titip advertises `Surrogate-Capability: titip="ESI/1.0"` to upstream origins, and optionally activates processing only when the origin responds with `Surrogate-Control: content="ESI/1.0"` (`WithHeaderRequired()`), bypassing unnecessary body parsing for non-ESI content.
+* **Concurrency & Safety**: Parallel fragment fetching with circular loop protection, strict timeouts, and SSRF filtering for external URLs.
 
 For standalone package documentation and options reference, see [**ESI Package Guide**](esi/README.md).
 
