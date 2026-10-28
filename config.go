@@ -57,6 +57,31 @@ const (
 	statusDynamic = "DYNAMIC"
 )
 
+// RFC-9211 Cache-Status header constants.
+// rfc9211Prefix defines the cache identifier ("titip; ").
+// Static values are folded at compile-time to eliminate runtime heap allocations.
+const (
+	rfc9211Prefix = "titip; "
+
+	rfc9211Hit                     = rfc9211Prefix + "hit"
+	rfc9211HitTTLPrefix            = rfc9211Prefix + "hit; ttl="
+	rfc9211FwdMethod               = rfc9211Prefix + "fwd=method"
+	rfc9211FwdWebsocket            = rfc9211Prefix + "fwd=bypass; detail=websocket-upgrade"
+	rfc9211FwdSSE                  = rfc9211Prefix + "fwd=bypass; detail=sse-stream"
+	rfc9211FwdSSEResponse          = rfc9211Prefix + "fwd=bypass; detail=sse-response"
+	rfc9211FwdRange                = rfc9211Prefix + "fwd=bypass; detail=range-request"
+	rfc9211FwdNoStore              = rfc9211Prefix + "fwd=request; detail=no-store"
+	rfc9211FwdMaxAgeZero           = rfc9211Prefix + "fwd=request; detail=max-age-0"
+	rfc9211FwdPragmaNoCache        = rfc9211Prefix + "fwd=request; detail=pragma-no-cache"
+	rfc9211FwdStorageFallback      = rfc9211Prefix + "fwd=bypass; detail=storage-fallback"
+	rfc9211FwdPreconditionFailed   = rfc9211Prefix + "fwd=bypass; detail=precondition-failed"
+	rfc9211FwdOriginPanic          = rfc9211Prefix + "fwd=bypass; detail=origin-panic"
+	rfc9211MissOnlyIfCached        = rfc9211Prefix + "miss; detail=only-if-cached"
+	rfc9211MissOnlyIfCachedExpired = rfc9211Prefix + "miss; detail=only-if-cached-expired"
+	rfc9211UpdatingSWR             = rfc9211Prefix + "hit; stale; detail=swr"
+	rfc9211StaleIfError            = rfc9211Prefix + "hit; stale; detail=stale-if-error"
+)
+
 // config defines the configuration parameters for the Titip middleware.
 type config struct {
 	// Storage engine & persistence
