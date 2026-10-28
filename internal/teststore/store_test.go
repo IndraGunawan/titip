@@ -339,3 +339,69 @@ func BenchmarkStore_ParallelReads(b *testing.B) {
 		}
 	})
 }
+
+func TestStore_ZeroCopy(t *testing.T) {
+	t.Parallel()
+	s := New()
+	s.SetZeroCopy(true)
+	if !s.ZeroCopy() {
+		t.Fatal("expected ZeroCopy to be true")
+	}
+
+	ctx := context.Background()
+	pk := "http://example.com/api/zerocopy"
+	meta := &pb.CacheMetadata{
+		PrimaryKey:      pk,
+		VaryHeaderNames: []string{"Accept-Encoding"},
+		Tags:            []string{"fast"},
+	}
+	variant := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+	body := []byte("zerocopy payload")
+
+	if err := s.SetVariant(ctx, pk, meta, variant, body, time.Hour); err != nil {
+		t.Fatalf("SetVariant failed: %v", err)
+	}
+
+	gotMeta, _, err := s.GetMeta(ctx, pk)
+	if err != nil || gotMeta == nil {
+		t.Fatalf("GetMeta failed: %v", err)
+	}
+	if gotMeta != meta {
+		t.Errorf("expected pointer equality for meta in zero-copy mode")
+	}
+	if gotMeta.Variants["default"] != variant {
+		t.Errorf("expected pointer equality for variant in zero-copy mode")
+	}
+
+	gotVariant, gotBody, err := s.GetVariant(ctx, pk, "default")
+	if err != nil || gotVariant == nil {
+		t.Fatalf("GetVariant failed: %v", err)
+	}
+	if gotVariant != variant {
+		t.Errorf("expected pointer equality for variant in zero-copy mode")
+	}
+	if len(gotBody) != len(body) || &gotBody[0] != &body[0] {
+		t.Errorf("expected identical byte slice backing array in zero-copy mode")
+	}
+}
+
+func BenchmarkStore_ZeroCopy_Reads(b *testing.B) {
+	s := New()
+	s.SetZeroCopy(true)
+	ctx := context.Background()
+	pk := "http://example.com/api/zerocopy-bench"
+	meta := &pb.CacheMetadata{
+		PrimaryKey:      pk,
+		VaryHeaderNames: []string{"Accept-Encoding"},
+	}
+	variant := &pb.VariantInfo{VariantKey: "default", StatusCode: 200}
+	body := []byte("bench payload data")
+	_ = s.SetVariant(ctx, pk, meta, variant, body, time.Hour)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _, _ = s.GetMeta(ctx, pk)
+		_, _, _ = s.GetVariant(ctx, pk, "default")
+	}
+}

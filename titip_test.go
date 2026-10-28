@@ -160,7 +160,7 @@ func (r *testResponse) assertHeaderMissing(key string) *testResponse {
 }
 
 func BenchmarkCacheHit(b *testing.B) {
-	_, _, mw := setupTestTitip(b)
+	store, _, mw := setupTestTitip(b)
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerContentType, "application/json")
@@ -175,6 +175,7 @@ func BenchmarkCacheHit(b *testing.B) {
 	// Prime cache
 	recPrime := httptest.NewRecorder()
 	handler.ServeHTTP(recPrime, req)
+	store.SetZeroCopy(true)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -186,7 +187,7 @@ func BenchmarkCacheHit(b *testing.B) {
 }
 
 func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
-	_, _, mw := setupTestTitip(b)
+	store, _, mw := setupTestTitip(b)
 
 	originHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerCacheControl, "public, max-age=300")
@@ -200,6 +201,7 @@ func BenchmarkMiddleware_ParallelThroughput(b *testing.B) {
 	// Prime
 	recPrime := httptest.NewRecorder()
 	handler.ServeHTTP(recPrime, req)
+	store.SetZeroCopy(true)
 
 	b.ReportAllocs()
 	b.ResetTimer()
