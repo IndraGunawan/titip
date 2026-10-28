@@ -33,10 +33,25 @@ type metaEntry struct {
 	expiresAt  time.Time
 }
 
-// Store is a thread-safe, in-memory implementation of storage.Storage designed for unit testing.
+// Store is a thread-safe, in-memory implementation of storage.Storage used for tests and benchmarks.
+//
+// It serves two distinct purposes:
+//
+//  1. Functional & Concurrency Testing (Default: zeroCopy = false):
+//     By default, GetMeta and GetVariant return deep copies via proto.Clone and bytes.Clone.
+//     This behaves like an external database (such as Redis) where every read is independent.
+//     It guarantees that tests modifying headers, soft-purging entries, or running under
+//     the race detector (go test -race) never accidentally mutate shared data in-memory.
+//
+//  2. Middleware Benchmarking (zeroCopy = true via SetZeroCopy):
+//     In micro-benchmarks (like BenchmarkCacheHit), the goal is to measure Titip's actual pipeline
+//     (routing, cache key generation, RFC freshness calculations, and buffer reuse) rather than
+//     measuring how fast proto.Clone copies memory. Because reading cached data is read-only,
+//     returning pointers directly eliminates mock overhead and gives an accurate measurement of Titip itself.
 type Store struct {
 	mu       sync.RWMutex
 	closed   bool
+	zeroCopy bool
 	meta     map[string]*metaEntry
 	variants map[string]map[string]*variantEntry
 	tagIndex map[string]map[string]struct{} // tag -> map[primaryKey]struct{}
@@ -63,6 +78,38 @@ func (s *Store) SetClosed(closed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = closed
+}
+
+// SetZeroCopy enables or disables returning pointers directly without cloning.
+// Used in benchmarks so proto.Clone overhead does not skew middleware performance.
+func (s *Store) SetZeroCopy(zeroCopy bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.zeroCopy = zeroCopy
+	if zeroCopy {
+		now := time.Now()
+		for pk, entry := range s.meta {
+			if entry.meta != nil {
+				if vMap, ok := s.variants[pk]; ok {
+					if entry.meta.Variants == nil {
+						entry.meta.Variants = make(map[string]*pb.VariantInfo, len(vMap))
+					}
+					for vk, vEntry := range vMap {
+						if vEntry.expiresAt.IsZero() || now.Before(vEntry.expiresAt) {
+							entry.meta.Variants[vk] = vEntry.variant
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// ZeroCopy reports whether zero-copy mode is enabled.
+func (s *Store) ZeroCopy() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.zeroCopy
 }
 
 // SetGetMetaHook sets a custom hook for GetMeta operations.
@@ -136,6 +183,10 @@ func (s *Store) GetMeta(ctx context.Context, primaryKey string) (*pb.CacheMetada
 		return nil, false, nil
 	}
 
+	if s.zeroCopy {
+		return entry.meta, entry.softPurged, nil
+	}
+
 	clonedMeta := proto.Clone(entry.meta).(*pb.CacheMetadata)
 	if vMap, hasVariants := s.variants[primaryKey]; hasVariants {
 		clonedMeta.Variants = make(map[string]*pb.VariantInfo, len(vMap))
@@ -182,6 +233,10 @@ func (s *Store) GetVariant(ctx context.Context, primaryKey, variantKey string) (
 		return nil, nil, nil
 	}
 
+	if s.zeroCopy {
+		return entry.variant, entry.body, nil
+	}
+
 	return proto.Clone(entry.variant).(*pb.VariantInfo), bytes.Clone(entry.body), nil
 }
 
@@ -209,12 +264,20 @@ func (s *Store) SetVariant(ctx context.Context, primaryKey string, meta *pb.Cach
 			existingMeta.expiresAt = expiresAt
 		}
 		if meta != nil {
-			existingMeta.meta = proto.Clone(meta).(*pb.CacheMetadata)
+			if s.zeroCopy {
+				existingMeta.meta = meta
+			} else {
+				existingMeta.meta = proto.Clone(meta).(*pb.CacheMetadata)
+			}
 		}
 		existingMeta.softPurged = false
 	} else {
+		m := meta
+		if !s.zeroCopy && meta != nil {
+			m = proto.Clone(meta).(*pb.CacheMetadata)
+		}
 		s.meta[primaryKey] = &metaEntry{
-			meta:       proto.Clone(meta).(*pb.CacheMetadata),
+			meta:       m,
 			softPurged: false,
 			expiresAt:  expiresAt,
 		}
@@ -242,10 +305,23 @@ func (s *Store) SetVariant(ctx context.Context, primaryKey string, meta *pb.Cach
 		variant.VariantKey = "default"
 	}
 
-	s.variants[primaryKey][variantKey] = &variantEntry{
-		variant:   proto.Clone(variant).(*pb.VariantInfo),
-		body:      bytes.Clone(body),
+	varEntry := &variantEntry{
 		expiresAt: expiresAt,
+	}
+	if s.zeroCopy {
+		varEntry.variant = variant
+		varEntry.body = body
+	} else {
+		varEntry.variant = proto.Clone(variant).(*pb.VariantInfo)
+		varEntry.body = bytes.Clone(body)
+	}
+	s.variants[primaryKey][variantKey] = varEntry
+
+	if s.zeroCopy && s.meta[primaryKey].meta != nil {
+		if s.meta[primaryKey].meta.Variants == nil {
+			s.meta[primaryKey].meta.Variants = make(map[string]*pb.VariantInfo)
+		}
+		s.meta[primaryKey].meta.Variants[variantKey] = varEntry.variant
 	}
 
 	return nil

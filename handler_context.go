@@ -63,16 +63,13 @@ func releaseRequestContext(ctx *requestContext) {
 	requestContextPool.Put(ctx)
 }
 
-func (t *Titip) emitCacheStatus(ctx *requestContext, simpleStatus, rfc9211Detail string) {
+func (t *Titip) emitCacheStatus(ctx *requestContext, simpleStatus, rfc9211Value string) {
 	w := ctx.w
 	switch t.config.cacheStatusMode {
 	case CacheStatusRFC9211:
-		titipStatus := "titip; " + rfc9211Detail
-		if len(w.Header().Values(headerCacheStatus)) > 0 {
-			// RFC 9211 §2: Multi-cache chaining - append to existing Cache-Status header
-			w.Header().Add(headerCacheStatus, titipStatus)
-		} else {
-			w.Header().Set(headerCacheStatus, titipStatus)
+		if rfc9211Value != "" {
+			// RFC 9211 §2: Multi-cache chaining - append to existing or set new Cache-Status header
+			w.Header().Add(headerCacheStatus, rfc9211Value)
 		}
 	case CacheStatusSimple:
 		// Simple status replaces upstream header with Titip's definitive local status
