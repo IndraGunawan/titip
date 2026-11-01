@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	proto "github.com/indragunawan/titip/proto"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -658,11 +659,18 @@ func TestProcessor_SurrogateCapability(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, got)
 	}
 
-	// Default deviceID when empty is "esi"
+	// Default deviceID when empty is "titip"
 	h3 := make(http.Header)
 	proc.AddSurrogateCapability(h3, "")
-	if got := h3.Get(headerSurrogateCapability); got != `esi="ESI/1.0"` {
-		t.Errorf("expected default deviceID esi, got %q", got)
+	if got := h3.Get(headerSurrogateCapability); got != `titip="ESI/1.0"` {
+		t.Errorf("expected default deviceID titip, got %q", got)
+	}
+
+	// Explicit custom deviceID "esi"
+	h4 := make(http.Header)
+	proc.AddSurrogateCapability(h4, "esi")
+	if got := h4.Get(headerSurrogateCapability); got != `esi="ESI/1.0"` {
+		t.Errorf("expected custom deviceID esi, got %q", got)
 	}
 }
 
@@ -1250,4 +1258,82 @@ func TestProcessor_InlineCommentUnescape(t *testing.T) {
 			t.Errorf("got %q, want %q", string(res.Body()), expected)
 		}
 	})
+}
+
+func TestHasDuplicateURLs(t *testing.T) {
+	tests := []struct {
+		name      string
+		fragments []*proto.EsiFragment
+		want      bool
+	}{
+		{
+			name:      "nil slice",
+			fragments: nil,
+			want:      false,
+		},
+		{
+			name:      "empty slice",
+			fragments: []*proto.EsiFragment{},
+			want:      false,
+		},
+		{
+			name:      "single fragment",
+			fragments: []*proto.EsiFragment{{Src: "/a"}},
+			want:      false,
+		},
+		{
+			name:      "distinct fragments",
+			fragments: []*proto.EsiFragment{{Src: "/a"}, {Src: "/b"}, {Src: "/c"}},
+			want:      false,
+		},
+		{
+			name:      "duplicate fragments",
+			fragments: []*proto.EsiFragment{{Src: "/a"}, {Src: "/b"}, {Src: "/a"}},
+			want:      true,
+		},
+		{
+			name:      "empty src ignored",
+			fragments: []*proto.EsiFragment{{Src: ""}, {Src: ""}, {Src: "/a"}},
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasDuplicateURLs(tt.fragments); got != tt.want {
+				t.Errorf("hasDuplicateURLs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProcessor_MixedDuplicateAndUniqueIncludes(t *testing.T) {
+	var dupCalls, uniqueCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dup", func(w http.ResponseWriter, r *http.Request) {
+		dupCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>DUP</span>`))
+	})
+	mux.HandleFunc("/unique", func(w http.ResponseWriter, r *http.Request) {
+		uniqueCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<span>UNIQUE</span>`))
+	})
+
+	proc := newTestProcessor(t, WithInternalFetcher(HandlerFetcher(mux)))
+
+	html := `<div><esi:include src="/dup" />|<esi:include src="/unique" />|<esi:include src="/dup" /></div>`
+	got, _ := processHTML(t, proc, html)
+
+	expected := `<div><span>DUP</span>|<span>UNIQUE</span>|<span>DUP</span></div>`
+	if got != expected {
+		t.Errorf("got %q, want %q", got, expected)
+	}
+	if calls := dupCalls.Load(); calls != 1 {
+		t.Errorf("expected /dup to be fetched exactly once (deduplicated), got %d", calls)
+	}
+	if calls := uniqueCalls.Load(); calls != 1 {
+		t.Errorf("expected /unique to be fetched exactly once, got %d", calls)
+	}
 }

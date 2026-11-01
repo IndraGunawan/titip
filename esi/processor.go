@@ -38,10 +38,33 @@ var (
 
 type esiContextKey struct{}
 
+type visitedNode struct {
+	url  string
+	prev *visitedNode
+}
+
+func (n *visitedNode) contains(target string) bool {
+	for curr := n; curr != nil; curr = curr.prev {
+		if curr.url == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *visitedNode) toSlice() []string {
+	var s []string
+	for curr := n; curr != nil; curr = curr.prev {
+		s = append(s, curr.url)
+	}
+	slices.Reverse(s)
+	return s
+}
+
 type esiExecutionState struct {
-	depth       uint32
-	maxDepth    uint32
-	visitedURLs []string
+	depth    uint32
+	maxDepth uint32
+	visited  *visitedNode
 }
 
 type fragmentResult struct {
@@ -73,11 +96,7 @@ type flightGroup struct {
 }
 
 func newFlightGroup() *flightGroup {
-	return &flightGroup{
-		trackers: make(map[string]*flightTracker),
-		results:  make(map[string]*rawFetchResult),
-		errors:   make(map[string]error),
-	}
+	return &flightGroup{}
 }
 
 func (fg *flightGroup) do(
@@ -94,18 +113,27 @@ func (fg *flightGroup) do(
 		return nil, ch
 	}
 
-	tracker, ok := fg.trackers[key]
-	if !ok {
+	tracker := fg.trackers[key]
+	if tracker == nil {
 		flightCtx, cancel := context.WithCancel(parentCtx)
 		tracker = &flightTracker{
 			cancel:    cancel,
 			listeners: 1,
+		}
+		if fg.trackers == nil {
+			fg.trackers = make(map[string]*flightTracker)
 		}
 		fg.trackers[key] = tracker
 
 		ch := fg.sf.DoChan(key, func() (any, error) {
 			res, err := fn(flightCtx)
 			fg.mu.Lock()
+			if fg.results == nil {
+				fg.results = make(map[string]*rawFetchResult)
+			}
+			if fg.errors == nil {
+				fg.errors = make(map[string]error)
+			}
 			fg.results[key] = res
 			fg.errors[key] = err
 			delete(fg.trackers, key)
@@ -233,27 +261,62 @@ func (p *Processor) ShouldPreserveETag() bool {
 	return p.config.preserveETag
 }
 
-// AddSurrogateCapability appends an ESI/1.0 capability token for the specified deviceToken
-// to the request's Surrogate-Capability header (e.g. `deviceToken="ESI/1.0"`).
-// If p is nil or h is nil, this is a no-op.
-// If deviceToken is empty, "esi" is used.
-func (p *Processor) AddSurrogateCapability(h http.Header, deviceToken string) {
-	if p == nil || h == nil {
+const surrogateCapabilityTitip = `titip="ESI/1.0"`
+
+var surrogateHeaderTitip = []string{surrogateCapabilityTitip}
+
+func addSurrogateCapability(h http.Header, deviceToken string) {
+	if h == nil {
 		return
 	}
 	var capability string
-	switch deviceToken {
-	case "", "esi":
-		capability = `esi="ESI/1.0"`
-	default:
+	if deviceToken == "" || deviceToken == "titip" {
+		capability = surrogateCapabilityTitip
+	} else {
 		capability = deviceToken + `="ESI/1.0"`
 	}
 	existing := h.Get(headerSurrogateCapability)
 	if existing == "" {
-		h.Set(headerSurrogateCapability, capability)
+		if capability == surrogateCapabilityTitip {
+			h[headerSurrogateCapability] = surrogateHeaderTitip
+		} else {
+			h.Set(headerSurrogateCapability, capability)
+		}
 	} else if !strings.Contains(existing, capability) {
 		h.Set(headerSurrogateCapability, existing+", "+capability)
 	}
+}
+
+// AddSurrogateCapability appends an ESI/1.0 capability token for the specified deviceToken
+// to the request's Surrogate-Capability header (e.g. `deviceToken="ESI/1.0"`).
+// If p is nil or h is nil, this is a no-op.
+// If deviceToken is empty, "titip" is used.
+func (p *Processor) AddSurrogateCapability(h http.Header, deviceToken string) {
+	if p == nil {
+		return
+	}
+	addSurrogateCapability(h, deviceToken)
+}
+
+func cloneRequestHeader(src http.Header) http.Header {
+	if src == nil {
+		h := make(http.Header, 2)
+		h[headerSurrogateCapability] = surrogateHeaderTitip
+		return h
+	}
+	h := make(http.Header, len(src)+2)
+	for k, vv := range src {
+		vv2 := make([]string, len(vv))
+		copy(vv2, vv)
+		h[k] = vv2
+	}
+	existing := h[headerSurrogateCapability]
+	if len(existing) == 0 {
+		h[headerSurrogateCapability] = surrogateHeaderTitip
+	} else if !strings.Contains(existing[0], surrogateCapabilityTitip) {
+		h[headerSurrogateCapability] = []string{existing[0] + ", " + surrogateCapabilityTitip}
+	}
+	return h
 }
 
 // containsESI reports whether s contains "ESI/1.0" or "esi/1.0".
@@ -392,18 +455,22 @@ func (p *Processor) ProcessFragments(
 		}
 	}
 
-	// Retrieve or initialize ESI execution state
-	execState, ok := ctx.Value(esiContextKey{}).(esiExecutionState)
-	if !ok {
-		execState = esiExecutionState{
-			depth:       0,
-			maxDepth:    p.config.maxDepth,
-			visitedURLs: make([]string, 0, 8),
-		}
+	var cancel context.CancelFunc
+	if _, ok := ctx.Deadline(); !ok && p.config.maxTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, p.config.maxTimeout)
+		defer cancel()
 	}
 
-	if parentReq != nil && parentReq.URL != nil && parentReq.URL.Path != "" {
-		execState.visitedURLs = append(execState.visitedURLs, parentReq.URL.Path)
+	// Retrieve or initialize ESI execution state
+	execState, ok := ctx.Value(esiContextKey{}).(*esiExecutionState)
+	if !ok {
+		execState = &esiExecutionState{
+			depth:    0,
+			maxDepth: p.config.maxDepth,
+		}
+		if parentReq != nil && parentReq.URL != nil && parentReq.URL.Path != "" {
+			execState.visited = &visitedNode{url: parentReq.URL.Path}
+		}
 	}
 
 	if p.logger.Enabled(ctx, slog.LevelDebug) {
@@ -454,52 +521,130 @@ func safeSlice(body []byte, start, end int64) []byte {
 	return body[start:end]
 }
 
+func hasDuplicateURLs(fragments []*proto.EsiFragment) bool {
+	for i, f := range fragments {
+		if f.Src != "" {
+			for _, other := range fragments[i+1:] {
+				if f.Src == other.Src {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+type fragmentRunner struct {
+	p          *Processor
+	ctx        context.Context
+	parentReq  *http.Request
+	parentBody []byte
+	state      *esiExecutionState
+	fg         *flightGroup
+	results    []fragmentResult
+	sem        chan struct{}
+	wg         sync.WaitGroup
+}
+
+var fragmentRunnerPool = sync.Pool{
+	New: func() any {
+		return new(fragmentRunner)
+	},
+}
+
+func (r *fragmentRunner) exec(idx int, f *proto.EsiFragment) {
+	if r.sem != nil {
+		r.sem <- struct{}{}
+		defer func() { <-r.sem }()
+	}
+	r.p.executeFragment(r.ctx, r.parentReq, r.parentBody, f, r.state, r.fg, &r.results[idx])
+}
+
 func (p *Processor) executeFragments(
 	ctx context.Context,
 	parentReq *http.Request,
 	parentBody []byte,
 	fragments []*proto.EsiFragment,
-	state esiExecutionState,
-) ([]*fragmentResult, []string) {
-	results := make([]*fragmentResult, len(fragments))
-	fg := newFlightGroup()
+	state *esiExecutionState,
+) ([]fragmentResult, []string) {
+	results := make([]fragmentResult, len(fragments))
+	if len(fragments) == 0 {
+		return results, nil
+	}
+
+	if len(fragments) == 1 {
+		frag := fragments[0]
+		if frag.Src == "" {
+			inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
+			body := p.resolveFallback(inner, frag.OnError)
+			results[0] = fragmentResult{spec: frag, body: body}
+			return results, nil
+		}
+		p.executeFragment(ctx, parentReq, parentBody, frag, state, nil, &results[0])
+		return results, results[0].setCookies
+	}
+
+	var fg *flightGroup
+	if hasDuplicateURLs(fragments) {
+		fg = newFlightGroup()
+	}
 
 	maxWorkers := p.config.maxConcurrentRequests
 	if maxWorkers <= 0 {
 		maxWorkers = 8
 	}
-	sem := make(chan struct{}, maxWorkers)
+	var sem chan struct{}
+	if len(fragments) > maxWorkers {
+		sem = make(chan struct{}, maxWorkers)
+	}
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var allCookies []string
+	runner := fragmentRunnerPool.Get().(*fragmentRunner)
+	runner.p = p
+	runner.ctx = ctx
+	runner.parentReq = parentReq
+	runner.parentBody = parentBody
+	runner.state = state
+	runner.fg = fg
+	runner.results = results
+	runner.sem = sem
 
-	for i, frag := range fragments {
+	lastIdx := len(fragments) - 1
+	for i := 0; i < lastIdx; i++ {
+		frag := fragments[i]
 		if frag.Src == "" {
 			inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
 			body := p.resolveFallback(inner, frag.OnError)
-			results[i] = &fragmentResult{spec: frag, body: body}
+			results[i] = fragmentResult{spec: frag, body: body}
 			continue
 		}
 
-		wg.Add(1)
+		runner.wg.Add(1)
 		go func(idx int, f *proto.EsiFragment) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			res := p.executeFragment(ctx, parentReq, parentBody, f, state, fg)
-			results[idx] = res
-
-			if len(res.setCookies) > 0 {
-				mu.Lock()
-				allCookies = append(allCookies, res.setCookies...)
-				mu.Unlock()
-			}
+			defer runner.wg.Done()
+			runner.exec(idx, f)
 		}(i, frag)
 	}
 
-	wg.Wait()
+	lastFrag := fragments[lastIdx]
+	if lastFrag.Src == "" {
+		inner := safeSlice(parentBody, lastFrag.InnerStartPos, lastFrag.InnerEndPos)
+		body := p.resolveFallback(inner, lastFrag.OnError)
+		results[lastIdx] = fragmentResult{spec: lastFrag, body: body}
+	} else {
+		runner.exec(lastIdx, lastFrag)
+	}
+
+	runner.wg.Wait()
+	*runner = fragmentRunner{}
+	fragmentRunnerPool.Put(runner)
+
+	var allCookies []string
+	for i := range results {
+		if len(results[i].setCookies) > 0 {
+			allCookies = append(allCookies, results[i].setCookies...)
+		}
+	}
+
 	return results, allCookies
 }
 
@@ -508,7 +653,7 @@ func (p *Processor) expandNestedESI(
 	parentReq *http.Request,
 	body []byte,
 	cookies []string,
-	state esiExecutionState,
+	state *esiExecutionState,
 ) ([]byte, []string) {
 	frags := Scan(body)
 	if len(frags) == 0 {
@@ -526,7 +671,7 @@ func (p *Processor) executeAndSpliceNestedESI(
 	parentReq *http.Request,
 	body []byte,
 	fragments []*proto.EsiFragment,
-	state esiExecutionState,
+	state *esiExecutionState,
 ) ([]byte, []string) {
 	results, allCookies := p.executeFragments(ctx, parentReq, body, fragments, state)
 	outBuf := getBuffer()
@@ -540,10 +685,11 @@ func (p *Processor) executeFragment(
 	parentReq *http.Request,
 	parentBody []byte,
 	frag *proto.EsiFragment,
-	state esiExecutionState,
+	state *esiExecutionState,
 	fg *flightGroup,
-) *fragmentResult {
-	res := &fragmentResult{spec: frag}
+	res *fragmentResult,
+) {
+	res.spec = frag
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -572,22 +718,22 @@ func (p *Processor) executeFragment(
 		res.err = errMaxDepthExceeded
 		inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
 		res.body = p.resolveFallback(inner, frag.OnError)
-		return res
+		return
 	}
 
 	// Check circular include
-	if slices.Contains(state.visitedURLs, frag.Src) {
+	if state.visited.contains(frag.Src) {
 		p.metrics.recordFragment("fallback")
 		if p.logger.Enabled(parentCtx, slog.LevelWarn) {
 			p.logger.WarnContext(parentCtx, "esi: circular include loop detected",
 				slog.String("src", frag.Src),
-				slog.Any("visited", state.visitedURLs),
+				slog.Any("visited", state.visited.toSlice()),
 			)
 		}
 		res.err = errCircularInclude
 		inner := safeSlice(parentBody, frag.InnerStartPos, frag.InnerEndPos)
 		res.body = p.resolveFallback(inner, frag.OnError)
-		return res
+		return
 	}
 
 	// Determine timeout budget
@@ -597,48 +743,28 @@ func (p *Processor) executeFragment(
 		effectiveTimeout = tagTimeout
 	}
 
-	// fragCtx enforces the tree budget: min(parentCtx deadline, now + effectiveTimeout)
-	fragCtx, cancel := context.WithTimeout(parentCtx, effectiveTimeout)
-	defer cancel()
+	var (
+		fragCtx = parentCtx
+		cancel  context.CancelFunc
+	)
+	if tagTimeout > 0 {
+		if parentDeadline, ok := parentCtx.Deadline(); !ok || time.Now().Add(tagTimeout).Before(parentDeadline) {
+			fragCtx, cancel = context.WithTimeout(parentCtx, tagTimeout)
+			defer cancel()
+		}
+	} else if _, ok := parentCtx.Deadline(); !ok && effectiveTimeout > 0 {
+		fragCtx, cancel = context.WithTimeout(parentCtx, effectiveTimeout)
+		defer cancel()
+	}
 
 	fetchStart := time.Now()
-	childState := esiExecutionState{
-		depth:       state.depth + 1,
-		maxDepth:    effectiveMaxDepth,
-		visitedURLs: append(slices.Clone(state.visitedURLs), frag.Src),
+	childState := &esiExecutionState{
+		depth:    state.depth + 1,
+		maxDepth: effectiveMaxDepth,
+		visited:  &visitedNode{url: frag.Src, prev: state.visited},
 	}
 
-	// 1. Attempt primary src fetch via singleflight
-	tracker, ch := fg.do(parentCtx, frag.Src, func(fCtx context.Context) (*rawFetchResult, error) {
-		body, cookies, mode, err := p.fetchFragment(fCtx, parentReq, frag.Src, p.config.maxTimeout, childState)
-		if err != nil {
-			return nil, err
-		}
-		return &rawFetchResult{body: body, cookies: cookies, mode: mode}, nil
-	})
-
-	var (
-		rawRes *rawFetchResult
-		err    error
-	)
-
-	select {
-	case sfRes, ok := <-ch:
-		fg.release(frag.Src, tracker)
-		if !ok {
-			err = errors.New("esi: flight channel closed")
-		} else if sfRes.Err != nil {
-			err = sfRes.Err
-		} else if r, ok := sfRes.Val.(*rawFetchResult); ok {
-			rawRes = r
-		} else {
-			err = errors.New("esi: invalid flight result type")
-		}
-	case <-fragCtx.Done():
-		fg.release(frag.Src, tracker)
-		err = fragCtx.Err()
-	}
-
+	rawRes, err := p.fetchWithFlight(fragCtx, parentCtx, parentReq, frag.Src, effectiveTimeout, childState, fg)
 	if err == nil && rawRes != nil {
 		body, cookies := p.expandNestedESI(fragCtx, parentReq, rawRes.body, rawRes.cookies, childState)
 		dur := time.Since(fetchStart)
@@ -656,7 +782,7 @@ func (p *Processor) executeFragment(
 		res.setCookies = cookies
 		res.mode = rawRes.mode
 		res.duration = dur
-		return res
+		return
 	}
 
 	// Calculate remaining time budget for alt
@@ -665,42 +791,13 @@ func (p *Processor) executeFragment(
 
 	if frag.Alt != "" && fragCtx.Err() == nil && remainingBudget > 0 {
 		altStart := time.Now()
-		altChildState := esiExecutionState{
-			depth:       state.depth + 1,
-			maxDepth:    effectiveMaxDepth,
-			visitedURLs: append(slices.Clone(state.visitedURLs), frag.Alt),
+		altChildState := &esiExecutionState{
+			depth:    state.depth + 1,
+			maxDepth: effectiveMaxDepth,
+			visited:  &visitedNode{url: frag.Alt, prev: state.visited},
 		}
 
-		altTracker, altCh := fg.do(parentCtx, frag.Alt, func(fCtx context.Context) (*rawFetchResult, error) {
-			body, cookies, mode, err := p.fetchFragment(fCtx, parentReq, frag.Alt, p.config.maxTimeout, altChildState)
-			if err != nil {
-				return nil, err
-			}
-			return &rawFetchResult{body: body, cookies: cookies, mode: mode}, nil
-		})
-
-		var (
-			altRaw *rawFetchResult
-			altErr error
-		)
-
-		select {
-		case sfRes, ok := <-altCh:
-			fg.release(frag.Alt, altTracker)
-			if !ok {
-				altErr = errors.New("esi: alt flight channel closed")
-			} else if sfRes.Err != nil {
-				altErr = sfRes.Err
-			} else if r, ok := sfRes.Val.(*rawFetchResult); ok {
-				altRaw = r
-			} else {
-				altErr = errors.New("esi: invalid alt flight result type")
-			}
-		case <-fragCtx.Done():
-			fg.release(frag.Alt, altTracker)
-			altErr = fragCtx.Err()
-		}
-
+		altRaw, altErr := p.fetchWithFlight(fragCtx, parentCtx, parentReq, frag.Alt, remainingBudget, altChildState, fg)
 		if altErr == nil && altRaw != nil {
 			altBody, altCookies := p.expandNestedESI(fragCtx, parentReq, altRaw.body, altRaw.cookies, altChildState)
 			altDur := time.Since(altStart)
@@ -719,7 +816,7 @@ func (p *Processor) executeFragment(
 			res.setCookies = altCookies
 			res.mode = altRaw.mode
 			res.duration = altDur
-			return res
+			return
 		}
 
 		if p.logger.Enabled(parentCtx, slog.LevelWarn) {
@@ -745,7 +842,49 @@ func (p *Processor) executeFragment(
 			slog.Duration("duration", res.duration),
 		)
 	}
-	return res
+}
+
+func (p *Processor) fetchWithFlight(
+	fragCtx, parentCtx context.Context,
+	parentReq *http.Request,
+	targetURL string,
+	timeout time.Duration,
+	state *esiExecutionState,
+	fg *flightGroup,
+) (*rawFetchResult, error) {
+	if fg == nil {
+		body, cookies, mode, err := p.fetchFragment(fragCtx, parentReq, targetURL, timeout, state)
+		if err != nil {
+			return nil, err
+		}
+		return &rawFetchResult{body: body, cookies: cookies, mode: mode}, nil
+	}
+
+	tracker, ch := fg.do(parentCtx, targetURL, func(fCtx context.Context) (*rawFetchResult, error) {
+		body, cookies, mode, err := p.fetchFragment(fCtx, parentReq, targetURL, p.config.maxTimeout, state)
+		if err != nil {
+			return nil, err
+		}
+		return &rawFetchResult{body: body, cookies: cookies, mode: mode}, nil
+	})
+
+	select {
+	case sfRes, ok := <-ch:
+		fg.release(targetURL, tracker)
+		if !ok {
+			return nil, errors.New("esi: flight channel closed")
+		}
+		if sfRes.Err != nil {
+			return nil, sfRes.Err
+		}
+		if r, ok := sfRes.Val.(*rawFetchResult); ok {
+			return r, nil
+		}
+		return nil, errors.New("esi: invalid flight result type")
+	case <-fragCtx.Done():
+		fg.release(targetURL, tracker)
+		return nil, fragCtx.Err()
+	}
 }
 
 func (p *Processor) fetchFragment(
@@ -753,7 +892,7 @@ func (p *Processor) fetchFragment(
 	parentReq *http.Request,
 	targetURL string,
 	timeout time.Duration,
-	state esiExecutionState,
+	state *esiExecutionState,
 ) ([]byte, []string, string, error) {
 	parsed, err := validateURLScheme(targetURL)
 	if err != nil {
@@ -788,7 +927,7 @@ func (p *Processor) fetchFragment(
 		if targetPath == "" {
 			targetPath = "/"
 		}
-		body, cookies, mode, err := p.fetchViaCustomFetcher(ctx, parentReq, targetPath, timeout, state)
+		body, cookies, mode, err := p.fetchViaCustomFetcher(ctx, parentReq, targetPath, state)
 		if err == nil {
 			return body, cookies, mode, nil
 		}
@@ -813,57 +952,45 @@ func (p *Processor) fetchViaCustomFetcher(
 	parentCtx context.Context,
 	parentReq *http.Request,
 	targetPath string,
-	timeout time.Duration,
-	state esiExecutionState,
+	state *esiExecutionState,
 ) ([]byte, []string, string, error) {
-	ctx, cancel := context.WithTimeout(parentCtx, timeout)
-	defer cancel()
-
-	ctx = context.WithValue(ctx, esiContextKey{}, state)
+	ctx := context.WithValue(parentCtx, esiContextKey{}, state)
 	var req *http.Request
 	if parentReq != nil {
-		req = parentReq.Clone(ctx)
+		req = parentReq.WithContext(ctx)
+		req.Header = cloneRequestHeader(parentReq.Header)
+		if parentReq.Trailer != nil {
+			req.Trailer = parentReq.Trailer.Clone()
+		}
 	} else {
 		var err error
 		req, err = http.NewRequestWithContext(ctx, http.MethodGet, targetPath, nil)
 		if err != nil {
 			return nil, nil, "in_process", err
 		}
+		p.AddSurrogateCapability(req.Header, "titip")
 	}
-	p.AddSurrogateCapability(req.Header, "titip")
 
-	type customFetchResult struct {
+	var (
 		body    []byte
 		headers http.Header
 		err     error
-	}
-	done := make(chan customFetchResult, 1)
-
-	go func() {
+	)
+	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				done <- customFetchResult{err: fmt.Errorf("panic: %v", r)}
+				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
-		b, h, err := p.config.internalFetcher(ctx, targetPath, req)
-		done <- customFetchResult{body: b, headers: h, err: err}
+		body, headers, err = p.config.internalFetcher(ctx, targetPath, req)
 	}()
 
-	var res customFetchResult
-	select {
-	case res = <-done:
-		if res.err != nil {
-			return nil, nil, "in_process", res.err
-		}
-		if ctx.Err() != nil {
-			return nil, nil, "in_process", ctx.Err()
-		}
-	case <-ctx.Done():
+	if err != nil {
+		return nil, nil, "in_process", err
+	}
+	if ctx.Err() != nil {
 		return nil, nil, "in_process", ctx.Err()
 	}
-
-	body := res.body
-	headers := res.headers
 
 	if p.config.maxResponseSize > 0 && int64(len(body)) > p.config.maxResponseSize {
 		return nil, nil, "in_process", fmt.Errorf("fragment body size %d exceeds max %d", len(body), p.config.maxResponseSize)
@@ -882,7 +1009,7 @@ func (p *Processor) fetchOutboundHTTP(
 	parentReq *http.Request,
 	targetURL string,
 	timeout time.Duration,
-	state esiExecutionState,
+	state *esiExecutionState,
 ) ([]byte, []string, string, error) {
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
@@ -953,7 +1080,7 @@ func (p *Processor) fetchOutboundHTTP(
 // INVARIANT: res.body may be shared across multiple duplicate tags via document-level
 // singleflight memoization. NEVER mutate res.body in-place. Always write transformations
 // directly into the destination buffer 'out'.
-func (p *Processor) spliceFragments(parent []byte, results []*fragmentResult, out *bytes.Buffer) {
+func (p *Processor) spliceFragments(parent []byte, results []fragmentResult, out *bytes.Buffer) {
 	if len(results) == 0 {
 		out.Write(parent)
 		return
@@ -961,7 +1088,8 @@ func (p *Processor) spliceFragments(parent []byte, results []*fragmentResult, ou
 
 	// Calculate exact final buffer size to eliminate heap reallocations
 	exactSize := len(parent)
-	for _, res := range results {
+	for i := range results {
+		res := &results[i]
 		tagLen := int(res.spec.EndPos - res.spec.StartPos)
 		exactSize += len(res.body) - tagLen
 	}
@@ -973,7 +1101,8 @@ func (p *Processor) spliceFragments(parent []byte, results []*fragmentResult, ou
 	lastPos := 0
 	parentLen := len(parent)
 
-	for _, res := range results {
+	for i := range results {
+		res := &results[i]
 		start := int(res.spec.StartPos)
 		end := int(res.spec.EndPos)
 

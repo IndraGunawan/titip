@@ -28,7 +28,6 @@ func (t *Titip) processESI(
 	parentBody []byte,
 	fragments []*pb.EsiFragment,
 	statusCode int,
-	headers http.Header,
 	simpleStatus string,
 	rfc9211Detail string,
 ) {
@@ -37,22 +36,17 @@ func (t *Titip) processESI(
 		detail = rfc9211Detail
 	)
 
-	reconciled := headers.Clone()
-	if reconciled == nil {
-		reconciled = make(http.Header)
-	}
-
 	if t.esiProcessor != nil {
 		res, err := t.esiProcessor.ProcessFragments(ctx.r.Context(), ctx.r, parentBody, fragments)
 		if err != nil {
 			if t.logger.Enabled(ctx.r.Context(), slog.LevelWarn) {
 				t.logger.WarnContext(ctx.r.Context(), "esi: processing failed, serving unspliced body", "error", err)
 			}
-			t.esiProcessor.ReconcileHeaders(reconciled, nil)
+			t.esiProcessor.ReconcileHeaders(ctx.w.Header(), nil)
 		} else {
 			defer res.Release()
 			body = res.Body()
-			t.esiProcessor.ReconcileHeaders(reconciled, res)
+			t.esiProcessor.ReconcileHeaders(ctx.w.Header(), res)
 			if ctx.timing.enabled {
 				ctx.timing.esiDuration = res.Duration()
 				ctx.timing.esiFragments = len(fragments)
@@ -62,15 +56,7 @@ func (t *Titip) processESI(
 			}
 		}
 	} else {
-		esi.CleanSurrogateControl(reconciled)
-	}
-
-	for k, vv := range reconciled {
-		if !isHopByHopHeader(k) {
-			for _, v := range vv {
-				ctx.w.Header().Add(k, v)
-			}
-		}
+		esi.CleanSurrogateControl(ctx.w.Header())
 	}
 
 	t.emitCacheStatus(ctx, simpleStatus, detail)

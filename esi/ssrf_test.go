@@ -82,6 +82,7 @@ func TestSSRF_ValidateURLScheme(t *testing.T) {
 		"javascript:alert(1)",
 		"ftp://ftp.example.com",
 		"gopher://evil.com",
+		"//evil.com/exploit",
 		"",
 		"http://[::1]:namedport/frag",
 	}

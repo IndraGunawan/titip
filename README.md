@@ -3,9 +3,9 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/indragunawan/titip.svg)](https://pkg.go.dev/github.com/indragunawan/titip)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/indragunawan/titip)](https://golang.org/)
 
-**Titip** is a high-throughput, low-allocation HTTP caching middleware for Go applications and API gateways.
+**Titip** is an RFC-compliant HTTP caching middleware for Go applications and API gateways.
 
-Designed for high-concurrency services, Titip reduces backend load by serving cached responses with minimal memory allocation, atomic multi-variant negotiation, RFC-compliant freshness calculations, and fail-open resilience.
+Designed for high-concurrency services, Titip reduces backend load by serving cached responses with pooled memory buffers, atomic multi-variant negotiation, RFC-compliant freshness calculations, and fail-open resilience.
 
 ## Key Features
 
@@ -14,7 +14,7 @@ Designed for high-concurrency services, Titip reduces backend load by serving ca
 * **Tiered & Targeted Cache-Control (RFC 9213)**: Targeted header precedence (`Titip-Cache-Control` → `CDN-Cache-Control` → `Cache-Control`), allowing edge caching to be configured independently from browser caching.
 * **Cache-Status Observability (RFC 9211)**: Structured diagnostics (`Cache-Status: titip; hit; ttl=295`, `fwd=stale`, `fwd=bypass`) with multi-tier cache chaining.
 * **Conditional Requests & Instant 304s (RFC 9110 & RFC 7232)**: Downstream `If-None-Match` and `If-Modified-Since` validation evaluated directly from cached metadata without reading body bytes.
-* **Low-Allocation & Streaming Engine**: Buffer recycling, zero per-request hashing, and streaming decompression minimize heap allocations under high concurrency.
+* **Buffer Pooling & Streaming**: Recycles byte buffers via `sync.Pool` and streams decompressed payloads so response bodies do not cause heap spikes or GC pauses under heavy traffic.
 * **Storage Compression**: Built-in **LZ4** (default) and **Zstandard** (`zstd`) compression for stored variant bodies, with automatic compression bypass for pre-compressed media formats and pluggable custom codecs.
 * **Strict Privacy & Anti-Leak Safety**: Zero heuristic caching. Cold URL misses execute independently without singleflight coalescing, and responses with `Set-Cookie` or `private` directives bypass caching unconditionally.
 * **Fail-Open Resilience**: Storage outages, decompression errors, or upstream panics safely bypass to the origin handler (`fwd=bypass`) or serve stale cache without crashing the process.
