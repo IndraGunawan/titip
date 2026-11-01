@@ -921,18 +921,20 @@ func BenchmarkESI_ColdMiss(b *testing.B) {
 		_, _ = w.Write([]byte(`<span>User: Alice</span>`))
 	})
 
-	_, _, mw := setupTestTitip(b,
+	store, _, mw := setupTestTitip(b,
 		WithESI(
 			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
 		),
 	)
+	store.SetZeroCopy(true)
 	handler := mw.testHandler(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench-esi-cold", nil)
 
 	for b.Loop() {
-		rec := httptest.NewRecorder()
+		rec := getResponseRecorder()
 		handler.ServeHTTP(rec, req)
+		putResponseRecorder(rec)
 	}
 }
 
@@ -958,23 +960,26 @@ func BenchmarkESI_CacheHit(b *testing.B) {
 		_, _ = w.Write([]byte(`<span>User: Alice</span>`))
 	})
 
-	_, _, mw := setupTestTitip(b,
+	store, _, mw := setupTestTitip(b,
 		WithESI(
 			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
 		),
 	)
+	store.SetZeroCopy(true)
 	handler := mw.testHandler(mux)
 
 	// Warm up cache once (Cold Miss compiles template & stores pre-compiled metadata in storage)
 	warmReq := httptest.NewRequest(http.MethodGet, "http://example.com/bench-esi-hit", nil)
-	warmRec := httptest.NewRecorder()
+	warmRec := getResponseRecorder()
 	handler.ServeHTTP(warmRec, warmReq)
+	putResponseRecorder(warmRec)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench-esi-hit", nil)
 
 	for b.Loop() {
-		rec := httptest.NewRecorder()
+		rec := getResponseRecorder()
 		handler.ServeHTTP(rec, req)
+		putResponseRecorder(rec)
 	}
 }
 
@@ -2385,17 +2390,19 @@ func BenchmarkESI_MemoryPoolReuse(b *testing.B) {
 		_, _ = w.Write([]byte(`<span>B2</span>`))
 	})
 
-	_, _, mw := setupTestTitip(b,
+	store, _, mw := setupTestTitip(b,
 		WithESI(
 			esi.WithInternalFetcher(esi.HandlerFetcher(mux)),
 		),
 	)
+	store.SetZeroCopy(true)
 	handler := mw.testHandler(mux)
 
 	// Warm up cache once
 	warmReq := httptest.NewRequest(http.MethodGet, "http://example.com/bench-pool-esi", nil)
-	warmRec := httptest.NewRecorder()
+	warmRec := getResponseRecorder()
 	handler.ServeHTTP(warmRec, warmReq)
+	putResponseRecorder(warmRec)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/bench-pool-esi", nil)
 

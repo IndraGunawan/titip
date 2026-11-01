@@ -1,7 +1,7 @@
 # AGENTS.md — AI Agent Guidelines & Operating Manual
 
 > **Repository**: `github.com/indragunawan/titip`
-> **Mission**: Build a high-performance, low-allocation, RFC-compliant (RFC 9111, RFC 9211, RFC 9213, RFC 5861, RFC 9110) HTTP caching middleware in Go.
+> **Mission**: Build an RFC-compliant (RFC 9111, RFC 9211, RFC 9213, RFC 5861, RFC 9110) HTTP caching middleware in Go.
 
 ---
 
@@ -15,7 +15,7 @@
    - Specific package: `go test -v -race ./<pkg>/...`
    - Workspace-wide: `make test` or `make race`
 4. ✅ **Format & Lint Code** — Run `make fmt`, `make vet`, and `make lint` before finishing any task.
-5. ✅ **Follow Architecture & RFCs** — Strict zero-allocation pools, fail-open resilience, atomic storage operations, and RFC compliance. See [Core Operating Principles](#1-core-operating-principles).
+5. ✅ **Follow Architecture & RFCs** — Buffer pooling, fail-open resilience, atomic storage operations, and RFC compliance. See [Core Operating Principles](#1-core-operating-principles).
 6. ✅ **Never Push to Main** — Always create a dedicated feature or bugfix branch and open a PR. Never run `git push origin main`.
 
 ---
@@ -48,7 +48,7 @@
 2. **Practice Test-Driven Development (TDD) & Zero-Race Concurrency**:
    - Write automated unit, concurrency, and race condition tests for every feature before declaring it complete.
    - Run tests with continuous race detection: `go test -race -count=100 ./...`.
-3. **Enforce Low-Allocation Standards via Memory Pools**:
+3. **Enforce Buffer Pooling via Memory Pools**:
    - Use `sync.Pool` for all byte buffers, response recorders, compressor/decompressor instances (`lz4`, `zstd`), and request contexts to eliminate payload heap churn.
    - Verify buffer and reader recycling with `testing.B` benchmarks.
 4. **Implement Fail-Open Architecture**:
@@ -116,7 +116,7 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
   ```
 
   Must pass with **0 data races** and **0 goroutine leaks**.
-- [ ] **Low-Allocation Benchmarks**:
+- [ ] **Buffer Pooling Benchmarks**:
 
   ```bash
   go test -benchmem -bench=. ./...
@@ -137,12 +137,12 @@ A feature or task is **COMPLETE** if and only if all of the following conditions
    - Scaffold structs and interfaces.
    - Implement logic with memory pool reuse.
    - Write automated unit, concurrency, and race tests.
-3. **Benchmark**: Run `testing.B` benchmarks to verify zero-allocation and performance constraints.
+3. **Benchmark**: Run `testing.B` benchmarks to verify buffer recycling and performance constraints.
 4. **Verify**: Run race detection (`go test -race ./...`) and lint checks (`go vet ./...`).
 
 ---
 
-## 5. Memory Pool & Zero-Allocation Safety Rules
+## 5. Memory Pool & Buffer Safety Rules
 
 1. **Strict Pool Return Discipline**:
    - Always pair `getBuffer()` / `getResponseRecorder()` with an immediate `defer putBuffer(buf)` / `defer putResponseRecorder(rec)` (and `acquireRequestContext` with `defer releaseRequestContext(ctx)`).

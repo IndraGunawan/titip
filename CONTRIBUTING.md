@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **Titip**!
 
-Titip is designed as a high-performance, low-allocation, RFC-compliant (RFC 9111, RFC 9211, RFC 9213, RFC 5861, RFC 9110) HTTP caching middleware in Go. To maintain rock-solid reliability and sub-millisecond latency, all components adhere to strict architectural standards.
+Titip is an RFC-compliant (RFC 9111, RFC 9211, RFC 9213, RFC 5861, RFC 9110) HTTP caching middleware in Go. To maintain rock-solid reliability and sub-millisecond latency, all components adhere to strict architectural standards.
 
 > [!NOTE]
 > **Prerequisites**: A Go toolchain (matching the version declared in [`go.mod`](go.mod)) and **Docker** (for running the local Redis test container).
@@ -44,7 +44,7 @@ Before writing code, ensure your implementation complies with our core architect
 | :--- | :--- |
 | **Fail-Open Design** | Backend timeouts, serialization errors, or storage crashes must **never** return a 500 error to end users. Always fall back gracefully to the origin handler (`fwd=bypass`). |
 | **Zero Per-Request Hashing** | Never hash URLs with SHA-256, MD5, or xxHash. Assemble normalized string keys directly using pooled string builders. |
-| **Low Allocation & Buffer Pooling** | Use `sync.Pool` for byte buffers and recorders to prevent payload heap churn. Never retain slice references after returning a buffer to the pool (`PutBuffer`). |
+| **Buffer Pooling** | Use `sync.Pool` for byte buffers and recorders to prevent payload heap churn. Never retain slice references after returning a buffer to the pool (`PutBuffer`). |
 | **Concurrency & Race Safety** | Storage drivers must handle concurrent variant writes and purges safely, preventing lost updates using native backend mechanisms (e.g. atomic operations, CAS, or transactions). |
 | **Zero Goroutine Leaks** | Track background tasks (e.g. singleflight revalidation) with `sync.WaitGroup` and await clean termination in `Close(ctx)`. |
 

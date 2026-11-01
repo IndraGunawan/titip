@@ -315,7 +315,7 @@ func TestServerTiming_CompressionDetails(t *testing.T) {
 }
 
 func BenchmarkServerTiming_Active_CacheHit(b *testing.B) {
-	_, _, mw := setupTestTitip(b, WithServerTiming())
+	store, _, mw := setupTestTitip(b, WithServerTiming())
 
 	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerContentType, "application/json")
@@ -330,6 +330,7 @@ func BenchmarkServerTiming_Active_CacheHit(b *testing.B) {
 	// Prime cache
 	recPrime := httptest.NewRecorder()
 	handler.ServeHTTP(recPrime, req)
+	store.SetZeroCopy(true)
 
 	b.ReportAllocs()
 	b.ResetTimer()

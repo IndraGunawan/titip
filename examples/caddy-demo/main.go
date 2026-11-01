@@ -228,7 +228,7 @@ func main() {
 		w.Header().Set("Cache-Control", "public, max-age=600")
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, `<div class="card" style="border-left: 4px solid #a855f7; text-align: center;">
-    <p>© 2026 Titip Caching Engine • Powered by Caddy v2 & Zero-Allocation ESI Engine <span class="tag">TTL: 600s</span></p>
+    <p>© 2026 Titip Caching Engine • Powered by Caddy v2 & ESI Engine <span class="tag">TTL: 600s</span></p>
     <div style="font-size:0.85em;margin-top:8px;"><a href="/api/esi/footer" target="_blank" style="color:#a855f7;">🔗 Open Fragment Directly: <code>/api/esi/footer</code></a></div>
 </div>`)
 	})

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"time"
@@ -203,6 +202,8 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
+var acceptEncodingIdentity = []string{"identity"}
+
 // HandlerFetcher adapts any standard http.Handler into an InternalFetcherFunc for in-process subrequests.
 func HandlerFetcher(router http.Handler) InternalFetcherFunc {
 	return func(ctx context.Context, targetPath string, r *http.Request) ([]byte, http.Header, error) {
@@ -210,39 +211,52 @@ func HandlerFetcher(router http.Handler) InternalFetcherFunc {
 			return nil, nil, errors.New("esi: router is nil")
 		}
 
-		parsedURL, err := url.Parse(targetPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("esi: parse url: %w", err)
+		var (
+			parsedURL *url.URL
+			err       error
+		)
+		if strings.HasPrefix(targetPath, "/") && !strings.ContainsAny(targetPath, "?#%") {
+			parsedURL = &url.URL{Path: targetPath}
+		} else {
+			parsedURL, err = url.Parse(targetPath)
+			if err != nil {
+				return nil, nil, fmt.Errorf("esi: parse url: %w", err)
+			}
 		}
 
-		subReq := &http.Request{
-			Method:     http.MethodGet,
-			URL:        parsedURL,
-			RequestURI: targetPath,
-			Header:     r.Header.Clone(),
-			Host:       r.Host,
-			RemoteAddr: "127.0.0.1:10000",
-			Proto:      r.Proto,
-			ProtoMajor: r.ProtoMajor,
-			ProtoMinor: r.ProtoMinor,
-			Body:       http.NoBody,
+		subReq := new(http.Request)
+		*subReq = *r
+		subReq.Method = http.MethodGet
+		subReq.URL = parsedURL
+		subReq.RequestURI = targetPath
+		subReq.RemoteAddr = "127.0.0.1:10000"
+		subReq.Body = http.NoBody
+		if subReq.Header == nil {
+			subReq.Header = make(http.Header)
 		}
-		subReq.Header.Set("Accept-Encoding", "identity")
-		if r.Trailer != nil {
-			subReq.Trailer = r.Trailer.Clone()
-		}
-		subReq = subReq.WithContext(ctx)
+		subReq.Header["Accept-Encoding"] = acceptEncodingIdentity
 
-		rec := httptest.NewRecorder()
+		rec := acquireSubrequestRecorder()
+		defer releaseSubrequestRecorder(rec)
+
 		router.ServeHTTP(rec, subReq)
 
-		if rec.Code == http.StatusNotFound {
+		if rec.code == http.StatusNotFound {
 			return nil, nil, ErrFallbackToHTTP
 		}
-		if rec.Code >= 400 {
-			return nil, rec.Header().Clone(), fmt.Errorf("subrequest returned status %d", rec.Code)
+		if rec.code >= 400 {
+			var h http.Header
+			if len(rec.header) > 0 {
+				h = rec.detachHeader()
+			}
+			return nil, h, fmt.Errorf("subrequest returned status %d", rec.code)
 		}
 
-		return bytes.Clone(rec.Body.Bytes()), rec.Header().Clone(), nil
+		body := bytes.Clone(rec.body.Bytes())
+		var h http.Header
+		if len(rec.header) > 0 {
+			h = rec.detachHeader()
+		}
+		return body, h, nil
 	}
 }

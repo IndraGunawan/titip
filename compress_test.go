@@ -88,7 +88,7 @@ func TestCompressionRoundtrip(t *testing.T) {
 		{"empty", []byte("")},
 		{"small", []byte("Hello, World!")},
 		{"json_2kb", []byte(strings.Repeat(`{"id": 12345, "name": "Titip Cache Engine", "valid": true},`, 40))},
-		{"html_100kb", []byte(strings.Repeat("<div><h1>Titip High Performance HTTP Caching</h1><p>Zero-allocation RFC-compliant.</p></div>\n", 1200))},
+		{"html_100kb", []byte(strings.Repeat("<div><h1>Titip HTTP Caching</h1><p>RFC-compliant caching.</p></div>\n", 1200))},
 		{"binary_16kb", bytes.Repeat([]byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0xAA, 0x55}, 2500)},
 	}
 
@@ -1090,7 +1090,7 @@ func generateRealisticHTML(sections int) []byte {
 	var b strings.Builder
 	b.WriteString(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Titip High-Performance HTTP Cache</title><link rel="stylesheet" href="/static/bundle.css"><script src="/static/app.js" defer></script></head><body><header><nav class="navbar"><h1>Titip Caching Engine</h1><ul><li><a href="/">Overview</a></li><li><a href="/benchmarks">Benchmarks</a></li><li><a href="/docs">Documentation</a></li></ul></nav></header><main class="container">`)
 	for i := range sections {
-		fmt.Fprintf(&b, `<section id="section-%d" class="content-block"><h2>Section Header %d: Advanced Architecture Details</h2><p>This paragraph contains detailed analytical text describing caching optimization #%d. Titip employs zero-allocation memory pools for request contexts, response recording, and decompression streaming buffers.</p><div class="metadata-table"><span>Latency: %d.%02d ms</span><span>Status: Verified</span><span>Algorithm: RFC-9111</span></div><ul><li>Feature %d-A: Low GC pressure</li><li>Feature %d-B: Multi-variant negotiation</li><li>Feature %d-C: Stampede prevention</li></ul></section>`,
+		fmt.Fprintf(&b, `<section id="section-%d" class="content-block"><h2>Section Header %d: Advanced Architecture Details</h2><p>This paragraph contains detailed analytical text describing caching optimization #%d. Titip employs memory pools for request contexts, response recording, and decompression streaming buffers.</p><div class="metadata-table"><span>Latency: %d.%02d ms</span><span>Status: Verified</span><span>Algorithm: RFC-9111</span></div><ul><li>Feature %d-A: Low GC pressure</li><li>Feature %d-B: Multi-variant negotiation</li><li>Feature %d-C: Stampede prevention</li></ul></section>`,
 			i+1, i+1, i+1, (i*3)%10, (i*17)%100, i+1, i+1, i+1)
 	}
 	b.WriteString(`</main><footer><p>&copy; 2026 Titip Open Source Project. All rights reserved.</p></footer></body></html>`)

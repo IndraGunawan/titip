@@ -43,6 +43,12 @@ func validateURLScheme(rawURL string) (*url.URL, error) {
 
 	// Relative path
 	if strings.HasPrefix(rawURL, "/") {
+		if strings.HasPrefix(rawURL, "//") {
+			return nil, fmt.Errorf("%w: scheme-relative url not permitted", errInvalidScheme)
+		}
+		if !strings.ContainsAny(rawURL, "?#%") {
+			return &url.URL{Path: rawURL}, nil
+		}
 		parsed, err := url.Parse(rawURL)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", errInvalidScheme, err)
