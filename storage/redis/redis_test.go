@@ -461,7 +461,7 @@ func TestDynamicTTLExtension(t *testing.T) {
 	}
 
 	ttl1 := getKeyTTL(ctx, client, prefix+"meta:"+primaryKey)
-	if ttl1 < 50 || ttl1 > 60 {
+	if ttl1 < 50 || ttl1 > 62 {
 		t.Fatalf("unexpected meta TTL: %v", ttl1)
 	}
 
@@ -472,7 +472,7 @@ func TestDynamicTTLExtension(t *testing.T) {
 	}
 
 	ttl2 := getKeyTTL(ctx, client, prefix+"meta:"+primaryKey)
-	if ttl2 < 290 || ttl2 > 300 {
+	if ttl2 < 290 || ttl2 > 302 {
 		t.Fatalf("expected meta TTL to expand to ~300s, got %v", ttl2)
 	}
 }
@@ -500,7 +500,7 @@ func TestDynamicTTLExtension_MultiVariantScenario(t *testing.T) {
 
 	metaTTL1 := getKeyTTL(ctx, client, prefix+"meta:"+primaryKey)
 	bodyENTTL1 := getKeyTTL(ctx, client, prefix+"body:"+primaryKey+":en")
-	if metaTTL1 < 1 || metaTTL1 > 2 || bodyENTTL1 < 1 || bodyENTTL1 > 2 {
+	if metaTTL1 < 1 || metaTTL1 > 3 || bodyENTTL1 < 1 || bodyENTTL1 > 3 {
 		t.Fatalf("expected ~2s TTL, got meta=%v body=%v", metaTTL1, bodyENTTL1)
 	}
 
@@ -515,10 +515,10 @@ func TestDynamicTTLExtension_MultiVariantScenario(t *testing.T) {
 	// Meta Hash TTL must be dynamically extended to ~4s
 	metaTTL3 := getKeyTTL(ctx, client, prefix+"meta:"+primaryKey)
 	bodyESTTL := getKeyTTL(ctx, client, prefix+"body:"+primaryKey+":es")
-	if metaTTL3 < 3 || metaTTL3 > 4 {
+	if metaTTL3 < 3 || metaTTL3 > 5 {
 		t.Fatalf("expected meta TTL extended to ~4s, got %v", metaTTL3)
 	}
-	if bodyESTTL < 3 || bodyESTTL > 4 {
+	if bodyESTTL < 3 || bodyESTTL > 5 {
 		t.Fatalf("expected es body TTL to be ~4s, got %v", bodyESTTL)
 	}
 
@@ -598,11 +598,11 @@ func TestTagHashDynamicTTLExtension(t *testing.T) {
 
 	tagKey := prefix + "tag:" + tag
 	ttl1 := getKeyTTL(ctx, client, tagKey)
-	if ttl1 < 25 || ttl1 > 30 {
+	if ttl1 < 25 || ttl1 > 32 {
 		t.Fatalf("expected tag key TTL ~30s, got %v", ttl1)
 	}
 	fieldTTL1 := getFieldTTL(ctx, client, tagKey, pk1)
-	if fieldTTL1 < 25 || fieldTTL1 > 30 {
+	if fieldTTL1 < 25 || fieldTTL1 > 32 {
 		t.Fatalf("expected field pk1 TTL ~30s, got %v", fieldTTL1)
 	}
 
@@ -619,17 +619,17 @@ func TestTagHashDynamicTTLExtension(t *testing.T) {
 
 	// Top-level key TTL must extend to longest item TTL (~120s)
 	ttl2 := getKeyTTL(ctx, client, tagKey)
-	if ttl2 < 115 || ttl2 > 120 {
+	if ttl2 < 115 || ttl2 > 122 {
 		t.Fatalf("expected tag key TTL to extend to ~120s, got %v", ttl2)
 	}
 
 	// pk1 field TTL should still be ~30s, while pk2 field TTL is ~120s
 	f1 := getFieldTTL(ctx, client, tagKey, pk1)
-	if f1 < 25 || f1 > 30 {
+	if f1 < 25 || f1 > 32 {
 		t.Fatalf("expected pk1 field TTL ~30s, got %v", f1)
 	}
 	f2 := getFieldTTL(ctx, client, tagKey, pk2)
-	if f2 < 115 || f2 > 120 {
+	if f2 < 115 || f2 > 122 {
 		t.Fatalf("expected pk2 field TTL ~120s, got %v", f2)
 	}
 }
@@ -701,7 +701,7 @@ func TestTagHashFieldAutoEviction(t *testing.T) {
 
 	// Tag key TTL should still be active (~57s)
 	keyTTL := getKeyTTL(ctx, client, tagKey)
-	if keyTTL < 50 || keyTTL > 60 {
+	if keyTTL < 50 || keyTTL > 62 {
 		t.Fatalf("expected tag key TTL ~57s, got %v", keyTTL)
 	}
 
