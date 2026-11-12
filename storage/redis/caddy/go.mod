@@ -4,8 +4,8 @@ go 1.26.1
 
 require (
 	github.com/caddyserver/caddy/v2 v2.11.9
-	github.com/indragunawan/titip v0.7.0
-	github.com/indragunawan/titip/storage/redis v0.7.0
+	github.com/indragunawan/titip v0.7.1
+	github.com/indragunawan/titip/storage/redis v0.7.1
 	github.com/redis/rueidis v1.0.79
 )
 
