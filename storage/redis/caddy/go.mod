@@ -6,7 +6,7 @@ require (
 	github.com/caddyserver/caddy/v2 v2.11.9
 	github.com/indragunawan/titip v0.7.1
 	github.com/indragunawan/titip/storage/redis v0.7.1
-	github.com/redis/rueidis v1.0.79
+	github.com/redis/rueidis v1.0.80
 )
 
 replace (
@@ -37,10 +37,10 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/term v0.47.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )

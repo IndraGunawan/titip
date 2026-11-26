@@ -4,13 +4,10 @@ go 1.26.1
 
 require (
 	github.com/indragunawan/titip v0.7.1
-	github.com/redis/rueidis v1.0.79
+	github.com/redis/rueidis v1.0.80
 	google.golang.org/protobuf v1.36.12
 )
 
 replace github.com/indragunawan/titip => ../..
 
-require (
-	golang.org/x/net v0.61.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-)
+require golang.org/x/sys v0.50.0 // indirect
